@@ -89,7 +89,7 @@ TEST_CASE("string") {
     }
     SECTION("from std::string") {
         std::string s = "world";
-        json j(s);
+        json        j(s);
         CHECK(j.get<std::string>() == "world");
     }
     SECTION("from rvalue string") {
@@ -199,18 +199,18 @@ TEST_CASE("contains") {
 
 TEST_CASE("value with default — key present") {
     json o = {{"n", 7}, {"f", 3.14}, {"s", "hi"}, {"b", true}};
-    CHECK(o.value("n", 0)    == 7);
-    CHECK(o.value("f", 0.0)  == Catch::Approx(3.14));
+    CHECK(o.value("n", 0) == 7);
+    CHECK(o.value("f", 0.0) == Catch::Approx(3.14));
     CHECK(o.value("b", false) == true);
-    CHECK(o.value("s", "")   == "hi");
+    CHECK(o.value("s", "") == "hi");
 }
 
 TEST_CASE("value with default — key missing") {
     json o = {{"x", 1}};
-    CHECK(o.value("missing", 99)     == 99);
-    CHECK(o.value("missing", 0.5)    == Catch::Approx(0.5));
-    CHECK(o.value("missing", false)  == false);
-    CHECK(o.value("missing", "def")  == "def");
+    CHECK(o.value("missing", 99) == 99);
+    CHECK(o.value("missing", 0.5) == Catch::Approx(0.5));
+    CHECK(o.value("missing", false) == false);
+    CHECK(o.value("missing", "def") == "def");
 }
 
 TEST_CASE("value with default — null value") {
@@ -230,14 +230,14 @@ TEST_CASE("value on non-object returns default") {
 
 TEST_CASE("get type mismatches throw") {
     json n(42);
-    CHECK_THROWS_AS(n.get<bool>(),        json::exception);
+    CHECK_THROWS_AS(n.get<bool>(), json::exception);
     CHECK_THROWS_AS(n.get<std::string>(), json::exception);
 
     json b(true);
-    CHECK_THROWS_AS(b.get<int>(),         json::exception);
+    CHECK_THROWS_AS(b.get<int>(), json::exception);
 
     json s("hi");
-    CHECK_THROWS_AS(s.get<double>(),      json::exception);
+    CHECK_THROWS_AS(s.get<double>(), json::exception);
 }
 
 // ============================================================================
@@ -245,16 +245,18 @@ TEST_CASE("get type mismatches throw") {
 // ============================================================================
 
 TEST_CASE("range-for over array") {
-    json a = {1, 2, 3};
-    int sum = 0;
-    for (const auto& el : a) sum += el.get<int>();
+    json a   = {1, 2, 3};
+    int  sum = 0;
+    for (const auto& el : a)
+        sum += el.get<int>();
     CHECK(sum == 6);
 }
 
 TEST_CASE("range-for over empty array") {
-    json a = json::array();
-    int count = 0;
-    for (const auto& _ : a) ++count;
+    json a     = json::array();
+    int  count = 0;
+    for (const auto& _ : a)
+        ++count;
     CHECK(count == 0);
 }
 
@@ -268,23 +270,23 @@ TEST_CASE("parse null") {
 }
 
 TEST_CASE("parse bool") {
-    CHECK(json::parse("true").get<bool>()  == true);
+    CHECK(json::parse("true").get<bool>() == true);
     CHECK(json::parse("false").get<bool>() == false);
 }
 
 TEST_CASE("parse integer") {
-    CHECK(json::parse("0").get<int>()     == 0);
-    CHECK(json::parse("42").get<int>()    == 42);
-    CHECK(json::parse("-7").get<int>()    == -7);
+    CHECK(json::parse("0").get<int>() == 0);
+    CHECK(json::parse("42").get<int>() == 42);
+    CHECK(json::parse("-7").get<int>() == -7);
     CHECK(json::parse("884231").get<int64_t>() == 884231LL);
 }
 
 TEST_CASE("parse float") {
-    CHECK(json::parse("3.14").get<double>()  == Catch::Approx(3.14));
-    CHECK(json::parse("-0.5").get<double>()  == Catch::Approx(-0.5));
-    CHECK(json::parse("1e3").get<double>()   == Catch::Approx(1000.0));
+    CHECK(json::parse("3.14").get<double>() == Catch::Approx(3.14));
+    CHECK(json::parse("-0.5").get<double>() == Catch::Approx(-0.5));
+    CHECK(json::parse("1e3").get<double>() == Catch::Approx(1000.0));
     CHECK(json::parse("1.5e2").get<double>() == Catch::Approx(150.0));
-    CHECK(json::parse("2E-1").get<double>()  == Catch::Approx(0.2));
+    CHECK(json::parse("2E-1").get<double>() == Catch::Approx(0.2));
 }
 
 TEST_CASE("parse string") {
@@ -293,12 +295,12 @@ TEST_CASE("parse string") {
 }
 
 TEST_CASE("parse string escapes") {
-    CHECK(json::parse(R"("a\"b")").get<std::string>()  == "a\"b");
-    CHECK(json::parse(R"("a\\b")").get<std::string>()  == "a\\b");
-    CHECK(json::parse(R"("a\/b")").get<std::string>()  == "a/b");
-    CHECK(json::parse(R"("a\nb")").get<std::string>()  == "a\nb");
-    CHECK(json::parse(R"("a\tb")").get<std::string>()  == "a\tb");
-    CHECK(json::parse(R"("a\rb")").get<std::string>()  == "a\rb");
+    CHECK(json::parse(R"("a\"b")").get<std::string>() == "a\"b");
+    CHECK(json::parse(R"("a\\b")").get<std::string>() == "a\\b");
+    CHECK(json::parse(R"("a\/b")").get<std::string>() == "a/b");
+    CHECK(json::parse(R"("a\nb")").get<std::string>() == "a\nb");
+    CHECK(json::parse(R"("a\tb")").get<std::string>() == "a\tb");
+    CHECK(json::parse(R"("a\rb")").get<std::string>() == "a\rb");
 }
 
 TEST_CASE("parse unicode escape") {
@@ -333,9 +335,9 @@ TEST_CASE("parse array") {
 TEST_CASE("parse array with mixed types") {
     auto j = json::parse(R"([null, true, 1, 1.5, "x"])");
     CHECK(j[0].is_null());
-    CHECK(j[1].get<bool>()        == true);
-    CHECK(j[2].get<int>()         == 1);
-    CHECK(j[3].get<double>()      == Catch::Approx(1.5));
+    CHECK(j[1].get<bool>() == true);
+    CHECK(j[2].get<int>() == 1);
+    CHECK(j[3].get<double>() == Catch::Approx(1.5));
     CHECK(j[4].get<std::string>() == "x");
 }
 
@@ -349,7 +351,7 @@ TEST_CASE("parse object") {
     auto j = json::parse(R"({"a":1,"b":"two"})");
     CHECK(j.is_object());
     CHECK(j.size() == 2);
-    CHECK(j["a"].get<int>()         == 1);
+    CHECK(j["a"].get<int>() == 1);
     CHECK(j["b"].get<std::string>() == "two");
 }
 
@@ -369,14 +371,14 @@ TEST_CASE("parse whitespace is ignored") {
 // ============================================================================
 
 TEST_CASE("parse errors throw json::exception") {
-    CHECK_THROWS_AS(json::parse(""),           json::exception);
-    CHECK_THROWS_AS(json::parse("{"),          json::exception);
-    CHECK_THROWS_AS(json::parse("["),          json::exception);
-    CHECK_THROWS_AS(json::parse("tru"),        json::exception);
-    CHECK_THROWS_AS(json::parse("nul"),        json::exception);
+    CHECK_THROWS_AS(json::parse(""), json::exception);
+    CHECK_THROWS_AS(json::parse("{"), json::exception);
+    CHECK_THROWS_AS(json::parse("["), json::exception);
+    CHECK_THROWS_AS(json::parse("tru"), json::exception);
+    CHECK_THROWS_AS(json::parse("nul"), json::exception);
     CHECK_THROWS_AS(json::parse(R"("unterminated)"), json::exception);
-    CHECK_THROWS_AS(json::parse("42 extra"),   json::exception);
-    CHECK_THROWS_AS(json::parse("{\"k\":}"),   json::exception);
+    CHECK_THROWS_AS(json::parse("42 extra"), json::exception);
+    CHECK_THROWS_AS(json::parse("{\"k\":}"), json::exception);
 }
 
 // ============================================================================
@@ -384,19 +386,19 @@ TEST_CASE("parse errors throw json::exception") {
 // ============================================================================
 
 TEST_CASE("dump primitives") {
-    CHECK(json().dump()        == "null");
-    CHECK(json(true).dump()   == "true");
-    CHECK(json(false).dump()  == "false");
-    CHECK(json(42).dump()     == "42");
-    CHECK(json(-7).dump()     == "-7");
-    CHECK(json("hi").dump()   == "\"hi\"");
+    CHECK(json().dump() == "null");
+    CHECK(json(true).dump() == "true");
+    CHECK(json(false).dump() == "false");
+    CHECK(json(42).dump() == "42");
+    CHECK(json(-7).dump() == "-7");
+    CHECK(json("hi").dump() == "\"hi\"");
 }
 
 TEST_CASE("dump string escaping") {
-    CHECK(json("a\"b").dump()  == R"("a\"b")");
-    CHECK(json("a\\b").dump()  == R"("a\\b")");
-    CHECK(json("a\nb").dump()  == R"("a\nb")");
-    CHECK(json("a\tb").dump()  == R"("a\tb")");
+    CHECK(json("a\"b").dump() == R"("a\"b")");
+    CHECK(json("a\\b").dump() == R"("a\\b")");
+    CHECK(json("a\nb").dump() == R"("a\nb")");
+    CHECK(json("a\tb").dump() == R"("a\tb")");
 }
 
 TEST_CASE("dump array") {
@@ -404,13 +406,9 @@ TEST_CASE("dump array") {
     CHECK(a.dump() == "[1,2,3]");
 }
 
-TEST_CASE("dump empty array") {
-    CHECK(json::array().dump() == "[]");
-}
+TEST_CASE("dump empty array") { CHECK(json::array().dump() == "[]"); }
 
-TEST_CASE("dump empty object") {
-    CHECK(json::object().dump() == "{}");
-}
+TEST_CASE("dump empty object") { CHECK(json::object().dump() == "{}"); }
 
 TEST_CASE("dump parse round-trip") {
     const std::string src = R"({"a":1,"b":"two","c":[true,null]})";
@@ -418,7 +416,7 @@ TEST_CASE("dump parse round-trip") {
 }
 
 TEST_CASE("dump pretty indents") {
-    json o = {{"x", 1}};
+    json              o      = {{"x", 1}};
     const std::string pretty = o.dump(2);
     CHECK(pretty.find('\n') != std::string::npos);
     CHECK(pretty.find("  ") != std::string::npos);
@@ -447,10 +445,10 @@ TEST_CASE("getblockchaininfo response shape") {
     CHECK(j["error"].is_null());
 
     auto r = j["result"];
-    CHECK(r.value("chain",   "") == "main");
-    CHECK(r.value("blocks",  0LL) == 884231LL);
+    CHECK(r.value("chain", "") == "main");
+    CHECK(r.value("blocks", 0LL) == 884231LL);
     CHECK(r.value("headers", 0LL) == 884231LL);
-    CHECK(r.value("pruned",  true)  == false);
+    CHECK(r.value("pruned", true) == false);
     CHECK(r.value("initialblockdownload", true) == false);
     CHECK(r.value("verificationprogress", 0.0) == Catch::Approx(0.9999978).epsilon(1e-6));
 }
@@ -480,12 +478,12 @@ TEST_CASE("getpeerinfo response shape") {
     CHECK(res.size() == 1);
 
     auto p = res[0];
-    CHECK(p.value("id",      -1)  == 0);
-    CHECK(p.value("addr",    "")  == "144.76.31.85:8333");
-    CHECK(p.value("network", "")  == "ipv4");
+    CHECK(p.value("id", -1) == 0);
+    CHECK(p.value("addr", "") == "144.76.31.85:8333");
+    CHECK(p.value("network", "") == "ipv4");
     CHECK(p.value("inbound", true) == false);
-    CHECK(p.value("bytessent",     0LL) == 12345678LL);
-    CHECK(p.value("bytesrecv",     0LL) == 98765432LL);
+    CHECK(p.value("bytessent", 0LL) == 12345678LL);
+    CHECK(p.value("bytesrecv", 0LL) == 98765432LL);
     CHECK(p.value("synced_blocks", 0LL) == 884231LL);
 
     CHECK(p.contains("pingtime"));

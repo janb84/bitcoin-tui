@@ -1,0 +1,23 @@
+---
+Checks: >
+  bugprone-*,
+  modernize-loop-convert,
+  modernize-use-nullptr,
+  modernize-use-using,
+  performance-avoid-endl,
+  performance-for-range-copy,
+  performance-move-const-arg,
+  performance-unnecessary-copy-initialization,
+  performance-unnecessary-value-param,
+  readability-const-return-type,
+  readability-delete-null-pointer,
+  readability-redundant-smartptr-get,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-implicit-widening-of-multiplication-result,
+
+WarningsAsErrors: '*'
+
+# Only report diagnostics from our own headers, not from FTXUI / Catch2
+HeaderFilterRegex: 'src/.*'
+
+FormatStyle: file

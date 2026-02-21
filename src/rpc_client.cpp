@@ -13,8 +13,7 @@ RpcClient::RpcClient(RpcConfig config) : config_(std::move(config)) {}
 // base64 encoder (RFC 4648)
 // ---------------------------------------------------------------------------
 std::string RpcClient::base64_encode(const std::string& input) {
-    static const char* chars =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    static const char* chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     std::string out;
     out.reserve((input.size() + 2) / 3 * 4);
@@ -67,7 +66,7 @@ std::string RpcClient::http_post(const std::string& body) {
     }
 
     // Set send/recv timeout
-    struct timeval tv {};
+    struct timeval tv{};
     tv.tv_sec = config_.timeout_seconds;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
@@ -75,20 +74,26 @@ std::string RpcClient::http_post(const std::string& body) {
     if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
         freeaddrinfo(res);
         close(sock);
-        throw RpcError("connect to " + config_.host + ":" + port_str + " failed: " +
-                       strerror(errno));
+        throw RpcError("connect to " + config_.host + ":" + port_str +
+                       " failed: " + strerror(errno));
     }
     freeaddrinfo(res);
 
     // Build HTTP/1.0 request (avoids chunked transfer encoding)
     const std::string auth    = base64_encode(config_.user + ":" + config_.password);
-    const std::string request =
-        "POST / HTTP/1.0\r\n"
-        "Host: " + config_.host + "\r\n"
-        "Authorization: Basic " + auth + "\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: " + std::to_string(body.size()) + "\r\n"
-        "\r\n" + body;
+    const std::string request = "POST / HTTP/1.0\r\n"
+                                "Host: " +
+                                config_.host +
+                                "\r\n"
+                                "Authorization: Basic " +
+                                auth +
+                                "\r\n"
+                                "Content-Type: application/json\r\n"
+                                "Content-Length: " +
+                                std::to_string(body.size()) +
+                                "\r\n"
+                                "\r\n" +
+                                body;
 
     // Send request
     size_t sent_total = 0;
@@ -150,9 +155,9 @@ std::string RpcClient::http_post(const std::string& body) {
 json RpcClient::call(const std::string& method, const json& params) {
     json req = {
         {"jsonrpc", "1.1"},
-        {"id",      ++request_id_},
-        {"method",  method},
-        {"params",  params},
+        {"id", ++request_id_},
+        {"method", method},
+        {"params", params},
     };
 
     const std::string body     = req.dump();

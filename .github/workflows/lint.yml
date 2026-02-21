@@ -1,0 +1,49 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  clang-tidy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get install -y clang clang-tidy
+
+      - name: Configure (generates compile_commands.json and fetches deps)
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build (ensures all dependency headers are generated)
+        run: cmake --build build --parallel
+
+      - name: Run clang-tidy
+        run: |
+          clang-tidy -p build \
+            src/main.cpp       \
+            src/rpc_client.cpp \
+            tests/test_json.cpp
+
+  clang-format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        run: |
+          clang-format --dry-run --Werror \
+            src/main.cpp       \
+            src/rpc_client.cpp \
+            src/rpc_client.hpp \
+            src/json.hpp       \
+            tests/test_json.cpp

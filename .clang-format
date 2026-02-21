@@ -1,0 +1,29 @@
+---
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+LineEnding: LF
+
+# Allow short inline/empty function bodies on one line
+AllowShortFunctionsOnASingleLine: All
+
+# Opening braces stay on the same line (K&R / Attach style)
+BreakBeforeBraces: Attach
+
+# Align consecutive assignments and declarations within a block
+AlignConsecutiveAssignments:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+
+# Keep pointer/reference qualifier with the type
+PointerAlignment: Left
+
+# Sort includes within blocks but don't reorder blocks
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
