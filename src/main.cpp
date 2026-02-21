@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <fstream>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
@@ -95,11 +96,11 @@ static std::string fmt_bytes(int64_t b) {
     std::ostringstream ss;
     ss << std::fixed << std::setprecision(1);
     if (b >= 1'000'000'000LL)
-        ss << b / 1e9 << " GB";
+        ss << static_cast<double>(b) / 1e9 << " GB";
     else if (b >= 1'000'000LL)
-        ss << b / 1e6 << " MB";
+        ss << static_cast<double>(b) / 1e6 << " MB";
     else if (b >= 1'000LL)
-        ss << b / 1e3 << " KB";
+        ss << static_cast<double>(b) / 1e3 << " KB";
     else
         ss << b << " B";
     return ss.str();
@@ -192,7 +193,8 @@ static Element render_dashboard(const AppState& s) {
             label_value("  Hash Rate   : ", fmt_hashrate(s.network_hashps)),
             hbox({
                 text("  Sync        : ") | color(Color::GrayDark),
-                gauge(s.progress) | flex | color(s.progress >= 1.0 ? Color::Green : Color::Yellow),
+                gauge(static_cast<float>(s.progress)) | flex |
+                    color(s.progress >= 1.0 ? Color::Green : Color::Yellow),
                 text(" " + std::to_string(static_cast<int>(s.progress * 100)) + "%") | bold,
             }),
             label_value("  IBD         : ", s.ibd ? "yes" : "no",
@@ -215,7 +217,7 @@ static Element render_dashboard(const AppState& s) {
 
     // Mempool section
     double usage_frac =
-        s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) / s.mempool_max : 0.0;
+        s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) / static_cast<double>(s.mempool_max) : 0.0;
     auto mempool_section = section_box(
         "Mempool",
         {
@@ -230,7 +232,8 @@ static Element render_dashboard(const AppState& s) {
             label_value("  Min fee     : ", fmt_satsvb(s.mempool_min_fee)),
             hbox({
                 text("  Memory      : ") | color(Color::GrayDark),
-                gauge(usage_frac) | flex | color(usage_frac > 0.8 ? Color::Red : Color::Cyan),
+                gauge(static_cast<float>(usage_frac)) | flex |
+                    color(usage_frac > 0.8 ? Color::Red : Color::Cyan),
                 text(" " + fmt_bytes(s.mempool_usage) + " / " + fmt_bytes(s.mempool_max)) | bold,
             }),
         });
@@ -248,7 +251,7 @@ static Element render_dashboard(const AppState& s) {
 // --- Mempool ----------------------------------------------------------------
 static Element render_mempool(const AppState& s) {
     double usage_frac =
-        s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) / s.mempool_max : 0.0;
+        s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) / static_cast<double>(s.mempool_max) : 0.0;
     Color usage_color = usage_frac > 0.8   ? Color::Red
                         : usage_frac > 0.5 ? Color::Yellow
                                            : Color::Cyan;
@@ -270,7 +273,7 @@ static Element render_mempool(const AppState& s) {
                                text("  Memory usage") | color(Color::GrayDark),
                                hbox({
                                    text("  "),
-                                   gauge(usage_frac) | flex | color(usage_color),
+                                   gauge(static_cast<float>(usage_frac)) | flex | color(usage_color),
                                    text("  "),
                                }),
                                hbox({
@@ -365,6 +368,52 @@ static Element render_peers(const AppState& s) {
 }
 
 // ============================================================================
+// Cookie authentication helpers
+// ============================================================================
+
+// Returns the platform-specific default path to Bitcoin Core's .cookie file.
+// network is one of: "main", "testnet3", "signet", "regtest".
+static std::string cookie_default_path(const std::string& network, const std::string& datadir) {
+    std::string base;
+    if (!datadir.empty()) {
+        base = datadir;
+    } else {
+        const char* home = std::getenv("HOME");
+        if (!home)
+            throw std::runtime_error("HOME not set; use --datadir or --cookie to locate .cookie");
+#ifdef __APPLE__
+        base = std::string(home) + "/Library/Application Support/Bitcoin";
+#else
+        base = std::string(home) + "/.bitcoin";
+#endif
+    }
+    std::string sub;
+    if (network == "testnet3")
+        sub = "testnet3/";
+    else if (network == "signet")
+        sub = "signet/";
+    else if (network == "regtest")
+        sub = "regtest/";
+    return base + "/" + sub + ".cookie";
+}
+
+// Reads a Bitcoin Core cookie file and populates cfg.user / cfg.password.
+// File format: __cookie__:<password>
+static void apply_cookie(RpcConfig& cfg, const std::string& path) {
+    std::ifstream f(path);
+    if (!f)
+        throw std::runtime_error("Cannot open cookie file: " + path);
+    std::string line;
+    if (!std::getline(f, line) || line.empty())
+        throw std::runtime_error("Cookie file is empty: " + path);
+    auto colon = line.find(':');
+    if (colon == std::string::npos)
+        throw std::runtime_error("Invalid cookie file (no ':' found): " + path);
+    cfg.user     = line.substr(0, colon);
+    cfg.password = line.substr(colon + 1);
+}
+
+// ============================================================================
 // RPC polling
 // ============================================================================
 static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
@@ -448,8 +497,12 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
 // ============================================================================
 int main(int argc, char* argv[]) {
     // Parse CLI args
-    RpcConfig cfg;
-    int       refresh_secs = 5;
+    RpcConfig   cfg;
+    int         refresh_secs   = 5;
+    std::string network        = "main"; // tracks chain for cookie path lookup
+    std::string cookie_file;             // explicit --cookie override
+    std::string datadir;                 // explicit --datadir override
+    bool        explicit_creds = false;  // true when -u/-P were given
 
     for (int i = 1; i < argc; ++i) {
         std::string arg  = argv[i];
@@ -462,19 +515,28 @@ int main(int argc, char* argv[]) {
             cfg.host = next();
         else if (arg == "--port" || arg == "-p")
             cfg.port = std::stoi(next());
-        else if (arg == "--user" || arg == "-u")
-            cfg.user = next();
-        else if (arg == "--password" || arg == "-P")
-            cfg.password = next();
+        else if (arg == "--user" || arg == "-u") {
+            cfg.user     = next();
+            explicit_creds = true;
+        } else if (arg == "--password" || arg == "-P") {
+            cfg.password   = next();
+            explicit_creds = true;
+        } else if (arg == "--cookie" || arg == "-c")
+            cookie_file = next();
+        else if (arg == "--datadir" || arg == "-d")
+            datadir = next();
         else if (arg == "--refresh" || arg == "-r")
             refresh_secs = std::stoi(next());
-        else if (arg == "--testnet")
+        else if (arg == "--testnet") {
             cfg.port = 18332;
-        else if (arg == "--regtest")
+            network  = "testnet3";
+        } else if (arg == "--regtest") {
             cfg.port = 18443;
-        else if (arg == "--signet")
+            network  = "regtest";
+        } else if (arg == "--signet") {
             cfg.port = 38332;
-        else if (arg == "--version" || arg == "-v") {
+            network  = "signet";
+        } else if (arg == "--version" || arg == "-v") {
             std::puts("bitcoin-tui " BITCOIN_TUI_VERSION);
             return 0;
         } else if (arg == "--help") {
@@ -484,15 +546,24 @@ int main(int argc, char* argv[]) {
                 "\n"
                 "Usage: bitcoin-tui [options]\n"
                 "\n"
-                "Options:\n"
-                "  -h, --host <host>      RPC host         (default: 127.0.0.1)\n"
-                "  -p, --port <port>      RPC port         (default: 8332)\n"
-                "  -u, --user <user>      RPC username\n"
-                "  -P, --password <pass>  RPC password\n"
-                "  -r, --refresh <secs>   Refresh interval (default: 5)\n"
-                "      --testnet          Use testnet port (18332)\n"
-                "      --regtest          Use regtest port (18443)\n"
-                "      --signet           Use signet  port (38332)\n"
+                "Connection:\n"
+                "  -h, --host <host>      RPC host             (default: 127.0.0.1)\n"
+                "  -p, --port <port>      RPC port             (default: 8332)\n"
+                "\n"
+                "Authentication (cookie auth is used by default):\n"
+                "  -c, --cookie <path>    Path to .cookie file (auto-detected if omitted)\n"
+                "  -d, --datadir <path>   Bitcoin data directory for cookie lookup\n"
+                "  -u, --user <user>      RPC username         (disables cookie auth)\n"
+                "  -P, --password <pass>  RPC password         (disables cookie auth)\n"
+                "\n"
+                "Network:\n"
+                "      --testnet          Use testnet3 port (18332) and cookie subdir\n"
+                "      --regtest          Use regtest  port (18443) and cookie subdir\n"
+                "      --signet           Use signet   port (38332) and cookie subdir\n"
+                "\n"
+                "Display:\n"
+                "  -r, --refresh <secs>   Refresh interval     (default: 5)\n"
+                "  -v, --version          Print version and exit\n"
                 "\n"
                 "Keyboard:\n"
                 "  Tab / Left / Right     Switch tabs\n"
@@ -500,6 +571,21 @@ int main(int argc, char* argv[]) {
             );
             // clang-format on
             return 0;
+        }
+    }
+
+    // Apply cookie authentication unless explicit -u/-P credentials were given.
+    if (!explicit_creds) {
+        std::string path = cookie_file.empty() ? cookie_default_path(network, datadir) : cookie_file;
+        try {
+            apply_cookie(cfg, path);
+        } catch (const std::exception& e) {
+            // If the user specified --cookie explicitly, fail loudly.
+            // Otherwise silently skip — the RPC call will report auth errors.
+            if (!cookie_file.empty()) {
+                std::fprintf(stderr, "bitcoin-tui: %s\n", e.what());
+                return 1;
+            }
         }
     }
 
@@ -597,7 +683,7 @@ int main(int argc, char* argv[]) {
     });
 
     // Quit on 'q' or Escape
-    auto event_handler = CatchEvent(renderer, [&](Event event) -> bool {
+    auto event_handler = CatchEvent(renderer, [&](const Event& event) -> bool {
         if (event == Event::Character('q') || event == Event::Escape) {
             screen.ExitLoopClosure()();
             return true;

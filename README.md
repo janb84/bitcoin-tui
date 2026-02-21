@@ -89,15 +89,24 @@ Tests cover the vendored JSON implementation: parsing, serialization, type queri
 ```
 bitcoin-tui [options]
 
-Options:
-  -h, --host <host>      RPC host         (default: 127.0.0.1)
-  -p, --port <port>      RPC port         (default: 8332)
-  -u, --user <user>      RPC username
-  -P, --password <pass>  RPC password
-  -r, --refresh <secs>   Refresh interval (default: 5)
-      --testnet          Use testnet port (18332)
-      --regtest          Use regtest port (18443)
-      --signet           Use signet  port (38332)
+Connection:
+  -h, --host <host>      RPC host             (default: 127.0.0.1)
+  -p, --port <port>      RPC port             (default: 8332)
+
+Authentication (cookie auth is used by default):
+  -c, --cookie <path>    Path to .cookie file (auto-detected if omitted)
+  -d, --datadir <path>   Bitcoin data directory for cookie lookup
+  -u, --user <user>      RPC username         (disables cookie auth)
+  -P, --password <pass>  RPC password         (disables cookie auth)
+
+Network:
+      --testnet          Use testnet3 port (18332) and cookie subdir
+      --regtest          Use regtest  port (18443) and cookie subdir
+      --signet           Use signet   port (38332) and cookie subdir
+
+Display:
+  -r, --refresh <secs>   Refresh interval     (default: 5)
+  -v, --version          Print version and exit
 
 Keyboard:
   Tab / Left / Right     Switch tabs
@@ -107,27 +116,46 @@ Keyboard:
 ### Examples
 
 ```sh
-# Mainnet with credentials
+# Mainnet — auto-detects ~/.bitcoin/.cookie (or ~/Library/Application Support/Bitcoin/.cookie on macOS)
+./build/bin/bitcoin-tui
+
+# Testnet — uses testnet3/.cookie automatically
+./build/bin/bitcoin-tui --testnet
+
+# Custom data directory
+./build/bin/bitcoin-tui --datadir /mnt/bitcoin
+
+# Explicit cookie file
+./build/bin/bitcoin-tui --cookie /var/lib/bitcoind/.cookie
+
+# Explicit credentials (rpcuser/rpcpassword style)
 ./build/bin/bitcoin-tui -u alice -P hunter2
 
-# Testnet with faster refresh
-./build/bin/bitcoin-tui --testnet -u alice -P hunter2 -r 2
-
-# Remote node
-./build/bin/bitcoin-tui --host 192.168.1.10 -u alice -P hunter2
+# Remote node with faster refresh
+./build/bin/bitcoin-tui --host 192.168.1.10 -u alice -P hunter2 -r 2
 ```
 
 ## Bitcoin Core configuration
 
-Ensure `bitcoin.conf` has RPC enabled:
+Cookie authentication is the default. Just enable the RPC server in `bitcoin.conf`:
 
 ```ini
 server=1
-rpcuser=alice
-rpcpassword=hunter2
+```
+
+Bitcoin Core writes `.cookie` to the data directory on startup. `bitcoin-tui` reads it automatically — no credentials needed.
+
+For remote access or `rpcuser`/`rpcpassword`-style auth, add:
+
+```ini
+server=1
 rpcallowip=127.0.0.1
 rpcbind=127.0.0.1
+rpcuser=alice
+rpcpassword=hunter2
 ```
+
+Then pass `-u alice -P hunter2` on the command line.
 
 ## License
 
