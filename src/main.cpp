@@ -406,6 +406,9 @@ static void apply_cookie(RpcConfig& cfg, const std::string& path) {
     std::string line;
     if (!std::getline(f, line) || line.empty())
         throw std::runtime_error("Cookie file is empty: " + path);
+    // Strip trailing \r in case the file has CRLF line endings
+    if (!line.empty() && line.back() == '\r')
+        line.pop_back();
     auto colon = line.find(':');
     if (colon == std::string::npos)
         throw std::runtime_error("Invalid cookie file (no ':' found): " + path);
@@ -668,7 +671,7 @@ int main(int argc, char* argv[]) {
                     : text(" " + snap.chain + " ") | bold |
                           (snap.chain == "main" ? bgcolor(Color::DarkGreen)
                                                 : bgcolor(Color::Yellow)) |
-                          color(Color::White),
+                          (snap.chain == "main" ? color(Color::White) : color(Color::Black)),
             }) | border,
 
             // Tab bar

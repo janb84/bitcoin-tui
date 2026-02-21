@@ -139,11 +139,15 @@ std::string RpcClient::http_post(const std::string& body) {
     std::string resp_body = response.substr(header_end + 4);
 
     if (status_code == 401) {
-        throw RpcError("Authentication failed — check your RPC credentials");
+        throw RpcError("Authentication failed (HTTP 401) — check your RPC credentials");
     }
     // 500 is also used by Bitcoin Core for RPC-level errors; body still contains JSON
     if (status_code != 200 && status_code != 500) {
-        throw RpcError("HTTP " + std::to_string(status_code));
+        // Include body snippet so the caller can see what Bitcoin Core said
+        std::string detail = resp_body.substr(0, 200);
+        if (detail.size() == 200)
+            detail += "…";
+        throw RpcError("HTTP " + std::to_string(status_code) + ": " + detail);
     }
 
     return resp_body;
@@ -153,8 +157,9 @@ std::string RpcClient::http_post(const std::string& body) {
 // JSON-RPC call
 // ---------------------------------------------------------------------------
 json RpcClient::call(const std::string& method, const json& params) {
+    // Omit "jsonrpc" version field — Bitcoin Core v25+ rejects "1.1".
+    // Legacy JSON-RPC 1.0 (no version field) is accepted by all versions.
     json req = {
-        {"jsonrpc", "1.1"},
         {"id", ++request_id_},
         {"method", method},
         {"params", params},
