@@ -49,7 +49,9 @@ std::string RpcClient::base64_encode(const std::string& input) {
 // Low-level HTTP POST over a plain TCP socket
 // ---------------------------------------------------------------------------
 std::string RpcClient::http_post(const std::string& body) {
-    struct addrinfo hints{}, *res = nullptr;
+    struct addrinfo  hints = {};
+    struct addrinfo* res   = nullptr;
+
     hints.ai_family   = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
@@ -66,8 +68,8 @@ std::string RpcClient::http_post(const std::string& body) {
     }
 
     // Set send/recv timeout
-    struct timeval tv{};
-    tv.tv_sec = config_.timeout_seconds;
+    struct timeval tv = {};
+    tv.tv_sec         = config_.timeout_seconds;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 

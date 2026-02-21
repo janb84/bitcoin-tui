@@ -216,15 +216,16 @@ static Element render_dashboard(const AppState& s) {
                    });
 
     // Mempool section
-    double usage_frac =
-        s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) / static_cast<double>(s.mempool_max) : 0.0;
-    auto mempool_section = section_box(
+    double usage_frac      = s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) /
+                                                static_cast<double>(s.mempool_max)
+                                               : 0.0;
+    auto   mempool_section = section_box(
         "Mempool",
         {
             label_value("  Transactions: ", fmt_int(s.mempool_tx)),
             label_value("  Size        : ", fmt_bytes(s.mempool_bytes)),
             label_value("  Total fee   : ",
-                        [&] {
+                          [&] {
                             std::ostringstream ss;
                             ss << std::fixed << std::setprecision(4) << s.total_fee << " BTC";
                             return ss.str();
@@ -250,39 +251,41 @@ static Element render_dashboard(const AppState& s) {
 
 // --- Mempool ----------------------------------------------------------------
 static Element render_mempool(const AppState& s) {
-    double usage_frac =
-        s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) / static_cast<double>(s.mempool_max) : 0.0;
-    Color usage_color = usage_frac > 0.8   ? Color::Red
-                        : usage_frac > 0.5 ? Color::Yellow
-                                           : Color::Cyan;
+    double usage_frac  = s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) /
+                                                static_cast<double>(s.mempool_max)
+                                           : 0.0;
+    Color  usage_color = usage_frac > 0.8   ? Color::Red
+                         : usage_frac > 0.5 ? Color::Yellow
+                                            : Color::Cyan;
 
     return vbox({
-               section_box("Mempool Details",
-                           {
-                               label_value("  Transactions    : ", fmt_int(s.mempool_tx)),
-                               label_value("  Virtual size    : ", fmt_bytes(s.mempool_bytes)),
-                               label_value("  Total fees      : ",
-                                           [&] {
-                                               std::ostringstream ss;
-                                               ss << std::fixed << std::setprecision(8)
-                                                  << s.total_fee << " BTC";
-                                               return ss.str();
-                                           }()),
-                               label_value("  Min relay fee   : ", fmt_satsvb(s.mempool_min_fee)),
-                               separator(),
-                               text("  Memory usage") | color(Color::GrayDark),
-                               hbox({
-                                   text("  "),
-                                   gauge(static_cast<float>(usage_frac)) | flex | color(usage_color),
-                                   text("  "),
-                               }),
-                               hbox({
-                                   text("  Used : ") | color(Color::GrayDark),
-                                   text(fmt_bytes(s.mempool_usage)) | bold,
-                                   text("  /  Max : ") | color(Color::GrayDark),
-                                   text(fmt_bytes(s.mempool_max)) | bold,
-                               }),
-                           }),
+               section_box(
+                   "Mempool Details",
+                   {
+                       label_value("  Transactions    : ", fmt_int(s.mempool_tx)),
+                       label_value("  Virtual size    : ", fmt_bytes(s.mempool_bytes)),
+                       label_value("  Total fees      : ",
+                                   [&] {
+                                       std::ostringstream ss;
+                                       ss << std::fixed << std::setprecision(8) << s.total_fee
+                                          << " BTC";
+                                       return ss.str();
+                                   }()),
+                       label_value("  Min relay fee   : ", fmt_satsvb(s.mempool_min_fee)),
+                       separator(),
+                       text("  Memory usage") | color(Color::GrayDark),
+                       hbox({
+                           text("  "),
+                           gauge(static_cast<float>(usage_frac)) | flex | color(usage_color),
+                           text("  "),
+                       }),
+                       hbox({
+                           text("  Used : ") | color(Color::GrayDark),
+                           text(fmt_bytes(s.mempool_usage)) | bold,
+                           text("  /  Max : ") | color(Color::GrayDark),
+                           text(fmt_bytes(s.mempool_max)) | bold,
+                       }),
+                   }),
                filler(),
            }) |
            flex;
@@ -496,16 +499,16 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
 }
 
 // ============================================================================
-// main
+// Application entry point (split so main() itself is exception-free)
 // ============================================================================
-int main(int argc, char* argv[]) {
+static int run(int argc, char* argv[]) {
     // Parse CLI args
     RpcConfig   cfg;
-    int         refresh_secs   = 5;
-    std::string network        = "main"; // tracks chain for cookie path lookup
-    std::string cookie_file;             // explicit --cookie override
-    std::string datadir;                 // explicit --datadir override
-    bool        explicit_creds = false;  // true when -u/-P were given
+    int         refresh_secs = 5;
+    std::string network      = "main";  // tracks chain for cookie path lookup
+    std::string cookie_file;            // explicit --cookie override
+    std::string datadir;                // explicit --datadir override
+    bool        explicit_creds = false; // true when -u/-P were given
 
     for (int i = 1; i < argc; ++i) {
         std::string arg  = argv[i];
@@ -519,7 +522,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--port" || arg == "-p")
             cfg.port = std::stoi(next());
         else if (arg == "--user" || arg == "-u") {
-            cfg.user     = next();
+            cfg.user       = next();
             explicit_creds = true;
         } else if (arg == "--password" || arg == "-P") {
             cfg.password   = next();
@@ -579,7 +582,8 @@ int main(int argc, char* argv[]) {
 
     // Apply cookie authentication unless explicit -u/-P credentials were given.
     if (!explicit_creds) {
-        std::string path = cookie_file.empty() ? cookie_default_path(network, datadir) : cookie_file;
+        std::string path =
+            cookie_file.empty() ? cookie_default_path(network, datadir) : cookie_file;
         try {
             apply_cookie(cfg, path);
         } catch (const std::exception& e) {
@@ -742,4 +746,13 @@ int main(int argc, char* argv[]) {
     poll_thread.join();
 
     return 0;
+}
+
+int main(int argc, char* argv[]) {
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "bitcoin-tui: %s\n", e.what());
+        return 1;
+    }
 }
