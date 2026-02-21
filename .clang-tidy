@@ -17,7 +17,8 @@ Checks: >
 
 WarningsAsErrors: '*'
 
-# Only report diagnostics from our own headers, not from FTXUI / Catch2
-HeaderFilterRegex: 'src/.*'
+# Only report diagnostics from our own source/tests, not FTXUI / Catch2.
+# The pattern anchors to the repo name so it won't match catch2-src/src/...
+HeaderFilterRegex: '.*/bitcoin-tui/(src|tests)/.*'
 
 FormatStyle: file
