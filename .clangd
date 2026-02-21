@@ -1,0 +1,9 @@
+CompileFlags:
+  Add:
+    - -std=c++20
+    # FetchContent puts FTXUI here after the first cmake -B build run
+    - -Ibuild/_deps/ftxui-src/include
+  # Use compile_commands.json from the cmake build directory.
+  # This gives clangd the exact compiler invocation (including nix store
+  # header paths) so standard library headers like <atomic> are found.
+  CompilationDatabase: build/

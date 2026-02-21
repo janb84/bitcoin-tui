@@ -39,3 +39,8 @@
 
 # debug information files
 *.dwo
+
+# Build subdirectories.
+/*build*
+!/build-aux
+!/build_msvc
