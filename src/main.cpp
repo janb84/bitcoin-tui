@@ -24,6 +24,13 @@ using namespace ftxui;
 // ============================================================================
 // Application state (shared between render thread and RPC polling thread)
 // ============================================================================
+struct BlockStat {
+    int64_t height       = 0;
+    int64_t txs          = 0;
+    int64_t total_size   = 0;
+    int64_t total_weight = 0;
+};
+
 struct PeerInfo {
     int         id = 0;
     std::string addr;
@@ -70,6 +77,10 @@ struct AppState {
 
     // Peers
     std::vector<PeerInfo> peers;
+
+    // Recent blocks (index 0 = newest, populated by getblockstats)
+    std::vector<BlockStat> recent_blocks;
+    int64_t                blocks_fetched_at = -1;
 
     // Status
     std::string last_update;
@@ -260,10 +271,8 @@ static Element render_mempool(const AppState& s) {
                          : usage_frac > 0.5 ? Color::Yellow
                                             : Color::Cyan;
 
-    return vbox({
-               section_box(
-                   "Mempool Details",
-                   {
+    auto stats_section = section_box(
+        "Mempool", {
                        label_value("  Transactions    : ", fmt_int(s.mempool_tx)),
                        label_value("  Virtual size    : ", fmt_bytes(s.mempool_bytes)),
                        label_value("  Total fees      : ",
@@ -287,7 +296,59 @@ static Element render_mempool(const AppState& s) {
                            text("  /  Max : ") | color(Color::GrayDark),
                            text(fmt_bytes(s.mempool_max)) | bold,
                        }),
-                   }),
+                   });
+
+    // Block visualization — vertical fill bars, one column per block.
+    Element blocks_section;
+    if (s.recent_blocks.empty()) {
+        blocks_section =
+            section_box("Recent Blocks", {text("  Fetching…") | color(Color::GrayDark)});
+    } else {
+        const int     BAR_HEIGHT = 6;
+        const int     COL_WIDTH  = 10;
+        const int64_t MAX_WEIGHT = 4'000'000LL;
+
+        Elements block_cols;
+        int      num = static_cast<int>(s.recent_blocks.size());
+
+        // Newest block on the left, oldest on the right.
+        for (int i = 0; i < num; ++i) {
+            const auto& b = s.recent_blocks[i];
+            double fill   = b.total_weight > 0 ? std::min(1.0, static_cast<double>(b.total_weight) /
+                                                                   static_cast<double>(MAX_WEIGHT))
+                                               : 0.0;
+            Color  bar_color   = fill > 0.9   ? Color(Color::DarkOrange)
+                                 : fill > 0.7 ? Color(Color::Yellow)
+                                              : Color(Color::Green);
+            int    filled_rows = static_cast<int>(std::round(fill * BAR_HEIGHT));
+
+            Elements bar;
+            for (int r = 0; r < BAR_HEIGHT; ++r) {
+                bool is_filled = r >= (BAR_HEIGHT - filled_rows);
+                bar.push_back(is_filled ? text("██████████") | color(bar_color)
+                                        : text("░░░░░░░░░░") | color(Color::GrayDark));
+            }
+
+            if (!block_cols.empty())
+                block_cols.push_back(text(" "));
+
+            block_cols.push_back(
+                vbox({
+                    vbox(std::move(bar)),
+                    text(fmt_int(b.height)) | center,
+                    text(fmt_int(b.txs) + " tx") | center | color(Color::GrayDark),
+                    text(fmt_bytes(b.total_size)) | center | color(Color::GrayDark),
+                }) |
+                size(WIDTH, EQUAL, COL_WIDTH));
+        }
+
+        blocks_section = section_box("Recent Blocks",
+                                     {text(""), hbox({text("  "), hbox(std::move(block_cols))})});
+    }
+
+    return vbox({
+               stats_section,
+               blocks_section,
                filler(),
            }) |
            flex;
@@ -429,6 +490,13 @@ static void apply_cookie(RpcConfig& cfg, const std::string& path) {
 // RPC polling
 // ============================================================================
 static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
+    // Read cached tip height so we can skip re-fetching block stats when tip hasn't moved.
+    int64_t cached_tip = 0;
+    {
+        std::lock_guard lk(mtx);
+        cached_tip = state.blocks_fetched_at;
+    }
+
     try {
         // Blockchain info
         auto bc = rpc.call("getblockchaininfo")["result"];
@@ -440,6 +508,27 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
         auto mi = rpc.call("getmininginfo")["result"];
         // Peer info
         auto pi = rpc.call("getpeerinfo")["result"];
+
+        // Fetch per-block stats for the last 7 blocks when tip advances.
+        int64_t                new_tip = bc.value("blocks", 0LL);
+        std::vector<BlockStat> fresh_blocks;
+        if (new_tip != cached_tip && new_tip > 0) {
+            for (int i = 0; i < 7 && (new_tip - i) >= 0; ++i) {
+                try {
+                    json      params = {new_tip - i,
+                                        json({"height", "txs", "total_size", "total_weight"})};
+                    auto      bs     = rpc.call("getblockstats", params)["result"];
+                    BlockStat blk;
+                    blk.height       = bs.value("height", 0LL);
+                    blk.txs          = bs.value("txs", 0LL);
+                    blk.total_size   = bs.value("total_size", 0LL);
+                    blk.total_weight = bs.value("total_weight", 0LL);
+                    fresh_blocks.push_back(blk);
+                } catch (...) {
+                    break;
+                }
+            }
+        }
 
         std::lock_guard lock(mtx);
 
@@ -490,6 +579,12 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
                 peer.ping_ms = p["pingtime"].get<double>() * 1000.0;
             }
             state.peers.push_back(std::move(peer));
+        }
+
+        // Recent blocks
+        if (new_tip != cached_tip) {
+            state.recent_blocks     = std::move(fresh_blocks);
+            state.blocks_fetched_at = new_tip;
         }
 
         state.connected = true;
