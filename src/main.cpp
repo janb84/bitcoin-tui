@@ -125,7 +125,9 @@ static std::string fmt_difficulty(double d) {
 static std::string fmt_hashrate(double h) {
     std::ostringstream ss;
     ss << std::fixed << std::setprecision(2);
-    if (h >= 1e18)
+    if (h >= 1e21)
+        ss << h / 1e21 << " ZH/s";
+    else if (h >= 1e18)
         ss << h / 1e18 << " EH/s";
     else if (h >= 1e15)
         ss << h / 1e15 << " PH/s";
@@ -325,6 +327,11 @@ static Element render_peers(const AppState& s) {
                flex;
     }
 
+    // Right-align text inside a fixed-width cell.
+    auto rcell = [](Element e, int w) -> Element {
+        return hbox({filler(), std::move(e)}) | size(WIDTH, EQUAL, w);
+    };
+
     // Header row
     Elements rows;
     rows.push_back(hbox({
@@ -332,11 +339,10 @@ static Element render_peers(const AppState& s) {
                        text("Address") | bold | flex,
                        text("Net") | bold | size(WIDTH, EQUAL, 5),
                        text("I/O") | bold | size(WIDTH, EQUAL, 4),
-                       text("Ping ms") | bold | size(WIDTH, EQUAL, 9),
-                       text("Recv") | bold | size(WIDTH, EQUAL, 10),
-                       text("Sent") | bold | size(WIDTH, EQUAL, 10),
-                       text("Height") | bold | size(WIDTH, EQUAL, 9),
-                       text("Client") | bold | flex,
+                       rcell(text("Ping ms") | bold, 8),
+                       rcell(text("Recv") | bold, 10),
+                       rcell(text("Sent") | bold, 10),
+                       rcell(text("Height") | bold, 9),
                    }) |
                    color(Color::Gold1));
     rows.push_back(separator());
@@ -349,18 +355,18 @@ static Element render_peers(const AppState& s) {
         }()
                                                 : "—";
 
-        Color io_color = p.inbound ? Color::Cyan : Color::Green;
+        Color       io_color = p.inbound ? Color::Cyan : Color::Green;
+        std::string net_str  = p.network.empty() ? "?" : p.network.substr(0, 4);
 
         rows.push_back(hbox({
             text(std::to_string(p.id)) | size(WIDTH, EQUAL, 5),
             text(p.addr) | flex,
-            text(p.network.empty() ? "?" : p.network.substr(0, 4)) | size(WIDTH, EQUAL, 5),
+            text(net_str) | size(WIDTH, EQUAL, 5),
             text(p.inbound ? "in" : "out") | color(io_color) | size(WIDTH, EQUAL, 4),
-            text(ping_str) | size(WIDTH, EQUAL, 9),
-            text(fmt_bytes(p.bytes_recv)) | size(WIDTH, EQUAL, 10),
-            text(fmt_bytes(p.bytes_sent)) | size(WIDTH, EQUAL, 10),
-            text(fmt_int(p.synced_blocks)) | size(WIDTH, EQUAL, 9),
-            text(p.subver) | flex,
+            rcell(text(ping_str), 8),
+            rcell(text(fmt_bytes(p.bytes_recv)), 10),
+            rcell(text(fmt_bytes(p.bytes_sent)), 10),
+            rcell(text(fmt_int(p.synced_blocks)), 9),
         }));
     }
 
