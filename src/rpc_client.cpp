@@ -170,20 +170,30 @@ json RpcClient::call(const std::string& method, const json& params) {
     const std::string body     = req.dump();
     const std::string response = http_post(body);
 
-    json j;
+    json parsedJson;
     try {
-        j = json::parse(response);
+        parsedJson = json::parse(response);
     } catch (const json::exception& e) {
         throw RpcError("JSON parse error: " + std::string(e.what()));
     }
 
-    if (j.contains("error") && !j["error"].is_null()) {
-        std::string msg = "RPC error";
-        if (j["error"].contains("message")) {
-            msg = j["error"]["message"].get<std::string>();
+    if (parsedJson.contains("error") && !parsedJson["error"].is_null()) {
+        const json& err = parsedJson["error"];
+        std::string msg;
+
+        if (err.contains("message") && err["message"].is_string()) {
+            // Preserve existing behavior when a message is provided.
+            msg = err["message"].get<std::string>();
+        } else {
+            // Fallback: include error code and/or full error object for debugging.
+            msg = "RPC error";
+            if (err.contains("code") &&
+                (err["code"].is_number_integer() || err["code"].is_number())) {
+                msg += " (code " + std::to_string(err["code"].get<long long>()) + ")";
+            }
+            msg += ": " + err.dump();
         }
         throw RpcError(msg);
     }
-
-    return j;
+    return parsedJson;
 }
