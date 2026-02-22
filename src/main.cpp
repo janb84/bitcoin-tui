@@ -345,7 +345,7 @@ static Element render_mempool(const AppState& s) {
         }
 
         blocks_section = section_box(
-            "Recent Blocks", {hbox({text("  "), hbox(std::move(block_cols))})});
+            "Recent Blocks", {text(""), hbox({text("  "), hbox(std::move(block_cols))})});
     }
 
     return vbox({
