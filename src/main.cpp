@@ -311,8 +311,8 @@ static Element render_mempool(const AppState& s) {
         Elements block_cols;
         int      num = static_cast<int>(s.recent_blocks.size());
 
-        // Oldest block on the left, newest on the right.
-        for (int i = num - 1; i >= 0; --i) {
+        // Newest block on the left, oldest on the right.
+        for (int i = 0; i < num; ++i) {
             const auto& b    = s.recent_blocks[i];
             double      fill = b.total_weight > 0
                                    ? std::min(1.0, static_cast<double>(b.total_weight) /
@@ -344,8 +344,8 @@ static Element render_mempool(const AppState& s) {
                                   size(WIDTH, EQUAL, COL_WIDTH));
         }
 
-        blocks_section =
-            section_box("Recent Blocks", {hbox(std::move(block_cols))});
+        blocks_section = section_box(
+            "Recent Blocks", {hbox({text("  "), hbox(std::move(block_cols))})});
     }
 
     return vbox({
