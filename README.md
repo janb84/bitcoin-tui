@@ -19,7 +19,7 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 │   Height      : 884,231              ││   Connections : 42                  │
 │   Headers     : 884,231              ││     In        : 30                  │
 │   Difficulty  : 113.76 T             ││     Out       : 12                  │
-│   Hash Rate   : 812.43 EH/s          ││   Client      : /Satoshi:27.0.0/   │
+│   Hash Rate   : 812.43 EH/s          ││   Client      : /Satoshi:27.0.0/    │
 │   Sync        : ████████████ 100%    ││   Protocol    : 70016               │
 │   IBD         : no                   ││   Relay fee   : 1.0 sat/vB          │
 │   Pruned      : no                   │└─────────────────────────────────────┘
@@ -30,30 +30,58 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 │   Size        : 487.2 MB                                                    │
 │   Total fee   : 2.3841 BTC                                                  │
 │   Min fee     : 1.5 sat/vB                                                  │
-│   Memory      : ████████░░░░░░░░░░░░  487.2 MB / 300.0 MB                  │
+│   Memory      : ████████░░░░░░░░░░░░  487.2 MB / 300.0 MB                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ ● CONNECTED  Last update: 2025-01-15 14:32:07    ↻ every 5s  [Tab] [q]     │
+│ ● CONNECTED  Last update: 2025-01-15 14:32:07    ↻ every 5s  [Tab] [q]      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Mempool tab:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Mempool                                                                     │
+│   Transactions    : 312,847                                                 │
+│   Virtual size    : 156.3 MB                                                │
+│   Total fees      : 1.23450000 BTC                                          │
+│   Min relay fee   : 1.0 sat/vB                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│   Memory usage                                                              │
+│   ████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    │
+│   Used : 156.3 MB  /  Max : 300.0 MB                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Recent Blocks                                                               │
+│  ██████████ ░░░░░░░░░░ ░░░░░░░░░░ ██████████ ░░░░░░░░░░ ░░░░░░░░░░          │
+│  ██████████ ██████████ ░░░░░░░░░░ ██████████ ██████████ ██████████          │
+│  ██████████ ██████████ ░░░░░░░░░░ ██████████ ██████████ ██████████          │
+│  ██████████ ██████████ ░░░░░░░░░░ ██████████ ██████████ ██████████          │
+│  ██████████ ██████████ ██████████ ██████████ ██████████ ██████████          │
+│  ██████████ ██████████ ██████████ ██████████ ██████████ ██████████          │
+│   884,231    884,230    884,229    884,228    884,227    884,226            │
+│  3,421 tx   2,891 tx    412 tx   3,104 tx   2,543 tx   2,987 tx             │
+│   1.5 MB     1.2 MB    0.2 MB     1.4 MB     1.1 MB     1.3 MB              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Peers tab:**
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ ID   Address                   Net  I/O Ping ms  Recv       Sent    Height  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ 0    144.76.31.85:8333         ipv4 out 14.2     98.4 MB   12.1 MB  884,231 │
-│ 1    [2001:db8::1]:8333        ipv6 out 31.7     54.2 MB    8.7 MB  884,230 │
-│ 2    203.0.113.42:8333         ipv4 in  22.9    210.5 MB   45.3 MB  884,229 │
-│ 3    example3xample.onion:8333 onio out 88.1     31.2 MB    5.1 MB  884,231 │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│ ID   Address                       Net  I/O Ping ms      Recv      Sent   Height  │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│ 0    144.76.31.85:8333             ipv4 out    14.2   98.4 MB  12.1 MB  884,231   │
+│ 1    [2001:db8::1]:8333            ipv6 out    31.7   54.2 MB   8.7 MB  884,230   │
+│ 2    203.0.113.42:8333             ipv4 in     22.9  210.5 MB  45.3 MB  884,229.  │
+│ 3    vww6ybal4bd7szmgncyruucpg…    onio out    88.1   31.2 MB   5.1 MB  884,231   │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
 
 - **Dashboard** — blockchain height, difficulty, sync progress, network status, and mempool summary at a glance
-- **Mempool** — transaction count, virtual size, total fees, min relay fee, and memory usage gauge
+- **Mempool** — transaction count, virtual size, total fees, min relay fee, memory usage gauge, and recent block fill visualization (newest first, colored green/yellow/orange by weight)
 - **Network** — connection counts (inbound/outbound), client version, protocol version, relay fee
 - **Peers** — live peer table with address, network type, direction, ping, bytes sent/received, and tip height
 - Background polling thread — non-blocking UI with configurable refresh interval
