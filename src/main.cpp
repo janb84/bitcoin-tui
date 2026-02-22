@@ -523,7 +523,7 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
                     blk.txs          = bs.value("txs", 0LL);
                     blk.total_size   = bs.value("total_size", 0LL);
                     blk.total_weight = bs.value("total_weight", 0LL);
-                    fresh_blocks.push_back(std::move(blk));
+                    fresh_blocks.push_back(blk);
                 } catch (...) {
                     break;
                 }
