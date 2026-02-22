@@ -265,38 +265,38 @@ static Element render_dashboard(const AppState& s) {
 // --- Mempool ----------------------------------------------------------------
 static Element render_mempool(const AppState& s) {
     double usage_frac  = s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) /
-                                                 static_cast<double>(s.mempool_max)
+                                                static_cast<double>(s.mempool_max)
                                            : 0.0;
     Color  usage_color = usage_frac > 0.8   ? Color::Red
                          : usage_frac > 0.5 ? Color::Yellow
                                             : Color::Cyan;
 
     auto stats_section = section_box(
-        "Mempool",
-        {
-            label_value("  Transactions    : ", fmt_int(s.mempool_tx)),
-            label_value("  Virtual size    : ", fmt_bytes(s.mempool_bytes)),
-            label_value("  Total fees      : ",
-                        [&] {
-                            std::ostringstream ss;
-                            ss << std::fixed << std::setprecision(8) << s.total_fee << " BTC";
-                            return ss.str();
-                        }()),
-            label_value("  Min relay fee   : ", fmt_satsvb(s.mempool_min_fee)),
-            separator(),
-            text("  Memory usage") | color(Color::GrayDark),
-            hbox({
-                text("  "),
-                gauge(static_cast<float>(usage_frac)) | flex | color(usage_color),
-                text("  "),
-            }),
-            hbox({
-                text("  Used : ") | color(Color::GrayDark),
-                text(fmt_bytes(s.mempool_usage)) | bold,
-                text("  /  Max : ") | color(Color::GrayDark),
-                text(fmt_bytes(s.mempool_max)) | bold,
-            }),
-        });
+        "Mempool", {
+                       label_value("  Transactions    : ", fmt_int(s.mempool_tx)),
+                       label_value("  Virtual size    : ", fmt_bytes(s.mempool_bytes)),
+                       label_value("  Total fees      : ",
+                                   [&] {
+                                       std::ostringstream ss;
+                                       ss << std::fixed << std::setprecision(8) << s.total_fee
+                                          << " BTC";
+                                       return ss.str();
+                                   }()),
+                       label_value("  Min relay fee   : ", fmt_satsvb(s.mempool_min_fee)),
+                       separator(),
+                       text("  Memory usage") | color(Color::GrayDark),
+                       hbox({
+                           text("  "),
+                           gauge(static_cast<float>(usage_frac)) | flex | color(usage_color),
+                           text("  "),
+                       }),
+                       hbox({
+                           text("  Used : ") | color(Color::GrayDark),
+                           text(fmt_bytes(s.mempool_usage)) | bold,
+                           text("  /  Max : ") | color(Color::GrayDark),
+                           text(fmt_bytes(s.mempool_max)) | bold,
+                       }),
+                   });
 
     // Block visualization — vertical fill bars, one column per block.
     Element blocks_section;
@@ -313,15 +313,14 @@ static Element render_mempool(const AppState& s) {
 
         // Newest block on the left, oldest on the right.
         for (int i = 0; i < num; ++i) {
-            const auto& b    = s.recent_blocks[i];
-            double      fill = b.total_weight > 0
-                                   ? std::min(1.0, static_cast<double>(b.total_weight) /
-                                                       static_cast<double>(MAX_WEIGHT))
-                                   : 0.0;
-            Color bar_color  = fill > 0.9   ? Color(Color::DarkOrange)
-                               : fill > 0.7 ? Color(Color::Yellow)
-                                            : Color(Color::Green);
-            int filled_rows  = static_cast<int>(std::round(fill * BAR_HEIGHT));
+            const auto& b = s.recent_blocks[i];
+            double fill   = b.total_weight > 0 ? std::min(1.0, static_cast<double>(b.total_weight) /
+                                                                   static_cast<double>(MAX_WEIGHT))
+                                               : 0.0;
+            Color  bar_color   = fill > 0.9   ? Color(Color::DarkOrange)
+                                 : fill > 0.7 ? Color(Color::Yellow)
+                                              : Color(Color::Green);
+            int    filled_rows = static_cast<int>(std::round(fill * BAR_HEIGHT));
 
             Elements bar;
             for (int r = 0; r < BAR_HEIGHT; ++r) {
@@ -333,19 +332,18 @@ static Element render_mempool(const AppState& s) {
             if (!block_cols.empty())
                 block_cols.push_back(text(" "));
 
-            block_cols.push_back(vbox({
-                                      vbox(std::move(bar)),
-                                      text(fmt_int(b.height)) | center,
-                                      text(fmt_int(b.txs) + " tx") | center |
-                                          color(Color::GrayDark),
-                                      text(fmt_bytes(b.total_size)) | center |
-                                          color(Color::GrayDark),
-                                  }) |
-                                  size(WIDTH, EQUAL, COL_WIDTH));
+            block_cols.push_back(
+                vbox({
+                    vbox(std::move(bar)),
+                    text(fmt_int(b.height)) | center,
+                    text(fmt_int(b.txs) + " tx") | center | color(Color::GrayDark),
+                    text(fmt_bytes(b.total_size)) | center | color(Color::GrayDark),
+                }) |
+                size(WIDTH, EQUAL, COL_WIDTH));
         }
 
-        blocks_section = section_box(
-            "Recent Blocks", {text(""), hbox({text("  "), hbox(std::move(block_cols))})});
+        blocks_section = section_box("Recent Blocks",
+                                     {text(""), hbox({text("  "), hbox(std::move(block_cols))})});
     }
 
     return vbox({
@@ -512,15 +510,15 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
         auto pi = rpc.call("getpeerinfo")["result"];
 
         // Fetch per-block stats for the last 7 blocks when tip advances.
-        int64_t              new_tip = bc.value("blocks", 0LL);
+        int64_t                new_tip = bc.value("blocks", 0LL);
         std::vector<BlockStat> fresh_blocks;
         if (new_tip != cached_tip && new_tip > 0) {
             for (int i = 0; i < 7 && (new_tip - i) >= 0; ++i) {
                 try {
-                    json params      = {new_tip - i,
+                    json      params = {new_tip - i,
                                         json({"height", "txs", "total_size", "total_weight"})};
-                    auto          bs = rpc.call("getblockstats", params)["result"];
-                    BlockStat     blk;
+                    auto      bs     = rpc.call("getblockstats", params)["result"];
+                    BlockStat blk;
                     blk.height       = bs.value("height", 0LL);
                     blk.txs          = bs.value("txs", 0LL);
                     blk.total_size   = bs.value("total_size", 0LL);
@@ -585,7 +583,7 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
 
         // Recent blocks
         if (new_tip != cached_tip) {
-            state.recent_blocks    = std::move(fresh_blocks);
+            state.recent_blocks     = std::move(fresh_blocks);
             state.blocks_fetched_at = new_tip;
         }
 
