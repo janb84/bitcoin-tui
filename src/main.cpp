@@ -318,7 +318,7 @@ static Element render_mempool(const AppState& s) {
                                    ? std::min(1.0, static_cast<double>(b.total_weight) /
                                                        static_cast<double>(MAX_WEIGHT))
                                    : 0.0;
-            Color bar_color  = fill > 0.9   ? Color::Red
+            Color bar_color  = fill > 0.9   ? Color::DarkOrange
                                : fill > 0.7 ? Color::Yellow
                                             : Color::Green;
             int filled_rows  = static_cast<int>(std::round(fill * BAR_HEIGHT));
