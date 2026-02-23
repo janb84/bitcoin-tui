@@ -81,7 +81,7 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 ## Features
 
 - **Dashboard** — blockchain height, difficulty, sync progress, network status, and mempool summary at a glance
-- **Mempool** — transaction count, virtual size, total fees, min relay fee, memory usage gauge, and recent block fill visualization (newest first, colored green/yellow/orange by weight)
+- **Mempool** — transaction count, virtual size, total fees, min relay fee, memory usage gauge, and recent block fill visualization (newest first, colored green/yellow/orange by weight); press `/` to search any transaction by txid — checks the mempool first, then confirmed blocks (requires `txindex=1` for confirmed lookups); results appear as a floating overlay
 - **Network** — connection counts (inbound/outbound), client version, protocol version, relay fee
 - **Peers** — live peer table with address, network type, direction, ping, bytes sent/received, and tip height
 - Background polling thread — non-blocking UI with configurable refresh interval
@@ -136,9 +136,6 @@ Display:
   -r, --refresh <secs>   Refresh interval     (default: 5)
   -v, --version          Print version and exit
 
-Keyboard:
-  Tab / Left / Right     Switch tabs
-  q / Escape             Quit
 ```
 
 ### Examples

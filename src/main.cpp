@@ -1,6 +1,10 @@
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -87,6 +91,31 @@ struct AppState {
     std::string error_message;
     bool        connected  = false;
     bool        refreshing = false;
+};
+
+struct TxSearchState {
+    std::string txid;
+    bool        searching = false;
+    bool        found     = false;
+    bool        confirmed = false; // true = in a block, false = in mempool
+    std::string error;
+    // Shared
+    int64_t vsize  = 0;
+    int64_t weight = 0;
+    // Mempool-only
+    double  fee         = 0.0; // BTC
+    double  fee_rate    = 0.0; // sat/vB
+    int64_t ancestors   = 0;
+    int64_t descendants = 0;
+    int64_t entry_time  = 0;
+    // Confirmed-only
+    std::string blockhash;
+    int64_t     block_height  = -1;
+    int64_t     confirmations = 0;
+    int64_t     blocktime     = 0;
+    int         vin_count     = 0;
+    int         vout_count    = 0;
+    double      total_output  = 0.0; // BTC, sum of all outputs
 };
 
 // ============================================================================
@@ -347,11 +376,9 @@ static Element render_mempool(const AppState& s) {
     }
 
     return vbox({
-               stats_section,
-               blocks_section,
-               filler(),
-           }) |
-           flex;
+        stats_section,
+        blocks_section,
+    });
 }
 
 // --- Network ----------------------------------------------------------------
@@ -674,7 +701,10 @@ static int run(int argc, char* argv[]) {
                 "\n"
                 "Keyboard:\n"
                 "  Tab / Left / Right     Switch tabs\n"
-                "  q / Escape             Quit\n"
+                "  /                      Activate txid search\n"
+                "  Enter                  Submit search\n"
+                "  Escape                 Cancel input / dismiss result / quit\n"
+                "  q                      Quit\n"
             );
             // clang-format on
             return 0;
@@ -702,6 +732,16 @@ static int run(int argc, char* argv[]) {
     std::mutex state_mtx;
     RpcClient  rpc(cfg);
 
+    // Transaction search state
+    TxSearchState     search_state;
+    std::mutex        search_mtx;
+    std::string       global_search_str;
+    bool              global_search_active = false;
+    std::atomic<bool> search_in_flight{false};
+    std::thread       search_thread;
+
+    std::atomic<bool> running{true};
+
     // FTXUI screen
     auto screen = ScreenInteractive::Fullscreen();
 
@@ -711,7 +751,112 @@ static int run(int argc, char* argv[]) {
 
     auto tab_toggle = Toggle(&tab_labels, &tab_index);
 
-    // Main component: tab toggle only (content rendered manually)
+    // Shared helper: trim in-place
+    auto trim_str = [](std::string& s) {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+            s.erase(s.begin());
+        while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
+            s.pop_back();
+    };
+
+    // Shared search trigger — switches to Mempool tab when switch_tab is true
+    auto trigger_tx_search = [&](const std::string& txid, bool switch_tab) {
+        if (search_in_flight.load())
+            return;
+        search_in_flight = true;
+        if (switch_tab)
+            tab_index = 1;
+        {
+            std::lock_guard lock(search_mtx);
+            search_state           = TxSearchState{};
+            search_state.txid      = txid;
+            search_state.searching = true;
+        }
+        screen.PostEvent(Event::Custom);
+
+        if (search_thread.joinable())
+            search_thread.join();
+
+        int64_t tip_at_search = 0;
+        {
+            std::lock_guard lock(state_mtx);
+            tip_at_search = state.blocks;
+        }
+
+        search_thread = std::thread([&, txid, tip_at_search] {
+            TxSearchState result;
+            result.txid = txid;
+            try {
+                RpcConfig search_cfg       = cfg;
+                search_cfg.timeout_seconds = 5;
+                RpcClient search_rpc(search_cfg);
+
+                // 1. Try mempool first
+                try {
+                    auto entry = search_rpc.call("getmempoolentry", {txid})["result"];
+
+                    if (entry.contains("fees") && entry["fees"].is_object())
+                        result.fee = entry["fees"].value("base", 0.0);
+                    else
+                        result.fee = entry.value("fee", 0.0);
+
+                    result.vsize       = entry.value("vsize", 0LL);
+                    result.weight      = entry.value("weight", 0LL);
+                    result.ancestors   = entry.value("ancestorcount", 0LL);
+                    result.descendants = entry.value("descendantcount", 0LL);
+                    result.entry_time  = entry.value("time", 0LL);
+                    if (result.vsize > 0)
+                        result.fee_rate = result.fee * 1e8 / static_cast<double>(result.vsize);
+                    result.confirmed = false;
+                    result.found     = true;
+                } catch (...) {
+                    // 2. Not in mempool — try confirmed (requires txindex=1 on the node)
+                    auto tx =
+                        search_rpc.call("getrawtransaction", {json(txid), json(true)})["result"];
+
+                    result.vsize         = tx.value("vsize", 0LL);
+                    result.weight        = tx.value("weight", 0LL);
+                    result.blockhash     = tx.value("blockhash", "");
+                    result.confirmations = tx.value("confirmations", 0LL);
+                    result.blocktime     = tx.value("blocktime", 0LL);
+
+                    if (tip_at_search > 0 && result.confirmations > 0)
+                        result.block_height = tip_at_search - result.confirmations + 1;
+
+                    if (tx.contains("vin") && tx["vin"].is_array())
+                        result.vin_count = static_cast<int>(tx["vin"].size());
+                    if (tx.contains("vout") && tx["vout"].is_array()) {
+                        result.vout_count = static_cast<int>(tx["vout"].size());
+                        for (const auto& out : tx["vout"])
+                            result.total_output += out.value("value", 0.0);
+                    }
+                    result.confirmed = true;
+                    result.found     = true;
+                }
+            } catch (const std::exception& e) {
+                result.error = e.what();
+            }
+            result.searching = false;
+            search_in_flight = false;
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(search_mtx);
+                search_state = result;
+            }
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    // Txid validator: exactly 64 hex chars
+    auto is_txid = [](const std::string& s) {
+        if (s.size() != 64)
+            return false;
+        return std::ranges::all_of(s, [](unsigned char c) { return std::isxdigit(c) != 0; });
+    };
+
+    // Layout: tab toggle only — global search is handled via '/' key in the event handler
+    // (The Toggle component consumes Tab internally, so FTXUI Input focus is unreachable.)
     auto layout = Container::Vertical({tab_toggle});
 
     auto renderer = Renderer(layout, [&]() -> Element {
@@ -722,15 +867,122 @@ static int run(int argc, char* argv[]) {
             snap = state;
         }
 
+        // Is a search result overlay currently visible?
+        bool overlay_visible;
+        {
+            std::lock_guard lock(search_mtx);
+            overlay_visible = !search_state.txid.empty();
+        }
+
         // Tab content
         Element tab_content;
         switch (tab_index) {
         case 0:
             tab_content = render_dashboard(snap);
             break;
-        case 1:
-            tab_content = render_mempool(snap);
+        case 1: {
+            TxSearchState ss;
+            {
+                std::lock_guard lock(search_mtx);
+                ss = search_state;
+            }
+
+            // Mempool content is always the background layer
+            auto base = vbox({render_mempool(snap), filler()}) | flex;
+
+            // No search yet — just show the mempool
+            if (ss.txid.empty()) {
+                tab_content = std::move(base);
+                break;
+            }
+
+            // Helper: format a duration in seconds as "Xh Ym" / "Xm Ys" / "Xs"
+            auto fmt_age = [](int64_t secs) -> std::string {
+                if (secs < 60)
+                    return std::to_string(secs) + "s";
+                if (secs < 3600)
+                    return std::to_string(secs / 60) + "m " + std::to_string(secs % 60) + "s";
+                return std::to_string(secs / 3600) + "h " + std::to_string((secs % 3600) / 60) +
+                       "m";
+            };
+
+            // Abbreviated txid: first 20 + "…" + last 20
+            std::string txid_abbrev = ss.txid.size() > 40 ? ss.txid.substr(0, 20) + "…" +
+                                                                ss.txid.substr(ss.txid.size() - 20)
+                                                          : ss.txid;
+
+            Elements result_rows;
+            if (ss.searching) {
+                result_rows.push_back(text("  Searching…") | color(Color::Yellow));
+            } else if (ss.found && !ss.confirmed) {
+                // --- Mempool transaction ---
+                std::ostringstream fee_ss;
+                fee_ss << std::fixed << std::setprecision(8) << ss.fee << " BTC";
+                std::ostringstream rate_ss;
+                rate_ss << std::fixed << std::setprecision(1) << ss.fee_rate << " sat/vB";
+
+                int64_t age =
+                    std::max(int64_t{0}, static_cast<int64_t>(std::time(nullptr)) - ss.entry_time);
+
+                result_rows.push_back(text("  ● MEMPOOL") | color(Color::Yellow) | bold);
+                result_rows.push_back(label_value("  Fee         : ", fee_ss.str(), Color::Green));
+                result_rows.push_back(label_value("  Fee rate    : ", rate_ss.str()));
+                result_rows.push_back(label_value("  vsize       : ", fmt_int(ss.vsize) + " vB"));
+                result_rows.push_back(label_value("  Weight      : ", fmt_int(ss.weight) + " WU"));
+                result_rows.push_back(label_value("  Ancestors   : ", fmt_int(ss.ancestors)));
+                result_rows.push_back(label_value("  Descendants : ", fmt_int(ss.descendants)));
+                result_rows.push_back(label_value("  In mempool  : ", fmt_age(age)));
+            } else if (ss.found && ss.confirmed) {
+                // --- Confirmed transaction ---
+                std::ostringstream out_ss;
+                out_ss << std::fixed << std::setprecision(8) << ss.total_output << " BTC";
+
+                int64_t age = ss.blocktime > 0
+                                  ? std::max(int64_t{0}, static_cast<int64_t>(std::time(nullptr)) -
+                                                             ss.blocktime)
+                                  : int64_t{0};
+
+                std::string block_num = ss.block_height >= 0 ? fmt_int(ss.block_height) : "—";
+
+                result_rows.push_back(text("  ✔ CONFIRMED") | color(Color::Green) | bold);
+                result_rows.push_back(label_value("  Confirmations: ", fmt_int(ss.confirmations)));
+                result_rows.push_back(label_value("  Block #      : ", block_num));
+                auto bh_short =
+                    ss.blockhash.substr(0, 4) + "…" + ss.blockhash.substr(ss.blockhash.size() - 44);
+                result_rows.push_back(label_value("  Block hash   : ", bh_short));
+                result_rows.push_back(
+                    label_value("  Block age    : ", ss.blocktime > 0 ? fmt_age(age) : "—"));
+                result_rows.push_back(label_value("  vsize        : ", fmt_int(ss.vsize) + " vB"));
+                result_rows.push_back(label_value("  Weight       : ", fmt_int(ss.weight) + " WU"));
+                result_rows.push_back(
+                    label_value("  Inputs       : ", std::to_string(ss.vin_count)));
+                result_rows.push_back(
+                    label_value("  Outputs      : ", std::to_string(ss.vout_count)));
+                result_rows.push_back(label_value("  Total out    : ", out_ss.str(), Color::Green));
+            } else {
+                result_rows.push_back(text("  " + ss.error) | color(Color::Red));
+            }
+
+            constexpr int kPanelWidth   = 70;
+            auto          overlay_panel = vbox({
+                                     hbox({
+                                         text(" Transaction Search ") | bold | color(Color::Gold1),
+                                         filler(),
+                                         text(" " + txid_abbrev + " ") | color(Color::GrayDark),
+                                     }),
+                                     separator(),
+                                     vbox(std::move(result_rows)),
+                                 }) |
+                                 border | size(WIDTH, EQUAL, kPanelWidth);
+
+            tab_content = vbox({
+                              filler(),
+                              hbox({filler(), std::move(overlay_panel), filler()}),
+                              filler(),
+                          }) |
+                          flex;
             break;
+        }
         case 2:
             tab_content = render_network(snap);
             break;
@@ -757,12 +1009,17 @@ static int run(int argc, char* argv[]) {
             });
         }
 
-        Element status_right = hbox({
+        auto refresh_indicator =
             snap.refreshing
                 ? text(" ↻ refreshing") | color(Color::Yellow)
-                : text(" ↻ every " + std::to_string(refresh_secs) + "s") | color(Color::GrayDark),
-            text("  [Tab/←/→] switch  [q] quit ") | color(Color::GrayDark),
-        });
+                : text(" ↻ every " + std::to_string(refresh_secs) + "s") | color(Color::GrayDark);
+        Element status_right =
+            global_search_active
+                ? hbox({text("  [Enter] search  [Esc] cancel ") | color(Color::Yellow)})
+            : overlay_visible
+                ? hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
+                : hbox({refresh_indicator, text("  [Tab/←/→] switch  [/] search  [q] quit ") |
+                                               color(Color::GrayDark)});
 
         return vbox({
             // Title bar
@@ -779,8 +1036,35 @@ static int run(int argc, char* argv[]) {
                           (snap.chain == "main" ? color(Color::White) : color(Color::Black)),
             }) | border,
 
-            // Tab bar
-            tab_toggle->Render() | border,
+            // Tab bar with global search on the right
+            // Render tabs manually from tab_index so the highlight is always in sync,
+            // even when tab_index is set directly (toggle's focused_entry won't drift).
+            hbox({
+                [&] {
+                    Elements tabs;
+                    for (int i = 0; i < (int)tab_labels.size(); ++i) {
+                        if (i > 0)
+                            tabs.push_back(text("│") | automerge);
+                        auto e = text(" " + tab_labels[i] + " ");
+                        tabs.push_back(i == tab_index ? e | bold | inverted : e | dim);
+                    }
+                    return hbox(std::move(tabs)) | flex;
+                }(),
+                separatorLight(),
+                [&]() -> Element {
+                    if (!global_search_active)
+                        return text(" / search ") | color(Color::GrayDark) | size(WIDTH, EQUAL, 16);
+                    // Cursor-following: show a window ending at the cursor
+                    constexpr int kWidth    = 46;
+                    constexpr int kTextCols = kWidth - 3; // " " + text + "│"
+                    std::string   vis       = global_search_str;
+                    if ((int)vis.size() > kTextCols)
+                        vis = vis.substr(vis.size() - kTextCols);
+                    return hbox({text(" "), text(vis) | color(Color::White),
+                                 text("│") | color(Color::White), filler()}) |
+                           size(WIDTH, EQUAL, kWidth);
+                }(),
+            }) | border,
 
             // Content
             tab_content | flex,
@@ -790,9 +1074,66 @@ static int run(int argc, char* argv[]) {
         });
     });
 
-    // Quit on 'q' or Escape
+    // Event handling: '/' activates global search; Escape/Enter commit or cancel
     auto event_handler = CatchEvent(renderer, [&](const Event& event) -> bool {
-        if (event == Event::Character('q') || event == Event::Escape) {
+        if (global_search_active) {
+            if (event == Event::Escape) {
+                global_search_active = false;
+                global_search_str.clear();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Return) {
+                std::string q = global_search_str;
+                trim_str(q);
+                global_search_active = false;
+                global_search_str.clear();
+                if (is_txid(q))
+                    trigger_tx_search(q, true);
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Backspace) {
+                if (!global_search_str.empty())
+                    global_search_str.pop_back();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            // Swallow Tab/arrows so they don't change tabs while typing
+            if (event == Event::Tab || event == Event::TabReverse || event == Event::ArrowLeft ||
+                event == Event::ArrowRight)
+                return true;
+            if (event.is_character()) {
+                global_search_str += event.character();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            return false;
+        }
+        // Normal mode
+        if (event == Event::Character('/')) {
+            global_search_active = true;
+            global_search_str.clear();
+            screen.PostEvent(Event::Custom);
+            return true;
+        }
+        if (event == Event::Escape) {
+            // Dismiss overlay first; only quit if there is nothing to dismiss
+            bool had_overlay = false;
+            {
+                std::lock_guard lock(search_mtx);
+                had_overlay = !search_state.txid.empty();
+                if (had_overlay)
+                    search_state = TxSearchState{};
+            }
+            if (had_overlay) {
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            screen.ExitLoopClosure()();
+            return true;
+        }
+        if (event == Event::Character('q')) {
             screen.ExitLoopClosure()();
             return true;
         }
@@ -800,8 +1141,7 @@ static int run(int argc, char* argv[]) {
     });
 
     // Background polling thread
-    std::atomic<bool> running{true};
-    std::thread       poll_thread([&] {
+    std::thread poll_thread([&] {
         // Initial fetch immediately
         {
             std::lock_guard lock(state_mtx);
@@ -844,6 +1184,8 @@ static int run(int argc, char* argv[]) {
     screen.Loop(event_handler);
 
     running = false;
+    if (search_thread.joinable())
+        search_thread.join();
     poll_thread.join();
 
     return 0;
