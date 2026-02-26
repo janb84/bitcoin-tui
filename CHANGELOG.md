@@ -2,6 +2,14 @@
 
 All notable changes to bitcoin-tui are documented here.
 
+## [0.2.1] - 2026-02-26
+
+### Added
+- Animated recent blocks: when a new block arrives, existing blocks slide right (~480 ms); driven by a dedicated 25 fps ticker thread that only runs during the animation
+
+### Changed
+- Footer last-update timestamp now shows time only (`HH:MM:SS`) instead of date and time
+
 ## [0.2.0] - 2026-02-23
 
 ### Added

@@ -33,7 +33,7 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 │   Memory      : ████████░░░░░░░░░░░░  487.2 MB / 300.0 MB                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ ● CONNECTED  Last update: 2025-01-15 14:32:07    ↻ every 5s  [Tab] [q]      │
+│ ● CONNECTED  Last update: 14:32:07    ↻ every 5s  [Tab] [q]                  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,7 +81,7 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 ## Features
 
 - **Dashboard** — blockchain height, difficulty, sync progress, network status, and mempool summary at a glance
-- **Mempool** — transaction count, virtual size, total fees, min relay fee, memory usage gauge, and recent block fill visualization (newest first, colored green/yellow/orange by weight); press `/` to search any transaction by txid — checks the mempool first, then confirmed blocks (requires `txindex=1` for confirmed lookups); results appear as a floating overlay
+- **Mempool** — transaction count, virtual size, total fees, min relay fee, memory usage gauge, and animated recent block fill visualization (newest first, colored green/yellow/orange by weight — blocks slide right when a new block arrives); press `/` to search any transaction by txid — checks the mempool first, then confirmed blocks (requires `txindex=1` for confirmed lookups); results appear as a floating overlay
 - **Network** — connection counts (inbound/outbound), client version, protocol version, relay fee
 - **Peers** — live peer table with address, network type, direction, ping, bytes sent/received, and tip height
 - Background polling thread — non-blocking UI with configurable refresh interval
@@ -136,6 +136,12 @@ Display:
   -r, --refresh <secs>   Refresh interval     (default: 5)
   -v, --version          Print version and exit
 
+Keyboard:
+  Tab / Left / Right     Switch tabs
+  /                      Activate txid search
+  Enter                  Submit search
+  Escape                 Cancel input / dismiss result / quit
+  q                      Quit
 ```
 
 ### Examples
