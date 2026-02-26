@@ -26,6 +26,12 @@
 using namespace ftxui;
 
 // ============================================================================
+// Block animation parameters
+// ============================================================================
+static constexpr int BLOCK_ANIM_SLIDE_FRAMES = 12; // frames sliding right (~480 ms)
+static constexpr int BLOCK_ANIM_TOTAL_FRAMES = BLOCK_ANIM_SLIDE_FRAMES;
+
+// ============================================================================
 // Application state (shared between render thread and RPC polling thread)
 // ============================================================================
 struct BlockStat {
@@ -85,6 +91,11 @@ struct AppState {
     // Recent blocks (index 0 = newest, populated by getblockstats)
     std::vector<BlockStat> recent_blocks;
     int64_t                blocks_fetched_at = -1;
+
+    // Block animation
+    bool                   block_anim_active = false;
+    int                    block_anim_frame  = 0;
+    std::vector<BlockStat> block_anim_old; // snapshot before new block arrived
 
     // Status
     std::string last_update;
@@ -195,7 +206,7 @@ static std::string now_string() {
     auto               t  = std::time(nullptr);
     auto               tm = *std::localtime(&t);
     std::ostringstream ss;
-    ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    ss << std::put_time(&tm, "%H:%M:%S");
     return ss.str();
 }
 
@@ -337,19 +348,33 @@ static Element render_mempool(const AppState& s) {
         const int     COL_WIDTH  = 10;
         const int64_t MAX_WEIGHT = 4'000'000LL;
 
-        Elements block_cols;
-        int      num = static_cast<int>(s.recent_blocks.size());
+        // Determine animation phase.
+        bool anim_slide = s.block_anim_active && !s.block_anim_old.empty();
 
-        // Newest block on the left, oldest on the right.
-        for (int i = 0; i < num; ++i) {
-            const auto& b = s.recent_blocks[i];
+        // During slide: render old blocks minus the last (it slides off the right edge).
+        const std::vector<BlockStat>& src        = anim_slide ? s.block_anim_old : s.recent_blocks;
+        int                           num        = static_cast<int>(src.size());
+        int                           max_render = anim_slide ? std::max(0, num - 1) : num;
+
+        // Slide offset grows from 0 → (COL_WIDTH+1) chars over SLIDE_FRAMES frames.
+        int left_pad = 0;
+        if (anim_slide) {
+            double progress = (s.block_anim_frame + 1.0) / BLOCK_ANIM_SLIDE_FRAMES;
+            left_pad        = static_cast<int>(std::round(progress * (COL_WIDTH + 1)));
+        }
+
+        Elements block_cols;
+        for (int i = 0; i < max_render; ++i) {
+            const auto& b = src[i];
             double fill   = b.total_weight > 0 ? std::min(1.0, static_cast<double>(b.total_weight) /
                                                                    static_cast<double>(MAX_WEIGHT))
                                                : 0.0;
-            Color  bar_color   = fill > 0.9   ? Color(Color::DarkOrange)
-                                 : fill > 0.7 ? Color(Color::Yellow)
-                                              : Color(Color::Green);
-            int    filled_rows = static_cast<int>(std::round(fill * BAR_HEIGHT));
+
+            Color bar_color = fill > 0.9   ? Color(Color::DarkOrange)
+                              : fill > 0.7 ? Color(Color::Yellow)
+                                           : Color(Color::Green);
+
+            int filled_rows = static_cast<int>(std::round(fill * BAR_HEIGHT));
 
             Elements bar;
             for (int r = 0; r < BAR_HEIGHT; ++r) {
@@ -371,8 +396,13 @@ static Element render_mempool(const AppState& s) {
                 size(WIDTH, EQUAL, COL_WIDTH));
         }
 
-        blocks_section = section_box("Recent Blocks",
-                                     {text(""), hbox({text("  "), hbox(std::move(block_cols))})});
+        // Compose row: optional slide-offset pad on the left, then blocks.
+        Element blocks_row =
+            left_pad > 0 ? hbox({text(std::string(left_pad, ' ')), hbox(std::move(block_cols))})
+                         : hbox(std::move(block_cols));
+
+        blocks_section =
+            section_box("Recent Blocks", {text(""), hbox({text("  "), std::move(blocks_row)})});
     }
 
     return vbox({
@@ -608,8 +638,13 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
             state.peers.push_back(std::move(peer));
         }
 
-        // Recent blocks
+        // Recent blocks — trigger slide animation when a new block arrives.
         if (new_tip != cached_tip) {
+            if (!state.recent_blocks.empty() && !fresh_blocks.empty()) {
+                state.block_anim_old    = state.recent_blocks;
+                state.block_anim_frame  = 0;
+                state.block_anim_active = true;
+            }
             state.recent_blocks     = std::move(fresh_blocks);
             state.blocks_fetched_at = new_tip;
         }
@@ -1181,12 +1216,34 @@ static int run(int argc, char* argv[]) {
         }
     });
 
+    // Animation ticker: advances frame counter at ~25 fps while animation is active.
+    std::thread anim_thread([&] {
+        while (running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            if (!running)
+                break;
+            bool needs_redraw = false;
+            {
+                std::lock_guard lock(state_mtx);
+                if (state.block_anim_active) {
+                    state.block_anim_frame++;
+                    if (state.block_anim_frame >= BLOCK_ANIM_TOTAL_FRAMES)
+                        state.block_anim_active = false;
+                    needs_redraw = true;
+                }
+            }
+            if (needs_redraw)
+                screen.PostEvent(Event::Custom);
+        }
+    });
+
     screen.Loop(event_handler);
 
     running = false;
     if (search_thread.joinable())
         search_thread.join();
     poll_thread.join();
+    anim_thread.join();
 
     return 0;
 }
