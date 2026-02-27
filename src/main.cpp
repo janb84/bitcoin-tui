@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
@@ -104,13 +105,26 @@ struct AppState {
     bool        refreshing = false;
 };
 
+struct TxVin {
+    std::string txid;
+    int         vout        = 0;
+    bool        is_coinbase = false;
+};
+
+struct TxVout {
+    double      value = 0.0;
+    std::string address; // may be empty for non-standard scripts
+    std::string type;    // scriptPubKey type
+};
+
 struct TxSearchState {
     std::string txid;
     bool        searching = false;
     bool        found     = false;
-    bool        confirmed = false; // true = in a block, false = in mempool
+    bool        is_block  = false; // true = block result, false = tx result
+    bool        confirmed = false; // tx only: true = in a block, false = in mempool
     std::string error;
-    // Shared
+    // Shared (tx)
     int64_t vsize  = 0;
     int64_t weight = 0;
     // Mempool-only
@@ -119,7 +133,7 @@ struct TxSearchState {
     int64_t ancestors   = 0;
     int64_t descendants = 0;
     int64_t entry_time  = 0;
-    // Confirmed-only
+    // Confirmed tx-only
     std::string blockhash;
     int64_t     block_height  = -1;
     int64_t     confirmations = 0;
@@ -127,7 +141,67 @@ struct TxSearchState {
     int         vin_count     = 0;
     int         vout_count    = 0;
     double      total_output  = 0.0; // BTC, sum of all outputs
+    // Block result fields
+    std::string blk_hash;
+    int64_t     blk_height     = 0;
+    int64_t     blk_time       = 0;
+    int64_t     blk_ntx        = 0;
+    int64_t     blk_size       = 0;
+    int64_t     blk_weight     = 0;
+    double      blk_difficulty = 0.0;
+    std::string blk_miner;
+    int64_t     blk_confirmations = 0;
+    // Input/output navigation
+    std::vector<TxVin>  vin_list;
+    std::vector<TxVout> vout_list;
+    int                 io_selected = -1;
+    // Inputs overlay (opened by pressing Enter on the Inputs row)
+    bool inputs_overlay_open = false;
+    int  input_overlay_sel   = -1;
+    // Outputs overlay (opened by pressing Enter on the Outputs row)
+    bool outputs_overlay_open = false;
+    int  output_overlay_sel   = -1;
 };
+
+enum class TxResultKind { Searching, Block, Mempool, Confirmed, Error };
+
+static TxResultKind classify_result(const TxSearchState& ss) {
+    if (ss.searching)
+        return TxResultKind::Searching;
+    if (!ss.found)
+        return TxResultKind::Error;
+    if (ss.is_block)
+        return TxResultKind::Block;
+    return ss.confirmed ? TxResultKind::Confirmed : TxResultKind::Mempool;
+}
+
+// Navigation index helpers: pure, depend only on TxSearchState contents.
+// io_selected: -1=none, 0=block row, 1=inputs(if any), 1or2=outputs(if any)
+static int io_inputs_idx(const TxSearchState& ss) { return ss.vin_list.empty() ? -1 : 1; }
+static int io_outputs_idx(const TxSearchState& ss) {
+    if (ss.vout_list.empty())
+        return -1;
+    return ss.vin_list.empty() ? 1 : 2;
+}
+static int io_max_sel(const TxSearchState& ss) {
+    int n = 0;
+    if (!ss.vin_list.empty())
+        n++;
+    if (!ss.vout_list.empty())
+        n++;
+    return n;
+}
+
+// Query validators — pure predicates, no captures needed.
+static bool is_txid(const std::string& s) {
+    if (s.size() != 64)
+        return false;
+    return std::ranges::all_of(s, [](unsigned char c) { return std::isxdigit(c) != 0; });
+}
+static bool is_height(const std::string& s) {
+    return !s.empty() && s.size() <= 8 &&
+           std::ranges::all_of(s, [](unsigned char c) { return std::isdigit(c) != 0; });
+}
 
 // ============================================================================
 // Formatting helpers
@@ -141,6 +215,16 @@ static std::string fmt_int(int64_t n) {
         pos -= 3;
     }
     return negative ? "-" + s : s;
+}
+
+static std::string fmt_height(int64_t n) {
+    std::string s   = std::to_string(n);
+    int         pos = static_cast<int>(s.size()) - 3;
+    while (pos > 0) {
+        s.insert(static_cast<size_t>(pos), "'");
+        pos -= 3;
+    }
+    return s;
 }
 
 static std::string fmt_bytes(int64_t b) {
@@ -210,6 +294,47 @@ static std::string now_string() {
     return ss.str();
 }
 
+static std::string fmt_btc(double btc, int precision = 8) {
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(precision) << btc << " BTC";
+    return ss.str();
+}
+
+static std::string fmt_age(int64_t secs) {
+    if (secs < 60)
+        return std::to_string(secs) + "s";
+    if (secs < 3600)
+        return std::to_string(secs / 60) + "m " + std::to_string(secs % 60) + "s";
+    return std::to_string(secs / 3600) + "h " + std::to_string((secs % 3600) / 60) + "m";
+}
+
+static std::string trimmed(std::string s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+        s.erase(s.begin());
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
+        s.pop_back();
+    return s;
+}
+
+static std::string extract_miner(const std::string& hex) {
+    std::string best, run;
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        int b = std::stoi(hex.substr(i, 2), nullptr, 16);
+        if (b >= 0x20 && b < 0x7f && b != '/') {
+            run += static_cast<char>(b);
+        } else {
+            if (run.size() >= 4 && run.size() > best.size())
+                best = run;
+            run.clear();
+        }
+    }
+    if (run.size() >= 4 && run.size() > best.size())
+        best = run;
+    if (best.size() > 24)
+        best = best.substr(0, 24);
+    return best.empty() ? "—" : best;
+}
+
 // ============================================================================
 // Tab renderers
 // ============================================================================
@@ -240,8 +365,8 @@ static Element render_dashboard(const AppState& s) {
         "Blockchain",
         {
             label_value("  Chain       : ", chain_color_name, chain_color),
-            label_value("  Height      : ", fmt_int(s.blocks)),
-            label_value("  Headers     : ", fmt_int(s.headers)),
+            label_value("  Height      : ", fmt_height(s.blocks)),
+            label_value("  Headers     : ", fmt_height(s.headers)),
             label_value("  Difficulty  : ", fmt_difficulty(s.difficulty)),
             label_value("  Hash Rate   : ", fmt_hashrate(s.network_hashps)),
             hbox({
@@ -277,12 +402,7 @@ static Element render_dashboard(const AppState& s) {
         {
             label_value("  Transactions: ", fmt_int(s.mempool_tx)),
             label_value("  Size        : ", fmt_bytes(s.mempool_bytes)),
-            label_value("  Total fee   : ",
-                          [&] {
-                            std::ostringstream ss;
-                            ss << std::fixed << std::setprecision(4) << s.total_fee << " BTC";
-                            return ss.str();
-                        }()),
+            label_value("  Total fee   : ", fmt_btc(s.total_fee, 4)),
             label_value("  Min fee     : ", fmt_satsvb(s.mempool_min_fee)),
             hbox({
                 text("  Memory      : ") | color(Color::GrayDark),
@@ -315,13 +435,7 @@ static Element render_mempool(const AppState& s) {
         "Mempool", {
                        label_value("  Transactions    : ", fmt_int(s.mempool_tx)),
                        label_value("  Virtual size    : ", fmt_bytes(s.mempool_bytes)),
-                       label_value("  Total fees      : ",
-                                   [&] {
-                                       std::ostringstream ss;
-                                       ss << std::fixed << std::setprecision(8) << s.total_fee
-                                          << " BTC";
-                                       return ss.str();
-                                   }()),
+                       label_value("  Total fees      : ", fmt_btc(s.total_fee)),
                        label_value("  Min relay fee   : ", fmt_satsvb(s.mempool_min_fee)),
                        separator(),
                        text("  Memory usage") | color(Color::GrayDark),
@@ -389,7 +503,7 @@ static Element render_mempool(const AppState& s) {
             block_cols.push_back(
                 vbox({
                     vbox(std::move(bar)),
-                    text(fmt_int(b.height)) | center,
+                    text(fmt_height(b.height)) | center,
                     text(fmt_int(b.txs) + " tx") | center | color(Color::GrayDark),
                     text(fmt_bytes(b.total_size)) | center | color(Color::GrayDark),
                 }) |
@@ -484,7 +598,7 @@ static Element render_peers(const AppState& s) {
             rcell(text(ping_str), 8),
             rcell(text(fmt_bytes(p.bytes_recv)), 10),
             rcell(text(fmt_bytes(p.bytes_sent)), 10),
-            rcell(text(fmt_int(p.synced_blocks)), 9),
+            rcell(text(fmt_height(p.synced_blocks)), 9),
         }));
     }
 
@@ -546,7 +660,10 @@ static void apply_cookie(RpcConfig& cfg, const std::string& path) {
 // ============================================================================
 // RPC polling
 // ============================================================================
-static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
+// on_core_ready is called after the 5 fast RPC calls so the UI can render
+// core data immediately, before the slower getblockstats fetches complete.
+static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
+                     const std::function<void()>& on_core_ready = nullptr) {
     // Read cached tip height so we can skip re-fetching block stats when tip hasn't moved.
     int64_t cached_tip = 0;
     {
@@ -555,21 +672,80 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
     }
 
     try {
-        // Blockchain info
-        auto bc = rpc.call("getblockchaininfo")["result"];
-        // Network info
+        // ── Phase 1: fast calls ──────────────────────────────────────────────
+        auto bc  = rpc.call("getblockchaininfo")["result"];
         auto net = rpc.call("getnetworkinfo")["result"];
-        // Mempool info
-        auto mp = rpc.call("getmempoolinfo")["result"];
-        // Mining info (for hashrate)
-        auto mi = rpc.call("getmininginfo")["result"];
-        // Peer info
-        auto pi = rpc.call("getpeerinfo")["result"];
+        auto mp  = rpc.call("getmempoolinfo")["result"];
+        auto pi  = rpc.call("getpeerinfo")["result"];
 
-        // Fetch per-block stats for the last 7 blocks when tip advances.
-        int64_t                new_tip = bc.value("blocks", 0LL);
-        std::vector<BlockStat> fresh_blocks;
+        int64_t new_tip = bc.value("blocks", 0LL);
+
+        // Commit core state immediately so the UI can render before block stats arrive.
+        {
+            std::lock_guard lock(mtx);
+
+            // Blockchain
+            state.chain         = bc.value("chain", "—");
+            state.blocks        = bc.value("blocks", 0LL);
+            state.headers       = bc.value("headers", 0LL);
+            state.difficulty    = bc.value("difficulty", 0.0);
+            state.progress      = bc.value("verificationprogress", 0.0);
+            state.pruned        = bc.value("pruned", false);
+            state.ibd           = bc.value("initialblockdownload", false);
+            state.bestblockhash = bc.value("bestblockhash", "");
+
+            // Network
+            state.connections      = net.value("connections", 0);
+            state.connections_in   = net.value("connections_in", 0);
+            state.connections_out  = net.value("connections_out", 0);
+            state.subversion       = net.value("subversion", "");
+            state.protocol_version = net.value("protocolversion", 0);
+            state.network_active   = net.value("networkactive", true);
+            state.relay_fee        = net.value("relayfee", 0.0);
+
+            // Mempool
+            state.mempool_tx      = mp.value("size", 0LL);
+            state.mempool_bytes   = mp.value("bytes", 0LL);
+            state.mempool_usage   = mp.value("usage", 0LL);
+            state.mempool_max     = mp.value("maxmempool", 300000000LL);
+            state.mempool_min_fee = mp.value("mempoolminfee", 0.0);
+            state.total_fee       = mp.value("total_fee", 0.0);
+
+            // Hashrate derived from difficulty (saves a getmininginfo round-trip):
+            // difficulty × 2³² / 600  ≈  expected hashes per second at current difficulty
+            state.network_hashps = bc.value("difficulty", 0.0) * 4294967296.0 / 600.0;
+
+            // Peers
+            state.peers.clear();
+            for (const auto& p : pi) {
+                PeerInfo peer;
+                peer.id            = p.value("id", 0);
+                peer.addr          = p.value("addr", "");
+                peer.network       = p.value("network", "");
+                peer.subver        = p.value("subver", "");
+                peer.inbound       = p.value("inbound", false);
+                peer.bytes_sent    = p.value("bytessent", 0LL);
+                peer.bytes_recv    = p.value("bytesrecv", 0LL);
+                peer.version       = p.value("version", 0);
+                peer.synced_blocks = p.value("synced_blocks", 0LL);
+                if (p.contains("pingtime") && p["pingtime"].is_number()) {
+                    peer.ping_ms = p["pingtime"].get<double>() * 1000.0;
+                }
+                state.peers.push_back(std::move(peer));
+            }
+
+            state.connected = true;
+            state.error_message.clear();
+            state.last_update = now_string();
+        }
+
+        // Let the UI render with core data while block stats are fetched.
+        if (on_core_ready)
+            on_core_ready();
+
+        // ── Phase 2: per-block stats (slow — 7 sequential calls) ────────────
         if (new_tip != cached_tip && new_tip > 0) {
+            std::vector<BlockStat> fresh_blocks;
             for (int i = 0; i < 7 && (new_tip - i) >= 0; ++i) {
                 try {
                     json      params = {new_tip - i,
@@ -585,61 +761,9 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
                     break;
                 }
             }
-        }
 
-        std::lock_guard lock(mtx);
-
-        // Blockchain
-        state.chain         = bc.value("chain", "—");
-        state.blocks        = bc.value("blocks", 0LL);
-        state.headers       = bc.value("headers", 0LL);
-        state.difficulty    = bc.value("difficulty", 0.0);
-        state.progress      = bc.value("verificationprogress", 0.0);
-        state.pruned        = bc.value("pruned", false);
-        state.ibd           = bc.value("initialblockdownload", false);
-        state.bestblockhash = bc.value("bestblockhash", "");
-
-        // Network
-        state.connections      = net.value("connections", 0);
-        state.connections_in   = net.value("connections_in", 0);
-        state.connections_out  = net.value("connections_out", 0);
-        state.subversion       = net.value("subversion", "");
-        state.protocol_version = net.value("protocolversion", 0);
-        state.network_active   = net.value("networkactive", true);
-        state.relay_fee        = net.value("relayfee", 0.0);
-
-        // Mempool
-        state.mempool_tx      = mp.value("size", 0LL);
-        state.mempool_bytes   = mp.value("bytes", 0LL);
-        state.mempool_usage   = mp.value("usage", 0LL);
-        state.mempool_max     = mp.value("maxmempool", 300000000LL);
-        state.mempool_min_fee = mp.value("mempoolminfee", 0.0);
-        state.total_fee       = mp.value("total_fee", 0.0);
-
-        // Mining / hashrate
-        state.network_hashps = mi.value("networkhashps", 0.0);
-
-        // Peers
-        state.peers.clear();
-        for (const auto& p : pi) {
-            PeerInfo peer;
-            peer.id            = p.value("id", 0);
-            peer.addr          = p.value("addr", "");
-            peer.network       = p.value("network", "");
-            peer.subver        = p.value("subver", "");
-            peer.inbound       = p.value("inbound", false);
-            peer.bytes_sent    = p.value("bytessent", 0LL);
-            peer.bytes_recv    = p.value("bytesrecv", 0LL);
-            peer.version       = p.value("version", 0);
-            peer.synced_blocks = p.value("synced_blocks", 0LL);
-            if (p.contains("pingtime") && p["pingtime"].is_number()) {
-                peer.ping_ms = p["pingtime"].get<double>() * 1000.0;
-            }
-            state.peers.push_back(std::move(peer));
-        }
-
-        // Recent blocks — trigger slide animation when a new block arrives.
-        if (new_tip != cached_tip) {
+            std::lock_guard lock(mtx);
+            // Trigger slide animation when a new block arrives.
             if (!state.recent_blocks.empty() && !fresh_blocks.empty()) {
                 state.block_anim_old    = state.recent_blocks;
                 state.block_anim_frame  = 0;
@@ -649,16 +773,137 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx) {
             state.blocks_fetched_at = new_tip;
         }
 
-        state.connected = true;
-        state.error_message.clear();
-        state.last_update = now_string();
-
     } catch (const std::exception& e) {
         std::lock_guard lock(mtx);
         state.connected     = false;
         state.error_message = e.what();
         state.last_update   = now_string();
     }
+}
+
+// ============================================================================
+// Transaction / block lookup — pure: takes config + query, returns result.
+// No shared state, no threads, no UI side-effects. Suitable for testing.
+// ============================================================================
+static TxSearchState perform_tx_search(const RpcConfig& cfg, const std::string& query,
+                                       bool is_height, int64_t tip) {
+    TxSearchState result;
+    result.txid = query;
+    try {
+        RpcConfig search_cfg       = cfg;
+        search_cfg.timeout_seconds = 5;
+        RpcClient search_rpc(search_cfg);
+
+        // Helper: populate result with block data from getblock (verbosity 1)
+        auto fetch_block = [&](const std::string& hash) {
+            auto blk                 = search_rpc.call("getblock", {json(hash), json(1)})["result"];
+            result.blk_hash          = blk.value("hash", hash);
+            result.blk_height        = blk.value("height", 0LL);
+            result.blk_time          = blk.value("time", 0LL);
+            result.blk_ntx           = blk.value("nTx", 0LL);
+            result.blk_size          = blk.value("size", 0LL);
+            result.blk_weight        = blk.value("weight", 0LL);
+            result.blk_difficulty    = blk.value("difficulty", 0.0);
+            result.blk_confirmations = blk.value("confirmations", 0LL);
+            // Extract miner tag from coinbase scriptSig
+            if (blk.contains("tx") && blk["tx"].is_array() && !blk["tx"].empty()) {
+                std::string coinbase_txid = blk["tx"][0].get<std::string>();
+                try {
+                    auto coinbase_tx = search_rpc.call("getrawtransaction",
+                                                       {json(coinbase_txid), json(true)})["result"];
+                    if (coinbase_tx.contains("vin") && coinbase_tx["vin"].is_array() &&
+                        !coinbase_tx["vin"].empty()) {
+                        std::string cb_hex = coinbase_tx["vin"][0].value("coinbase", "");
+                        result.blk_miner   = extract_miner(cb_hex);
+                    }
+                } catch (...) {
+                    result.blk_miner = "—";
+                }
+            }
+            result.is_block = true;
+            result.found    = true;
+        };
+
+        if (is_height) {
+            // Block height search: getblockhash → getblock
+            int64_t     height = std::stoll(query);
+            auto        hash_r = search_rpc.call("getblockhash", {height})["result"];
+            std::string hash   = hash_r.get<std::string>();
+            fetch_block(hash);
+        } else {
+            // 1. Try mempool first
+            try {
+                auto entry = search_rpc.call("getmempoolentry", {query})["result"];
+
+                if (entry.contains("fees") && entry["fees"].is_object())
+                    result.fee = entry["fees"].value("base", 0.0);
+                else
+                    result.fee = entry.value("fee", 0.0);
+
+                result.vsize       = entry.value("vsize", 0LL);
+                result.weight      = entry.value("weight", 0LL);
+                result.ancestors   = entry.value("ancestorcount", 0LL);
+                result.descendants = entry.value("descendantcount", 0LL);
+                result.entry_time  = entry.value("time", 0LL);
+                if (result.vsize > 0)
+                    result.fee_rate = result.fee * 1e8 / static_cast<double>(result.vsize);
+                result.confirmed = false;
+                result.found     = true;
+            } catch (...) {
+                // 2. Try confirmed tx (requires txindex=1)
+                try {
+                    auto tx =
+                        search_rpc.call("getrawtransaction", {json(query), json(true)})["result"];
+
+                    result.vsize         = tx.value("vsize", 0LL);
+                    result.weight        = tx.value("weight", 0LL);
+                    result.blockhash     = tx.value("blockhash", "");
+                    result.confirmations = tx.value("confirmations", 0LL);
+                    result.blocktime     = tx.value("blocktime", 0LL);
+
+                    if (tip > 0 && result.confirmations > 0)
+                        result.block_height = tip - result.confirmations + 1;
+
+                    if (tx.contains("vin") && tx["vin"].is_array()) {
+                        for (const auto& inp : tx["vin"]) {
+                            TxVin v;
+                            if (inp.contains("coinbase")) {
+                                v.is_coinbase = true;
+                            } else {
+                                v.txid = inp.value("txid", "");
+                                v.vout = inp.value("vout", 0);
+                            }
+                            result.vin_list.push_back(v);
+                        }
+                        result.vin_count = static_cast<int>(result.vin_list.size());
+                    }
+                    if (tx.contains("vout") && tx["vout"].is_array()) {
+                        for (const auto& out : tx["vout"]) {
+                            TxVout v;
+                            v.value = out.value("value", 0.0);
+                            if (out.contains("scriptPubKey")) {
+                                const auto& spk = out["scriptPubKey"];
+                                v.type          = spk.value("type", "");
+                                if (spk.contains("address"))
+                                    v.address = spk.value("address", "");
+                            }
+                            result.total_output += v.value;
+                            result.vout_list.push_back(v);
+                        }
+                        result.vout_count = static_cast<int>(result.vout_list.size());
+                    }
+                    result.confirmed = true;
+                    result.found     = true;
+                } catch (...) {
+                    // 3. Fall back: try as block hash
+                    fetch_block(query);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        result.error = e.what();
+    }
+    return result;
 }
 
 // ============================================================================
@@ -768,12 +1013,13 @@ static int run(int argc, char* argv[]) {
     RpcClient  rpc(cfg);
 
     // Transaction search state
-    TxSearchState     search_state;
-    std::mutex        search_mtx;
-    std::string       global_search_str;
-    bool              global_search_active = false;
-    std::atomic<bool> search_in_flight{false};
-    std::thread       search_thread;
+    TxSearchState              search_state;
+    std::vector<TxSearchState> search_history;
+    std::mutex                 search_mtx;
+    std::string                global_search_str;
+    bool                       global_search_active = false;
+    std::atomic<bool>          search_in_flight{false};
+    std::thread                search_thread;
 
     std::atomic<bool> running{true};
 
@@ -786,16 +1032,8 @@ static int run(int argc, char* argv[]) {
 
     auto tab_toggle = Toggle(&tab_labels, &tab_index);
 
-    // Shared helper: trim in-place
-    auto trim_str = [](std::string& s) {
-        while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
-            s.erase(s.begin());
-        while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
-            s.pop_back();
-    };
-
     // Shared search trigger — switches to Mempool tab when switch_tab is true
-    auto trigger_tx_search = [&](const std::string& txid, bool switch_tab) {
+    auto trigger_tx_search = [&](const std::string& query, bool switch_tab) {
         if (search_in_flight.load())
             return;
         search_in_flight = true;
@@ -803,8 +1041,13 @@ static int run(int argc, char* argv[]) {
             tab_index = 1;
         {
             std::lock_guard lock(search_mtx);
+            if (switch_tab) {
+                search_history.clear();
+            } else if (!search_state.txid.empty()) {
+                search_history.push_back(search_state);
+            }
             search_state           = TxSearchState{};
-            search_state.txid      = txid;
+            search_state.txid      = query;
             search_state.searching = true;
         }
         screen.PostEvent(Event::Custom);
@@ -818,61 +1061,14 @@ static int run(int argc, char* argv[]) {
             tip_at_search = state.blocks;
         }
 
-        search_thread = std::thread([&, txid, tip_at_search] {
-            TxSearchState result;
-            result.txid = txid;
-            try {
-                RpcConfig search_cfg       = cfg;
-                search_cfg.timeout_seconds = 5;
-                RpcClient search_rpc(search_cfg);
+        // Determine whether the query is a block height (all digits) or a hash/txid
+        bool query_is_height = !query.empty() && std::ranges::all_of(query, [](unsigned char c) {
+            return std::isdigit(c) != 0;
+        });
 
-                // 1. Try mempool first
-                try {
-                    auto entry = search_rpc.call("getmempoolentry", {txid})["result"];
-
-                    if (entry.contains("fees") && entry["fees"].is_object())
-                        result.fee = entry["fees"].value("base", 0.0);
-                    else
-                        result.fee = entry.value("fee", 0.0);
-
-                    result.vsize       = entry.value("vsize", 0LL);
-                    result.weight      = entry.value("weight", 0LL);
-                    result.ancestors   = entry.value("ancestorcount", 0LL);
-                    result.descendants = entry.value("descendantcount", 0LL);
-                    result.entry_time  = entry.value("time", 0LL);
-                    if (result.vsize > 0)
-                        result.fee_rate = result.fee * 1e8 / static_cast<double>(result.vsize);
-                    result.confirmed = false;
-                    result.found     = true;
-                } catch (...) {
-                    // 2. Not in mempool — try confirmed (requires txindex=1 on the node)
-                    auto tx =
-                        search_rpc.call("getrawtransaction", {json(txid), json(true)})["result"];
-
-                    result.vsize         = tx.value("vsize", 0LL);
-                    result.weight        = tx.value("weight", 0LL);
-                    result.blockhash     = tx.value("blockhash", "");
-                    result.confirmations = tx.value("confirmations", 0LL);
-                    result.blocktime     = tx.value("blocktime", 0LL);
-
-                    if (tip_at_search > 0 && result.confirmations > 0)
-                        result.block_height = tip_at_search - result.confirmations + 1;
-
-                    if (tx.contains("vin") && tx["vin"].is_array())
-                        result.vin_count = static_cast<int>(tx["vin"].size());
-                    if (tx.contains("vout") && tx["vout"].is_array()) {
-                        result.vout_count = static_cast<int>(tx["vout"].size());
-                        for (const auto& out : tx["vout"])
-                            result.total_output += out.value("value", 0.0);
-                    }
-                    result.confirmed = true;
-                    result.found     = true;
-                }
-            } catch (const std::exception& e) {
-                result.error = e.what();
-            }
-            result.searching = false;
-            search_in_flight = false;
+        search_thread = std::thread([&, query, query_is_height, tip_at_search] {
+            TxSearchState result = perform_tx_search(cfg, query, query_is_height, tip_at_search);
+            search_in_flight     = false;
             if (!running.load())
                 return;
             {
@@ -881,13 +1077,6 @@ static int run(int argc, char* argv[]) {
             }
             screen.PostEvent(Event::Custom);
         });
-    };
-
-    // Txid validator: exactly 64 hex chars
-    auto is_txid = [](const std::string& s) {
-        if (s.size() != 64)
-            return false;
-        return std::ranges::all_of(s, [](unsigned char c) { return std::isxdigit(c) != 0; });
     };
 
     // Layout: tab toggle only — global search is handled via '/' key in the event handler
@@ -904,9 +1093,27 @@ static int run(int argc, char* argv[]) {
 
         // Is a search result overlay currently visible?
         bool overlay_visible;
+        bool overlay_is_confirmed_tx;    // confirmed tx (not a block)
+        bool overlay_block_row_selected; // block # row highlighted (io_selected == 0)
+        bool overlay_inputs_row_sel;     // inputs row highlighted
+        bool overlay_outputs_row_sel;    // outputs row highlighted
+        bool overlay_inputs_open;        // inputs sub-overlay is open
+        bool overlay_outputs_open;       // outputs sub-overlay is open
         {
             std::lock_guard lock(search_mtx);
-            overlay_visible = !search_state.txid.empty();
+            overlay_visible         = !search_state.txid.empty();
+            overlay_is_confirmed_tx = overlay_visible && search_state.found &&
+                                      search_state.confirmed && !search_state.is_block;
+            int sel                    = search_state.io_selected;
+            int inputs_idx             = io_inputs_idx(search_state);
+            int outputs_idx            = io_outputs_idx(search_state);
+            overlay_block_row_selected = overlay_is_confirmed_tx && sel == 0;
+            overlay_inputs_row_sel =
+                overlay_is_confirmed_tx && sel == inputs_idx && inputs_idx >= 0;
+            overlay_outputs_row_sel =
+                overlay_is_confirmed_tx && sel == outputs_idx && outputs_idx >= 0;
+            overlay_inputs_open  = overlay_is_confirmed_tx && search_state.inputs_overlay_open;
+            overlay_outputs_open = overlay_is_confirmed_tx && search_state.outputs_overlay_open;
         }
 
         // Tab content
@@ -931,28 +1138,54 @@ static int run(int argc, char* argv[]) {
                 break;
             }
 
-            // Helper: format a duration in seconds as "Xh Ym" / "Xm Ys" / "Xs"
-            auto fmt_age = [](int64_t secs) -> std::string {
-                if (secs < 60)
-                    return std::to_string(secs) + "s";
-                if (secs < 3600)
-                    return std::to_string(secs / 60) + "m " + std::to_string(secs % 60) + "s";
-                return std::to_string(secs / 3600) + "h " + std::to_string((secs % 3600) / 60) +
-                       "m";
-            };
-
             // Abbreviated txid: first 20 + "…" + last 20
             std::string txid_abbrev = ss.txid.size() > 40 ? ss.txid.substr(0, 20) + "…" +
                                                                 ss.txid.substr(ss.txid.size() - 20)
                                                           : ss.txid;
 
             Elements result_rows;
-            if (ss.searching) {
+            switch (classify_result(ss)) {
+            case TxResultKind::Searching:
                 result_rows.push_back(text("  Searching…") | color(Color::Yellow));
-            } else if (ss.found && !ss.confirmed) {
-                // --- Mempool transaction ---
-                std::ostringstream fee_ss;
-                fee_ss << std::fixed << std::setprecision(8) << ss.fee << " BTC";
+                break;
+            case TxResultKind::Block: {
+                auto               blk_time_t = static_cast<std::time_t>(ss.blk_time);
+                auto               blk_tm     = *std::localtime(&blk_time_t);
+                std::ostringstream blk_time_ss;
+                blk_time_ss << std::put_time(&blk_tm, "%Y-%m-%d %H:%M:%S");
+
+                int64_t blk_age =
+                    ss.blk_time > 0
+                        ? std::max(int64_t{0},
+                                   static_cast<int64_t>(std::time(nullptr)) - ss.blk_time)
+                        : int64_t{0};
+
+                std::ostringstream diff_ss;
+                diff_ss << std::fixed << std::setprecision(2) << ss.blk_difficulty / 1e12 << " T";
+
+                std::string hash_short = ss.blk_hash.size() > 48
+                                             ? ss.blk_hash.substr(0, 4) + "…" +
+                                                   ss.blk_hash.substr(ss.blk_hash.size() - 44)
+                                             : ss.blk_hash;
+
+                result_rows.push_back(text("  ⛏ BLOCK") | color(Color::Cyan) | bold);
+                result_rows.push_back(label_value("  Height       : ", fmt_height(ss.blk_height)));
+                result_rows.push_back(label_value("  Hash         : ", hash_short));
+                result_rows.push_back(label_value("  Time         : ", blk_time_ss.str()));
+                result_rows.push_back(
+                    label_value("  Age          : ", ss.blk_time > 0 ? fmt_age(blk_age) : "—"));
+                result_rows.push_back(label_value("  Transactions : ", fmt_int(ss.blk_ntx)));
+                result_rows.push_back(
+                    label_value("  Size         : ", fmt_int(ss.blk_size) + " B"));
+                result_rows.push_back(
+                    label_value("  Weight       : ", fmt_int(ss.blk_weight) + " WU"));
+                result_rows.push_back(label_value("  Difficulty   : ", diff_ss.str()));
+                result_rows.push_back(label_value("  Miner        : ", ss.blk_miner));
+                result_rows.push_back(
+                    label_value("  Confirmations: ", fmt_int(ss.blk_confirmations)));
+                break;
+            }
+            case TxResultKind::Mempool: {
                 std::ostringstream rate_ss;
                 rate_ss << std::fixed << std::setprecision(1) << ss.fee_rate << " sat/vB";
 
@@ -960,28 +1193,34 @@ static int run(int argc, char* argv[]) {
                     std::max(int64_t{0}, static_cast<int64_t>(std::time(nullptr)) - ss.entry_time);
 
                 result_rows.push_back(text("  ● MEMPOOL") | color(Color::Yellow) | bold);
-                result_rows.push_back(label_value("  Fee         : ", fee_ss.str(), Color::Green));
+                result_rows.push_back(
+                    label_value("  Fee         : ", fmt_btc(ss.fee), Color::Green));
                 result_rows.push_back(label_value("  Fee rate    : ", rate_ss.str()));
                 result_rows.push_back(label_value("  vsize       : ", fmt_int(ss.vsize) + " vB"));
                 result_rows.push_back(label_value("  Weight      : ", fmt_int(ss.weight) + " WU"));
                 result_rows.push_back(label_value("  Ancestors   : ", fmt_int(ss.ancestors)));
                 result_rows.push_back(label_value("  Descendants : ", fmt_int(ss.descendants)));
                 result_rows.push_back(label_value("  In mempool  : ", fmt_age(age)));
-            } else if (ss.found && ss.confirmed) {
-                // --- Confirmed transaction ---
-                std::ostringstream out_ss;
-                out_ss << std::fixed << std::setprecision(8) << ss.total_output << " BTC";
-
+                break;
+            }
+            case TxResultKind::Confirmed: {
                 int64_t age = ss.blocktime > 0
                                   ? std::max(int64_t{0}, static_cast<int64_t>(std::time(nullptr)) -
                                                              ss.blocktime)
                                   : int64_t{0};
 
-                std::string block_num = ss.block_height >= 0 ? fmt_int(ss.block_height) : "—";
+                std::string block_num = ss.block_height >= 0 ? fmt_height(ss.block_height) : "—";
 
                 result_rows.push_back(text("  ✔ CONFIRMED") | color(Color::Green) | bold);
                 result_rows.push_back(label_value("  Confirmations: ", fmt_int(ss.confirmations)));
-                result_rows.push_back(label_value("  Block #      : ", block_num));
+                {
+                    auto block_row =
+                        hbox({text("  Block #      : ") | color(Color::GrayDark),
+                              text(block_num) | color(Color::Cyan) | underlined, filler()});
+                    if (ss.io_selected == 0)
+                        block_row = std::move(block_row) | inverted;
+                    result_rows.push_back(std::move(block_row));
+                }
                 auto bh_short =
                     ss.blockhash.substr(0, 4) + "…" + ss.blockhash.substr(ss.blockhash.size() - 44);
                 result_rows.push_back(label_value("  Block hash   : ", bh_short));
@@ -989,19 +1228,41 @@ static int run(int argc, char* argv[]) {
                     label_value("  Block age    : ", ss.blocktime > 0 ? fmt_age(age) : "—"));
                 result_rows.push_back(label_value("  vsize        : ", fmt_int(ss.vsize) + " vB"));
                 result_rows.push_back(label_value("  Weight       : ", fmt_int(ss.weight) + " WU"));
+                if (!ss.vin_list.empty()) {
+                    auto inputs_row = hbox(
+                        {text("  Inputs       : ") | color(Color::GrayDark),
+                         text(std::to_string(ss.vin_list.size())) | color(Color::Cyan) | underlined,
+                         filler()});
+                    if (ss.io_selected == 1)
+                        inputs_row = std::move(inputs_row) | inverted;
+                    result_rows.push_back(std::move(inputs_row));
+                }
+                if (!ss.vout_list.empty()) {
+                    int  outputs_idx = io_outputs_idx(ss);
+                    auto outputs_row = hbox({text("  Outputs      : ") | color(Color::GrayDark),
+                                             text(std::to_string(ss.vout_list.size())) |
+                                                 color(Color::Cyan) | underlined,
+                                             filler()});
+                    if (ss.io_selected == outputs_idx)
+                        outputs_row = std::move(outputs_row) | inverted;
+                    result_rows.push_back(std::move(outputs_row));
+                }
                 result_rows.push_back(
-                    label_value("  Inputs       : ", std::to_string(ss.vin_count)));
-                result_rows.push_back(
-                    label_value("  Outputs      : ", std::to_string(ss.vout_count)));
-                result_rows.push_back(label_value("  Total out    : ", out_ss.str(), Color::Green));
-            } else {
+                    label_value("  Total out    : ", fmt_btc(ss.total_output), Color::Green));
+                break;
+            }
+            case TxResultKind::Error:
                 result_rows.push_back(text("  " + ss.error) | color(Color::Red));
+                break;
             }
 
+            std::string   overlay_title = classify_result(ss) == TxResultKind::Block
+                                              ? " Block Search "
+                                              : " Transaction Search ";
             constexpr int kPanelWidth   = 70;
             auto          overlay_panel = vbox({
                                      hbox({
-                                         text(" Transaction Search ") | bold | color(Color::Gold1),
+                                         text(overlay_title) | bold | color(Color::Gold1),
                                          filler(),
                                          text(" " + txid_abbrev + " ") | color(Color::GrayDark),
                                      }),
@@ -1010,12 +1271,102 @@ static int run(int argc, char* argv[]) {
                                  }) |
                                  border | size(WIDTH, EQUAL, kPanelWidth);
 
-            tab_content = vbox({
-                              filler(),
-                              hbox({filler(), std::move(overlay_panel), filler()}),
-                              filler(),
-                          }) |
-                          flex;
+            // io/vout overlays use a wider panel so full txids fit
+            constexpr int kIOPanelWidth = 84;
+
+            auto build_io_panel = [&](std::string title, Elements rows, int n, int win,
+                                      int top) -> Element {
+                if (n > win) {
+                    rows.push_back(hbox(
+                        {filler(), text(std::to_string(top + 1) + "–" + std::to_string(top + win) +
+                                        " / " + std::to_string(n)) |
+                                       color(Color::GrayDark)}));
+                }
+                return vbox({hbox({text(std::move(title)) | bold | color(Color::Gold1), filler(),
+                                   text(" " + txid_abbrev + " ") | color(Color::GrayDark)}),
+                             separator(), vbox(std::move(rows))}) |
+                       border | size(WIDTH, EQUAL, kIOPanelWidth);
+            };
+
+            if (ss.outputs_overlay_open && !ss.vout_list.empty()) {
+                int n   = static_cast<int>(ss.vout_list.size());
+                int win = std::min(n, 10);
+                int top = 0;
+                int sel = ss.output_overlay_sel;
+                if (sel >= 0) {
+                    top = std::max(0, sel - win / 2);
+                    top = std::min(top, n - win);
+                }
+                Elements rows;
+                for (int i = top; i < top + win; ++i) {
+                    const auto&        v = ss.vout_list[i];
+                    std::ostringstream val_ss;
+                    val_ss << std::fixed << std::setprecision(8) << v.value;
+                    std::string label = val_ss.str() + " BTC";
+                    if (!v.address.empty()) {
+                        // Panel is 84 chars; after prefix + value that leaves ~60 for address.
+                        // Taproot bc1p addresses are 62 chars — truncate only if needed.
+                        std::string addr = v.address.size() > 60
+                                               ? v.address.substr(0, 28) + "…" +
+                                                     v.address.substr(v.address.size() - 28)
+                                               : v.address;
+                        label += "  " + addr;
+                    } else if (!v.type.empty()) {
+                        label += "  [" + v.type + "]";
+                    }
+                    bool selected = (i == sel);
+                    auto row =
+                        hbox({text("  [" + std::to_string(i) + "] ") | color(Color::GrayDark),
+                              text(label)});
+                    if (selected)
+                        row = std::move(row) | inverted;
+                    rows.push_back(std::move(row));
+                }
+                tab_content = vbox({filler(),
+                                    hbox({filler(),
+                                          build_io_panel(" Outputs (" + std::to_string(n) + ") ",
+                                                         std::move(rows), n, win, top),
+                                          filler()}),
+                                    filler()}) |
+                              flex;
+            } else if (ss.inputs_overlay_open && !ss.vin_list.empty()) {
+                int n   = static_cast<int>(ss.vin_list.size());
+                int win = std::min(n, 10);
+                int top = 0;
+                int sel = ss.input_overlay_sel;
+                if (sel >= 0) {
+                    top = std::max(0, sel - win / 2);
+                    top = std::min(top, n - win);
+                }
+                Elements rows;
+                for (int i = top; i < top + win; ++i) {
+                    const auto& v = ss.vin_list[i];
+                    std::string label =
+                        v.is_coinbase ? "coinbase" : v.txid + ":" + std::to_string(v.vout);
+                    bool selected = (i == sel);
+                    auto row =
+                        hbox({text("  [" + std::to_string(i) + "] ") | color(Color::GrayDark),
+                              text(label) | (v.is_coinbase ? color(Color::GrayDark)
+                                                           : color(Color::Default))});
+                    if (selected)
+                        row = std::move(row) | inverted;
+                    rows.push_back(std::move(row));
+                }
+                tab_content = vbox({filler(),
+                                    hbox({filler(),
+                                          build_io_panel(" Inputs (" + std::to_string(n) + ") ",
+                                                         std::move(rows), n, win, top),
+                                          filler()}),
+                                    filler()}) |
+                              flex;
+            } else {
+                tab_content = vbox({
+                                  filler(),
+                                  hbox({filler(), std::move(overlay_panel), filler()}),
+                                  filler(),
+                              }) |
+                              flex;
+            }
             break;
         }
         case 2:
@@ -1051,6 +1402,22 @@ static int run(int argc, char* argv[]) {
         Element status_right =
             global_search_active
                 ? hbox({text("  [Enter] search  [Esc] cancel ") | color(Color::Yellow)})
+            : overlay_outputs_open
+                ? hbox({text("  [↑/↓] navigate  [Esc] back  [q] quit ") | color(Color::Yellow)})
+            : overlay_inputs_open
+                ? hbox({text("  [↑/↓] navigate  [↵] lookup  [Esc] back  [q] quit ") |
+                        color(Color::Yellow)})
+            : overlay_outputs_row_sel
+                ? hbox({text("  [↵] show outputs  [↑/↓] navigate  [Esc] dismiss  [q] quit ") |
+                        color(Color::Yellow)})
+            : overlay_inputs_row_sel
+                ? hbox({text("  [↵] show inputs  [↑/↓] navigate  [Esc] dismiss  [q] quit ") |
+                        color(Color::Yellow)})
+            : overlay_block_row_selected
+                ? hbox({text("  [↵] view block  [↑/↓] navigate  [Esc] dismiss  [q] quit ") |
+                        color(Color::Yellow)})
+            : overlay_is_confirmed_tx
+                ? hbox({text("  [↑/↓] navigate  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
             : overlay_visible
                 ? hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
                 : hbox({refresh_indicator, text("  [Tab/←/→] switch  [/] search  [q] quit ") |
@@ -1119,11 +1486,10 @@ static int run(int argc, char* argv[]) {
                 return true;
             }
             if (event == Event::Return) {
-                std::string q = global_search_str;
-                trim_str(q);
+                std::string q        = trimmed(global_search_str);
                 global_search_active = false;
                 global_search_str.clear();
-                if (is_txid(q))
+                if (is_txid(q) || is_height(q))
                     trigger_tx_search(q, true);
                 screen.PostEvent(Event::Custom);
                 return true;
@@ -1145,6 +1511,96 @@ static int run(int argc, char* argv[]) {
             }
             return false;
         }
+        // Outputs sub-overlay mode
+        {
+            bool outputs_open = false;
+            {
+                std::lock_guard lock(search_mtx);
+                outputs_open = search_state.found && search_state.confirmed &&
+                               !search_state.is_block && search_state.outputs_overlay_open;
+            }
+            if (outputs_open) {
+                if (event == Event::Escape) {
+                    {
+                        std::lock_guard lock(search_mtx);
+                        search_state.outputs_overlay_open = false;
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::ArrowDown || event == Event::ArrowUp) {
+                    {
+                        std::lock_guard lock(search_mtx);
+                        int             n = static_cast<int>(search_state.vout_list.size());
+                        if (event == Event::ArrowDown)
+                            search_state.output_overlay_sel =
+                                std::min(search_state.output_overlay_sel + 1, n - 1);
+                        else
+                            search_state.output_overlay_sel =
+                                std::max(search_state.output_overlay_sel - 1, -1);
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::Character('q')) {
+                    screen.ExitLoopClosure()();
+                    return true;
+                }
+                return false;
+            }
+        }
+        // Inputs sub-overlay mode
+        {
+            bool inputs_open = false;
+            {
+                std::lock_guard lock(search_mtx);
+                inputs_open = search_state.found && search_state.confirmed &&
+                              !search_state.is_block && search_state.inputs_overlay_open;
+            }
+            if (inputs_open) {
+                if (event == Event::Escape) {
+                    {
+                        std::lock_guard lock(search_mtx);
+                        search_state.inputs_overlay_open = false;
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::ArrowDown || event == Event::ArrowUp) {
+                    {
+                        std::lock_guard lock(search_mtx);
+                        int             n = static_cast<int>(search_state.vin_list.size());
+                        if (event == Event::ArrowDown)
+                            search_state.input_overlay_sel =
+                                std::min(search_state.input_overlay_sel + 1, n - 1);
+                        else
+                            search_state.input_overlay_sel =
+                                std::max(search_state.input_overlay_sel - 1, -1);
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::Return) {
+                    std::string query;
+                    {
+                        std::lock_guard lock(search_mtx);
+                        int             sel = search_state.input_overlay_sel;
+                        if (sel >= 0 && sel < static_cast<int>(search_state.vin_list.size()) &&
+                            !search_state.vin_list[sel].is_coinbase)
+                            query = search_state.vin_list[sel].txid;
+                    }
+                    if (!query.empty()) {
+                        trigger_tx_search(query, false);
+                        return true;
+                    }
+                }
+                if (event == Event::Character('q')) {
+                    screen.ExitLoopClosure()();
+                    return true;
+                }
+                return false;
+            }
+        }
         // Normal mode
         if (event == Event::Character('/')) {
             global_search_active = true;
@@ -1152,14 +1608,69 @@ static int run(int argc, char* argv[]) {
             screen.PostEvent(Event::Custom);
             return true;
         }
+        if (event == Event::ArrowDown || event == Event::ArrowUp) {
+            bool handled = false;
+            {
+                std::lock_guard lock(search_mtx);
+                if (search_state.found && search_state.confirmed && !search_state.is_block) {
+                    int max_sel = io_max_sel(search_state);
+                    if (event == Event::ArrowDown)
+                        search_state.io_selected = std::min(search_state.io_selected + 1, max_sel);
+                    else
+                        search_state.io_selected = std::max(search_state.io_selected - 1, -1);
+                    handled = true;
+                }
+            }
+            if (handled) {
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+        }
+        if (event == Event::Return) {
+            // io_selected: 0/-1=view block, 1=inputs overlay, 2=outputs overlay
+            bool        open_inputs = false, open_outputs = false;
+            std::string query;
+            {
+                std::lock_guard lock(search_mtx);
+                if (search_state.found && search_state.confirmed && !search_state.is_block) {
+                    int sel         = search_state.io_selected;
+                    int inputs_idx  = io_inputs_idx(search_state);
+                    int outputs_idx = io_outputs_idx(search_state);
+                    if (sel == inputs_idx && inputs_idx >= 0) {
+                        search_state.inputs_overlay_open = true;
+                        search_state.input_overlay_sel   = -1;
+                        open_inputs                      = true;
+                    } else if (sel == outputs_idx && outputs_idx >= 0) {
+                        search_state.outputs_overlay_open = true;
+                        search_state.output_overlay_sel   = -1;
+                        open_outputs                      = true;
+                    } else {
+                        query = search_state.blockhash;
+                    }
+                }
+            }
+            if (open_inputs || open_outputs) {
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (!query.empty()) {
+                trigger_tx_search(query, false);
+                return true;
+            }
+        }
         if (event == Event::Escape) {
-            // Dismiss overlay first; only quit if there is nothing to dismiss
+            // Pop history first, then dismiss overlay, then quit
             bool had_overlay = false;
             {
                 std::lock_guard lock(search_mtx);
-                had_overlay = !search_state.txid.empty();
-                if (had_overlay)
+                if (!search_history.empty()) {
+                    search_state = search_history.back();
+                    search_history.pop_back();
+                    had_overlay = true;
+                } else if (!search_state.txid.empty()) {
                     search_state = TxSearchState{};
+                    had_overlay  = true;
+                }
             }
             if (had_overlay) {
                 screen.PostEvent(Event::Custom);
@@ -1175,6 +1686,10 @@ static int run(int argc, char* argv[]) {
         return false;
     });
 
+    // Render callback: wakes the UI between the two poll phases so core data
+    // appears immediately without waiting for the slower getblockstats calls.
+    auto wake_screen = [&] { screen.PostEvent(Event::Custom); };
+
     // Background polling thread
     std::thread poll_thread([&] {
         // Initial fetch immediately
@@ -1184,7 +1699,7 @@ static int run(int argc, char* argv[]) {
         }
         screen.PostEvent(Event::Custom);
 
-        poll_rpc(rpc, state, state_mtx);
+        poll_rpc(rpc, state, state_mtx, wake_screen);
 
         {
             std::lock_guard lock(state_mtx);
@@ -1206,7 +1721,7 @@ static int run(int argc, char* argv[]) {
             }
             screen.PostEvent(Event::Custom);
 
-            poll_rpc(rpc, state, state_mtx);
+            poll_rpc(rpc, state, state_mtx, wake_screen);
 
             {
                 std::lock_guard lock(state_mtx);
