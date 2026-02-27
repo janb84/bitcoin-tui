@@ -143,6 +143,36 @@ TEST_CASE("initializer list — empty braces yield null") {
     CHECK(e.is_null());
 }
 
+TEST_CASE("initializer list — single non-json element is array") {
+    // Regression: {json(height)} triggers the copy constructor (C++ prefers
+    // copy-init over initializer_list when the sole element IS already a json),
+    // producing a bare integer instead of a one-element array.  The fix is to
+    // pass the raw value ({height}) so the element type is not json, forcing
+    // the initializer_list<json> constructor.
+    SECTION("raw int64_t gives array") {
+        int64_t h = 884231LL;
+        json    a = {h};
+        CHECK(a.is_array());
+        CHECK(a.size() == 1);
+        CHECK(a[0].get<int64_t>() == 884231LL);
+        CHECK(a.dump() == "[884231]");
+    }
+    SECTION("raw int gives array") {
+        json a = {42};
+        CHECK(a.is_array());
+        CHECK(a.size() == 1);
+        CHECK(a[0].get<int>() == 42);
+    }
+    SECTION("json(value) copy-constructs — NOT an array") {
+        // This documents the known C++ pitfall: a single json element in a
+        // braced-init-list selects the copy constructor, not initializer_list.
+        int64_t h = 884231LL;
+        json    j = json(h); // explicit copy — must be integer, not array
+        CHECK(j.is_number());
+        CHECK(!j.is_array());
+    }
+}
+
 // ============================================================================
 // Operator[]
 // ============================================================================
@@ -489,4 +519,209 @@ TEST_CASE("getpeerinfo response shape") {
     CHECK(p.contains("pingtime"));
     CHECK(p["pingtime"].is_number());
     CHECK(p["pingtime"].get<double>() * 1000.0 == Catch::Approx(14.0).epsilon(1e-6));
+}
+
+TEST_CASE("getmempoolinfo response shape") {
+    const std::string raw = R"({
+        "result": {
+            "loaded": true,
+            "size": 312847,
+            "bytes": 156300000,
+            "usage": 487200000,
+            "total_fee": 2.3841,
+            "maxmempool": 300000000,
+            "mempoolminfee": 0.00001000,
+            "minrelaytxfee": 0.00001000
+        },
+        "error": null,
+        "id": 3
+    })";
+
+    auto j = json::parse(raw);
+    CHECK(j["error"].is_null());
+
+    auto r = j["result"];
+    CHECK(r.value("loaded", false) == true);
+    CHECK(r.value("size", 0LL) == 312847LL);
+    CHECK(r.value("bytes", 0LL) == 156300000LL);
+    CHECK(r.value("usage", 0LL) == 487200000LL);
+    CHECK(r.value("maxmempool", 0LL) == 300000000LL);
+    CHECK(r.value("total_fee", 0.0) == Catch::Approx(2.3841).epsilon(1e-6));
+    CHECK(r.value("mempoolminfee", 0.0) == Catch::Approx(0.00001).epsilon(1e-9));
+    CHECK(r.value("minrelaytxfee", 0.0) == Catch::Approx(0.00001).epsilon(1e-9));
+}
+
+TEST_CASE("getblockstats response shape") {
+    const std::string raw = R"({
+        "result": {
+            "blockhash": "000000000000000000029b8b516a6c5d8dc4aa1e6a2e3c9c4e87f3b7c2d1e0f",
+            "height": 884231,
+            "txs": 3421,
+            "total_size": 1573043,
+            "total_weight": 3992100,
+            "totalfee": 1234567,
+            "avgfeerate": 5,
+            "mediantime": 1708900000
+        },
+        "error": null,
+        "id": 4
+    })";
+
+    auto j = json::parse(raw);
+    CHECK(j["error"].is_null());
+
+    auto r = j["result"];
+    CHECK(r.value("height", 0LL) == 884231LL);
+    CHECK(r.value("txs", 0LL) == 3421LL);
+    CHECK(r.value("total_size", 0LL) == 1573043LL);
+    CHECK(r.value("total_weight", 0LL) == 3992100LL);
+    CHECK(r.value("totalfee", 0LL) == 1234567LL);
+    CHECK(r.value("avgfeerate", 0LL) == 5LL);
+    CHECK(r.value("blockhash", "") ==
+          "000000000000000000029b8b516a6c5d8dc4aa1e6a2e3c9c4e87f3b7c2d1e0f");
+}
+
+TEST_CASE("getmempoolentry response shape") {
+    const std::string raw = R"({
+        "result": {
+            "vsize": 225,
+            "weight": 897,
+            "fee": 0.00001125,
+            "modifiedfee": 0.00001125,
+            "time": 1708900000,
+            "height": 884200,
+            "descendantcount": 1,
+            "descendantsize": 225,
+            "ancestorcount": 1,
+            "ancestorsize": 225,
+            "fees": {
+                "base": 0.00001125,
+                "modified": 0.00001125,
+                "ancestor": 0.00001125,
+                "descendant": 0.00001125
+            }
+        },
+        "error": null,
+        "id": 5
+    })";
+
+    auto j = json::parse(raw);
+    CHECK(j["error"].is_null());
+
+    auto r = j["result"];
+    CHECK(r.value("vsize", 0LL) == 225LL);
+    CHECK(r.value("weight", 0LL) == 897LL);
+    CHECK(r.value("time", 0LL) == 1708900000LL);
+    CHECK(r.value("height", 0LL) == 884200LL);
+    CHECK(r.value("descendantcount", 0LL) == 1LL);
+    CHECK(r.value("ancestorcount", 0LL) == 1LL);
+    CHECK(r.value("fee", 0.0) == Catch::Approx(0.00001125).epsilon(1e-10));
+
+    auto fees = r["fees"];
+    CHECK(fees.is_object());
+    CHECK(fees.value("base", 0.0) == Catch::Approx(0.00001125).epsilon(1e-10));
+    CHECK(fees.value("descendant", 0.0) == Catch::Approx(0.00001125).epsilon(1e-10));
+}
+
+TEST_CASE("getrawtransaction confirmed response shape") {
+    const std::string raw = R"({
+        "result": {
+            "txid": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            "hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            "size": 225,
+            "vsize": 141,
+            "weight": 561,
+            "vin": [
+                { "txid": "f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1", "vout": 0 }
+            ],
+            "vout": [
+                {
+                    "value": 0.00123456,
+                    "n": 0,
+                    "scriptPubKey": {
+                        "type": "witness_v0_keyhash",
+                        "address": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+                    }
+                }
+            ],
+            "confirmations": 100,
+            "blockhash": "000000000000000000029b8b516a6c5d8dc4aa1e6a2e3c9c4e87f3b7c2d1e0f",
+            "blocktime": 1708900000
+        },
+        "error": null,
+        "id": 6
+    })";
+
+    auto j = json::parse(raw);
+    CHECK(j["error"].is_null());
+
+    auto r = j["result"];
+    CHECK(r.value("txid", "") ==
+          "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2");
+    CHECK(r.value("vsize", 0LL) == 141LL);
+    CHECK(r.value("weight", 0LL) == 561LL);
+    CHECK(r.value("confirmations", 0LL) == 100LL);
+    CHECK(r.value("blockhash", "") ==
+          "000000000000000000029b8b516a6c5d8dc4aa1e6a2e3c9c4e87f3b7c2d1e0f");
+
+    // vin
+    auto vin = r["vin"];
+    CHECK(vin.is_array());
+    CHECK(vin.size() == 1);
+    CHECK(vin[0].value("txid", "") ==
+          "f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1");
+    CHECK(vin[0].value("vout", -1) == 0);
+    CHECK(!vin[0].contains("coinbase"));
+
+    // vout
+    auto vout = r["vout"];
+    CHECK(vout.is_array());
+    CHECK(vout.size() == 1);
+    CHECK(vout[0].value("value", 0.0) == Catch::Approx(0.00123456).epsilon(1e-10));
+    auto spk = vout[0]["scriptPubKey"];
+    CHECK(spk.value("type", "") == "witness_v0_keyhash");
+    CHECK(spk.value("address", "") == "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+}
+
+TEST_CASE("getrawtransaction coinbase vin shape") {
+    const std::string raw = R"({
+        "result": {
+            "txid": "c3b4d5e6f7a8c3b4d5e6f7a8c3b4d5e6f7a8c3b4d5e6f7a8c3b4d5e6f7a8c3b4",
+            "vin": [
+                { "coinbase": "03a7610d2cfabe6d6d", "sequence": 4294967295 }
+            ],
+            "vout": [
+                {
+                    "value": 3.125,
+                    "n": 0,
+                    "scriptPubKey": {
+                        "type": "witness_v1_taproot",
+                        "address": "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"
+                    }
+                }
+            ],
+            "confirmations": 100,
+            "blockhash": "000000000000000000029b8b516a6c5d8dc4aa1e6a2e3c9c4e87f3b7c2d1e0f"
+        },
+        "error": null,
+        "id": 7
+    })";
+
+    auto j = json::parse(raw);
+    CHECK(j["error"].is_null());
+
+    auto r   = j["result"];
+    auto vin = r["vin"];
+    CHECK(vin.is_array());
+    CHECK(vin.size() == 1);
+
+    // coinbase input has no txid — detected via contains("coinbase")
+    CHECK(vin[0].contains("coinbase"));
+    CHECK(!vin[0].contains("txid"));
+    CHECK(vin[0].value("coinbase", "") == "03a7610d2cfabe6d6d");
+
+    auto vout = r["vout"];
+    CHECK(vout.size() == 1);
+    CHECK(vout[0].value("value", 0.0) == Catch::Approx(3.125).epsilon(1e-6));
+    CHECK(vout[0]["scriptPubKey"].value("type", "") == "witness_v1_taproot");
 }
