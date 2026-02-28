@@ -481,7 +481,9 @@ static Element render_mempool(const AppState& s) {
         // During slide: render old blocks minus the last (it slides off the right edge).
         const std::vector<BlockStat>& src        = anim_slide ? s.block_anim_old : s.recent_blocks;
         int                           num        = static_cast<int>(src.size());
-        int                           max_render = anim_slide ? std::max(0, num - 1) : num;
+        int                           term_width = ftxui::Terminal::Size().dimx;
+        int                           max_cols   = std::max(1, (term_width - 4) / (COL_WIDTH + 1));
+        int                           max_render = std::min(anim_slide ? std::max(0, num - 1) : num, max_cols);
 
         // Slide offset grows from 0 → (COL_WIDTH+1) chars over SLIDE_FRAMES frames.
         int left_pad = 0;
@@ -760,7 +762,7 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
         // ── Phase 2: per-block stats (slow — 7 sequential calls) ────────────
         if (new_tip != cached_tip && new_tip > 0) {
             std::vector<BlockStat> fresh_blocks;
-            for (int i = 0; i < 7 && (new_tip - i) >= 0; ++i) {
+            for (int i = 0; i < 20 && (new_tip - i) >= 0; ++i) {
                 try {
                     json      params = {new_tip - i,
                                         json({"height", "txs", "total_size", "total_weight", "time"})};
