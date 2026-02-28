@@ -53,6 +53,15 @@ struct PeerInfo {
     double      ping_ms       = -1.0;
     int         version       = 0;
     int64_t     synced_blocks = 0;
+    int64_t     conntime      = 0;
+    std::string services;
+    int64_t     startingheight = 0;
+    bool        bip152_hb_from = false;
+    bool        bip152_hb_to   = false;
+    std::string connection_type;
+    std::string transport;
+    int64_t     addr_processed = 0;
+    double      min_ping_ms    = -1.0;
 };
 
 struct AppState {
@@ -550,7 +559,7 @@ static Element render_network(const AppState& s) {
 }
 
 // --- Peers ------------------------------------------------------------------
-static Element render_peers(const AppState& s) {
+static Element render_peers(const AppState& s, int selected = -1) {
     if (s.peers.empty()) {
         return vbox({
                    text("No peers connected.") | color(Color::GrayDark) | center,
@@ -579,7 +588,8 @@ static Element render_peers(const AppState& s) {
                    color(Color::Gold1));
     rows.push_back(separator());
 
-    for (const auto& p : s.peers) {
+    for (int idx = 0; idx < static_cast<int>(s.peers.size()); ++idx) {
+        const auto& p = s.peers[idx];
         std::string ping_str = p.ping_ms >= 0.0 ? [&] {
             std::ostringstream ss;
             ss << std::fixed << std::setprecision(1) << p.ping_ms;
@@ -590,7 +600,7 @@ static Element render_peers(const AppState& s) {
         Color       io_color = p.inbound ? Color::Cyan : Color::Green;
         std::string net_str  = p.network.empty() ? "?" : p.network.substr(0, 4);
 
-        rows.push_back(hbox({
+        auto row = hbox({
             text(std::to_string(p.id)) | size(WIDTH, EQUAL, 5),
             text(p.addr) | flex,
             text(net_str) | size(WIDTH, EQUAL, 5),
@@ -599,13 +609,73 @@ static Element render_peers(const AppState& s) {
             rcell(text(fmt_bytes(p.bytes_recv)), 10),
             rcell(text(fmt_bytes(p.bytes_sent)), 10),
             rcell(text(fmt_height(p.synced_blocks)), 9),
-        }));
+        });
+        if (idx == selected)
+            row = std::move(row) | inverted;
+        rows.push_back(std::move(row));
     }
 
     return vbox({
                vbox(std::move(rows)) | border | flex,
            }) |
            flex;
+}
+
+static Element render_peer_detail(const PeerInfo& p) {
+    auto now_secs = static_cast<int64_t>(std::time(nullptr));
+    int64_t uptime = p.conntime > 0 ? now_secs - p.conntime : 0;
+
+    std::string ping_str = p.ping_ms >= 0.0 ? [&] {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(1) << p.ping_ms;
+        return ss.str() + " ms";
+    }() : "—";
+
+    std::string min_ping_str = p.min_ping_ms >= 0.0 ? [&] {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(1) << p.min_ping_ms;
+        return ss.str() + " ms";
+    }() : "—";
+
+    std::string hb;
+    if (p.bip152_hb_from && p.bip152_hb_to) hb = "both";
+    else if (p.bip152_hb_from) hb = "from";
+    else if (p.bip152_hb_to) hb = "to";
+    else hb = "no";
+
+    Elements detail_rows = {
+        label_value("  Address     : ", p.addr),
+        label_value("  Direction   : ", p.inbound ? "inbound" : "outbound",
+                    p.inbound ? Color::Cyan : Color::Green),
+        label_value("  Network     : ", p.network.empty() ? "?" : p.network),
+        label_value("  User agent  : ", p.subver),
+        label_value("  Version     : ", std::to_string(p.version)),
+        label_value("  Services    : ", p.services.empty() ? "—" : p.services),
+        separator(),
+        label_value("  Ping        : ", ping_str),
+        label_value("  Min ping    : ", min_ping_str),
+        label_value("  Connected   : ", uptime > 0 ? fmt_age(uptime) : "—"),
+        label_value("  Conn type   : ", p.connection_type.empty() ? "—" : p.connection_type),
+        label_value("  Transport   : ", p.transport.empty() ? "—" : p.transport),
+        separator(),
+        label_value("  Recv        : ", fmt_bytes(p.bytes_recv)),
+        label_value("  Sent        : ", fmt_bytes(p.bytes_sent)),
+        label_value("  Height      : ", fmt_height(p.synced_blocks)),
+        label_value("  Start height: ", fmt_height(p.startingheight)),
+        label_value("  HB compact  : ", hb),
+        label_value("  Addrs proc  : ", fmt_int(p.addr_processed)),
+    };
+
+    return vbox({
+               hbox({
+                   text(" Peer " + std::to_string(p.id) + " ") | bold | color(Color::Gold1),
+                   filler(),
+                   text(" " + p.addr + " ") | color(Color::GrayDark),
+               }),
+               separator(),
+               vbox(std::move(detail_rows)),
+           }) |
+           border | size(WIDTH, EQUAL, 70);
 }
 
 // ============================================================================
@@ -728,8 +798,34 @@ static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
                 peer.bytes_recv    = p.value("bytesrecv", 0LL);
                 peer.version       = p.value("version", 0);
                 peer.synced_blocks = p.value("synced_blocks", 0LL);
+                peer.conntime      = p.value("conntime", 0LL);
+                peer.services      = p.value("servicesnames", "");
+                peer.startingheight = p.value("startingheight", 0LL);
+                peer.connection_type = p.value("connection_type", "");
+                peer.transport     = p.value("transport_protocol_type", "");
+                peer.addr_processed = p.value("addr_processed", 0LL);
+                if (p.contains("servicesnames") && p["servicesnames"].is_array()) {
+                    std::string svc;
+                    for (const auto& s : p["servicesnames"]) {
+                        if (!svc.empty()) svc += ", ";
+                        svc += s.get<std::string>();
+                    }
+                    peer.services = svc;
+                }
                 if (p.contains("pingtime") && p["pingtime"].is_number()) {
                     peer.ping_ms = p["pingtime"].get<double>() * 1000.0;
+                }
+                if (p.contains("minping") && p["minping"].is_number()) {
+                    peer.min_ping_ms = p["minping"].get<double>() * 1000.0;
+                }
+                if (p.contains("bytesrecv_per_msg") && p["bytesrecv_per_msg"].is_object()) {
+                    peer.bip152_hb_from = p["bytesrecv_per_msg"].contains("sendcmpct");
+                }
+                if (p.contains("bip152_hb_from") && p["bip152_hb_from"].is_bool()) {
+                    peer.bip152_hb_from = p["bip152_hb_from"].get<bool>();
+                }
+                if (p.contains("bip152_hb_to") && p["bip152_hb_to"].is_bool()) {
+                    peer.bip152_hb_to = p["bip152_hb_to"].get<bool>();
                 }
                 state.peers.push_back(std::move(peer));
             }
@@ -1020,6 +1116,10 @@ static int run(int argc, char* argv[]) {
     bool                       global_search_active = false;
     std::atomic<bool>          search_in_flight{false};
     std::thread                search_thread;
+
+    // Peer selection state
+    int  peer_selected    = -1;
+    bool peer_detail_open = false;
 
     std::atomic<bool> running{true};
 
@@ -1373,7 +1473,17 @@ static int run(int argc, char* argv[]) {
             tab_content = render_network(snap);
             break;
         case 3:
-            tab_content = render_peers(snap);
+            if (peer_detail_open && peer_selected >= 0 &&
+                peer_selected < static_cast<int>(snap.peers.size())) {
+                tab_content = vbox({
+                                  filler(),
+                                  hbox({filler(), render_peer_detail(snap.peers[peer_selected]), filler()}),
+                                  filler(),
+                              }) |
+                              flex;
+            } else {
+                tab_content = render_peers(snap, peer_selected);
+            }
             break;
         default:
             tab_content = text("Unknown tab");
@@ -1420,6 +1530,11 @@ static int run(int argc, char* argv[]) {
                 ? hbox({text("  [↑/↓] navigate  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
             : overlay_visible
                 ? hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
+            : (tab_index == 3 && peer_detail_open)
+                ? hbox({text("  [Esc] back  [q] quit ") | color(Color::Yellow)})
+            : (tab_index == 3 && peer_selected >= 0)
+                ? hbox({refresh_indicator, text("  [↑/↓] navigate  [↵] details  [/] search  [q] quit ") |
+                                               color(Color::GrayDark)})
                 : hbox({refresh_indicator, text("  [Tab/←/→] switch  [/] search  [q] quit ") |
                                                color(Color::GrayDark)});
 
@@ -1599,6 +1714,38 @@ static int run(int argc, char* argv[]) {
                     return true;
                 }
                 return false;
+            }
+        }
+        // Peers tab: detail overlay mode
+        if (tab_index == 3 && peer_detail_open) {
+            if (event == Event::Escape) {
+                peer_detail_open = false;
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Character('q')) {
+                screen.ExitLoopClosure()();
+                return true;
+            }
+            return false;
+        }
+        // Peers tab: list navigation
+        if (tab_index == 3) {
+            if (event == Event::ArrowDown || event == Event::ArrowUp) {
+                int n = static_cast<int>(state.peers.size());
+                if (n > 0) {
+                    if (event == Event::ArrowDown)
+                        peer_selected = std::min(peer_selected + 1, n - 1);
+                    else
+                        peer_selected = std::max(peer_selected - 1, 0);
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+            }
+            if (event == Event::Return && peer_selected >= 0) {
+                peer_detail_open = true;
+                screen.PostEvent(Event::Custom);
+                return true;
             }
         }
         // Normal mode
