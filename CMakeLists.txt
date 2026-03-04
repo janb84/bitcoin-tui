@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(bitcoin-tui VERSION 0.4.0 LANGUAGES CXX)
+project(bitcoin-tui VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,3 +58,8 @@ add_executable(test_json tests/test_json.cpp)
 target_include_directories(test_json PRIVATE src/)
 target_link_libraries(test_json PRIVATE Catch2::Catch2WithMain)
 add_test(NAME test_json COMMAND test_json)
+
+add_executable(test_state tests/test_state.cpp)
+target_include_directories(test_state PRIVATE src/)
+target_link_libraries(test_state PRIVATE Catch2::Catch2WithMain)
+add_test(NAME test_state COMMAND test_state)

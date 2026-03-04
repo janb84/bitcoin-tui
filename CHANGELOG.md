@@ -2,6 +2,19 @@
 
 All notable changes to bitcoin-tui are documented here.
 
+## [0.5.0] - 2026-03-04
+
+### Added
+- **Broadcast PSBT** - paste a base64 PSBT into the Tools tab and press `[p]` or `Enter`; calls `finalizepsbt` followed by `sendrawtransaction` if all signatures are present; shows the txid on success (selectable — press `Enter` to open in search) or an error if the PSBT is incomplete or invalid
+
+### Changed
+- **Refactored to pure functions** - `perform_tx_search`, `fmt_btc`, `fmt_age`, `trimmed`, `extract_miner`, `io_inputs_idx`, `io_outputs_idx`, `io_max_sel`, `is_txid`, `is_height` extracted as free functions; `TxResultKind` enum + `classify_result()` replaces if/else chain with a `switch`; `poll_rpc` callback changed to `const std::function<void()>&`
+- Broadcast menu item renamed "Broadcast Transaction" (was "Broadcast") to distinguish from Broadcast PSBT
+- `tools_sel` navigation uses `tools_nav()` pure helper to account for dynamic result rows from both sections
+
+### Tests
+- New `test_state` suite: covers `tools_nav`, `io_inputs_idx`/`io_outputs_idx`/`io_max_sel`, `is_txid`/`is_height`, and `classify_result` (15 test cases)
+
 ## [0.4.0] - 2026-03-03
 
 ### Added

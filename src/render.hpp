@@ -15,5 +15,7 @@ ftxui::Element render_dashboard(const AppState& s);
 ftxui::Element render_mempool(const AppState& s);
 ftxui::Element render_network(const AppState& s);
 ftxui::Element render_peers(const AppState& s);
-ftxui::Element render_tools(const AppState& snap, const BroadcastState& bs, bool input_active,
-                            const std::string& hex_str, int tools_sel);
+ftxui::Element render_tools(const AppState& snap, const BroadcastState& bs, const PsbtState& ps,
+                            bool input_active, bool psbt_input_active,
+                            const std::string& hex_str, const std::string& psbt_str,
+                            int tools_sel);

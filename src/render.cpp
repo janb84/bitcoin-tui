@@ -287,12 +287,13 @@ Element render_peers(const AppState& s) {
 }
 
 // --- Tools ------------------------------------------------------------------
-Element render_tools(const AppState& snap, const BroadcastState& bs, bool input_active,
-                     const std::string& hex_str, int tools_sel) {
-    // sel==1 is the result txid row (when success).
-    bool has_result_row = bs.has_result && bs.success;
+Element render_tools(const AppState& snap, const BroadcastState& bs, const PsbtState& ps,
+                     bool input_active, bool psbt_input_active,
+                     const std::string& hex_str, const std::string& psbt_str, int tools_sel) {
+    bool bcast_result_visible = bs.has_result && bs.success;
+    bool psbt_result_visible  = ps.has_result && ps.success;
+    auto nav                  = tools_nav(bcast_result_visible, psbt_result_visible);
 
-    // ── Broadcast section ────────────────────────────────────────────────────
     auto menu_row = [](const std::string& label, const std::string& shortcut,
                        bool selected) -> Element {
         auto row =
@@ -300,9 +301,54 @@ Element render_tools(const AppState& snap, const BroadcastState& bs, bool input_
         return selected ? row | inverted : row;
     };
 
+    // Build wrapped-text input rows (hex or base64), cursor appended to last line.
+    auto input_rows = [](const std::string& h, const std::string& field_label,
+                         Elements& out) {
+        constexpr int            kCols = 70;
+        int                      total = (int)h.size();
+        std::vector<std::string> chunks;
+        for (int off = 0; off < std::max(total, 1); off += kCols)
+            chunks.push_back(h.substr(off, std::min(kCols, total - off)));
+        if (chunks.empty())
+            chunks.push_back("");
+        std::string cont(field_label.size(), ' ');
+        for (int i = 0; i < (int)chunks.size(); ++i) {
+            bool is_last = i == (int)chunks.size() - 1;
+            out.push_back(hbox({
+                text(i == 0 ? field_label : cont) | color(Color::GrayDark),
+                text(chunks[i]) | color(Color::White),
+                is_last ? text("│") | color(Color::White) : text(""),
+                filler(),
+            }));
+        }
+    };
+
+    // Build word-wrapped error rows.
+    auto error_rows = [](const std::string& err, Elements& out) {
+        out.push_back(text("  Error: ") | color(Color::Red) | bold);
+        constexpr int      kErrCols = 72;
+        constexpr auto     kIndent  = "  ";
+        std::istringstream ss(err);
+        std::string        word, cur = kIndent;
+        while (ss >> word) {
+            if (cur.size() > strlen(kIndent) &&
+                (int)(cur.size() + 1 + word.size()) > kErrCols) {
+                out.push_back(text(cur) | color(Color::White));
+                cur = kIndent;
+            }
+            if (cur.size() > strlen(kIndent))
+                cur += ' ';
+            cur += word;
+        }
+        if (cur.size() > strlen(kIndent))
+            out.push_back(text(cur) | color(Color::White));
+    };
+
+    // ── Broadcast Transaction section ────────────────────────────────────────
+    bool     bcast_action_sel = (tools_sel == nav.bcast_action && !input_active && !psbt_input_active);
     Elements bcast_rows;
     bcast_rows.push_back(text(""));
-    bcast_rows.push_back(menu_row("Broadcast", "[b]", tools_sel == 0 && !input_active));
+    bcast_rows.push_back(menu_row("Broadcast Transaction", "[b]", bcast_action_sel));
 
     if (!input_active && !bs.submitting) {
         bcast_rows.push_back(text(""));
@@ -314,27 +360,7 @@ Element render_tools(const AppState& snap, const BroadcastState& bs, bool input_
 
     if (input_active) {
         bcast_rows.push_back(separator());
-        // Wrap hex across rows of 70 chars; all rows shown.
-        constexpr int kHexCols = 70;
-        const auto&   h        = hex_str;
-        int           total    = (int)h.size();
-        std::vector<std::string> chunks;
-        for (int off = 0; off < std::max(total, 1); off += kHexCols)
-            chunks.push_back(h.substr(off, std::min(kHexCols, total - off)));
-        if (chunks.empty()) chunks.push_back("");
-        for (int i = 0; i < (int)chunks.size(); ++i) {
-            bool is_last = i == (int)chunks.size() - 1;
-            auto prefix  = i == 0 && chunks.size() == 1
-                               ? text("  Hex  : ") | color(Color::GrayDark)
-                               : (i == 0 ? text("  Hex  : ") | color(Color::GrayDark)
-                                         : text("         ") | color(Color::GrayDark));
-            bcast_rows.push_back(hbox({
-                prefix,
-                text(chunks[i]) | color(Color::White),
-                is_last ? text("│") | color(Color::White) : text(""),
-                filler(),
-            }));
-        }
+        input_rows(hex_str, "  Hex  : ", bcast_rows);
         bcast_rows.push_back(text("  [Enter] submit  [Esc] cancel") | color(Color::GrayDark));
     } else if (bs.submitting) {
         bcast_rows.push_back(separator());
@@ -342,40 +368,58 @@ Element render_tools(const AppState& snap, const BroadcastState& bs, bool input_
     } else if (bs.has_result) {
         bcast_rows.push_back(separator());
         if (bs.success) {
-            bool txid_sel = (tools_sel == 1);
             auto txid_row = hbox({
                 text("  ✓ ") | color(Color::Green) | bold,
                 text(bs.result_txid) | color(Color::White),
                 filler(),
             });
-            bcast_rows.push_back(txid_sel ? txid_row | inverted : txid_row);
+            bcast_rows.push_back(tools_sel == nav.bcast_result ? txid_row | inverted : txid_row);
         } else {
-            bcast_rows.push_back(text("  Error: ") | color(Color::Red) | bold);
-            // Word-wrap error at ~72 chars with consistent indent (newlines treated as spaces).
-            constexpr int      kErrCols = 72;
-            constexpr auto     kIndent  = "  ";
-            std::istringstream ss(bs.result_error);
-            std::string        word, cur = kIndent;
-            while (ss >> word) {
-                if (cur.size() > strlen(kIndent) &&
-                    (int)(cur.size() + 1 + word.size()) > kErrCols) {
-                    bcast_rows.push_back(text(cur) | color(Color::White));
-                    cur = kIndent;
-                }
-                if (cur.size() > strlen(kIndent))
-                    cur += ' ';
-                cur += word;
-            }
-            if (cur.size() > strlen(kIndent))
-                bcast_rows.push_back(text(cur) | color(Color::White));
+            error_rows(bs.result_error, bcast_rows);
         }
     }
 
-    auto bcast_section = section_box("Broadcast Transaction", bcast_rows);
+    // ── Broadcast PSBT section ───────────────────────────────────────────────
+    bool     psbt_action_sel = (tools_sel == nav.psbt_action && !input_active && !psbt_input_active);
+    Elements psbt_rows;
+    psbt_rows.push_back(text(""));
+    psbt_rows.push_back(menu_row("Broadcast PSBT", "[p]", psbt_action_sel));
 
-    // ── Private broadcast queue (only shown when non-empty) ─────────────────
+    if (!psbt_input_active && !ps.submitting) {
+        psbt_rows.push_back(text(""));
+        psbt_rows.push_back(
+            text("  Finalizes a PSBT and broadcasts it. Calls finalizepsbt, then") |
+            color(Color::GrayDark));
+        psbt_rows.push_back(
+            text("  sendrawtransaction if all signatures are present.") |
+            color(Color::GrayDark));
+    }
+
+    if (psbt_input_active) {
+        psbt_rows.push_back(separator());
+        input_rows(psbt_str, "  PSBT : ", psbt_rows);
+        psbt_rows.push_back(text("  [Enter] submit  [Esc] cancel") | color(Color::GrayDark));
+    } else if (ps.submitting) {
+        psbt_rows.push_back(separator());
+        psbt_rows.push_back(text("  Finalizing and broadcasting…") | color(Color::Yellow));
+    } else if (ps.has_result) {
+        psbt_rows.push_back(separator());
+        if (ps.success) {
+            auto txid_row = hbox({
+                text("  ✓ ") | color(Color::Green) | bold,
+                text(ps.result_txid) | color(Color::White),
+                filler(),
+            });
+            psbt_rows.push_back(tools_sel == nav.psbt_result ? txid_row | inverted : txid_row);
+        } else {
+            error_rows(ps.result_error, psbt_rows);
+        }
+    }
+
+    // ── Layout ───────────────────────────────────────────────────────────────
     Elements layout;
-    layout.push_back(bcast_section);
+    layout.push_back(section_box("Broadcast Transaction", bcast_rows));
+    layout.push_back(section_box("Broadcast PSBT", psbt_rows));
 
     if (!snap.privbcast_txids.empty()) {
         Elements queue_rows;

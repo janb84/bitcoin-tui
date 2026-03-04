@@ -200,7 +200,14 @@ static int run(int argc, char* argv[]) {
     std::string       tools_hex_str;
     std::atomic<bool> broadcast_in_flight{false};
     std::thread       broadcast_thread;
-    int               tools_sel = 0; // 0=Broadcast, 1=result txid row (when present)
+    // PSBT tools state
+    PsbtState         psbt_state;
+    std::mutex        psbt_mtx;
+    bool              psbt_input_active = false;
+    std::string       psbt_str;
+    std::atomic<bool> psbt_in_flight{false};
+    std::thread       psbt_thread;
+    int               tools_sel = 0; // index per tools_nav()
 
     std::atomic<bool> running{true};
 
@@ -298,6 +305,62 @@ static int run(int argc, char* argv[]) {
             {
                 std::lock_guard lock(broadcast_mtx);
                 broadcast_state = result;
+            }
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    auto open_psbt_dialog = [&] {
+        psbt_input_active = true;
+        {
+            std::lock_guard lock(broadcast_mtx);
+            bool bcast_has_result = broadcast_state.has_result && broadcast_state.success;
+            tools_sel = tools_nav(bcast_has_result, false).psbt_action;
+        }
+        psbt_str.clear();
+        screen.PostEvent(Event::Custom);
+    };
+
+    auto trigger_psbt_broadcast = [&](const std::string& psbt) {
+        if (psbt_in_flight.load())
+            return;
+        psbt_in_flight = true;
+        {
+            std::lock_guard lock(psbt_mtx);
+            psbt_state = PsbtState{.psbt = psbt, .submitting = true};
+        }
+        screen.PostEvent(Event::Custom);
+        if (psbt_thread.joinable())
+            psbt_thread.join();
+        psbt_thread = std::thread([&, psbt] {
+            PsbtState result{.psbt = psbt};
+            try {
+                RpcConfig pcfg            = cfg;
+                pcfg.timeout_seconds      = 30;
+                RpcClient bc(pcfg);
+                json      fr              = bc.call("finalizepsbt", {psbt})["result"];
+                bool      complete        = fr.value("complete", false);
+                if (!complete) {
+                    result.result_error = "PSBT incomplete — more signatures required";
+                    result.success      = false;
+                    result.incomplete   = true;
+                } else {
+                    std::string raw_hex = fr.value("hex", "");
+                    json        send    = bc.call("sendrawtransaction", {raw_hex});
+                    result.result_txid  = send["result"].get<std::string>();
+                    result.success      = true;
+                }
+            } catch (const std::exception& e) {
+                result.result_error = e.what();
+                result.success      = false;
+            }
+            result.has_result = true;
+            psbt_in_flight    = false;
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(psbt_mtx);
+                psbt_state = result;
             }
             screen.PostEvent(Event::Custom);
         });
@@ -601,11 +664,17 @@ static int run(int argc, char* argv[]) {
             break;
         case 4: {
             BroadcastState bs;
+            PsbtState      ps;
             {
                 std::lock_guard lock(broadcast_mtx);
                 bs = broadcast_state;
             }
-            tab_content = render_tools(snap, bs, tools_input_active, tools_hex_str, tools_sel);
+            {
+                std::lock_guard lock(psbt_mtx);
+                ps = psbt_state;
+            }
+            tab_content = render_tools(snap, bs, ps, tools_input_active, psbt_input_active,
+                                       tools_hex_str, psbt_str, tools_sel);
             break;
         }
         default:
@@ -635,7 +704,7 @@ static int run(int argc, char* argv[]) {
         Element status_right =
             global_search_active
                 ? hbox({text("  [Enter] search  [Esc] cancel ") | color(Color::Yellow)})
-            : (tab_index == 4 && tools_input_active)
+            : (tab_index == 4 && (tools_input_active || psbt_input_active))
                 ? hbox({text("  [Enter] submit  [Esc] cancel ") | color(Color::Yellow)})
             : (tab_index == 4)
                 ? hbox({text("  [↑/↓] navigate  [↵] activate  [q] quit ") | color(Color::GrayDark)})
@@ -782,6 +851,39 @@ static int run(int argc, char* argv[]) {
             }
             return false;
         }
+        // Tools PSBT input mode
+        if (psbt_input_active) {
+            if (event == Event::Escape) {
+                psbt_input_active = false;
+                psbt_str.clear();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Return) {
+                std::string p     = trimmed(psbt_str);
+                psbt_input_active = false;
+                psbt_str.clear();
+                if (!p.empty())
+                    trigger_psbt_broadcast(p);
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Backspace) {
+                if (!psbt_str.empty())
+                    psbt_str.pop_back();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Tab || event == Event::TabReverse || event == Event::ArrowLeft ||
+                event == Event::ArrowRight)
+                return true;
+            if (event.is_character()) {
+                psbt_str += event.character();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            return false;
+        }
         // Outputs sub-overlay mode
         {
             bool outputs_open = false;
@@ -885,15 +987,38 @@ static int run(int argc, char* argv[]) {
                 open_broadcast_dialog();
                 return true;
             }
+            if (event == Event::Character('p')) {
+                open_psbt_dialog();
+                return true;
+            }
             if (event == Event::Return) {
-                if (tools_sel == 0) {
+                bool bcast_has_result, psbt_has_result;
+                {
+                    std::lock_guard lock(broadcast_mtx);
+                    bcast_has_result = broadcast_state.has_result && broadcast_state.success;
+                }
+                {
+                    std::lock_guard lock(psbt_mtx);
+                    psbt_has_result = psbt_state.has_result && psbt_state.success;
+                }
+                auto nav = tools_nav(bcast_has_result, psbt_has_result);
+                if (tools_sel == nav.bcast_action) {
                     open_broadcast_dialog();
-                } else if (tools_sel == 1) {
+                } else if (tools_sel == nav.bcast_result) {
                     std::string txid;
                     {
                         std::lock_guard lock(broadcast_mtx);
-                        if (broadcast_state.has_result && broadcast_state.success)
-                            txid = broadcast_state.result_txid;
+                        txid = broadcast_state.result_txid;
+                    }
+                    if (!txid.empty())
+                        trigger_tx_search(txid, true);
+                } else if (tools_sel == nav.psbt_action) {
+                    open_psbt_dialog();
+                } else if (tools_sel == nav.psbt_result) {
+                    std::string txid;
+                    {
+                        std::lock_guard lock(psbt_mtx);
+                        txid = psbt_state.result_txid;
                     }
                     if (!txid.empty())
                         trigger_tx_search(txid, true);
@@ -901,14 +1026,18 @@ static int run(int argc, char* argv[]) {
                 return true;
             }
             if (event == Event::ArrowDown || event == Event::ArrowUp) {
-                bool has_result_row;
+                bool bcast_has_result, psbt_has_result;
                 {
                     std::lock_guard lock(broadcast_mtx);
-                    has_result_row = broadcast_state.has_result && broadcast_state.success;
+                    bcast_has_result = broadcast_state.has_result && broadcast_state.success;
                 }
-                int max_sel = has_result_row ? 1 : 0; // 0=action; 1=result txid (if any)
+                {
+                    std::lock_guard lock(psbt_mtx);
+                    psbt_has_result = psbt_state.has_result && psbt_state.success;
+                }
+                auto nav = tools_nav(bcast_has_result, psbt_has_result);
                 if (event == Event::ArrowDown)
-                    tools_sel = std::min(tools_sel + 1, max_sel);
+                    tools_sel = std::min(tools_sel + 1, nav.max_sel);
                 else
                     tools_sel = std::max(tools_sel - 1, 0);
                 screen.PostEvent(Event::Custom);
@@ -1066,6 +1195,8 @@ static int run(int argc, char* argv[]) {
         search_thread.join();
     if (broadcast_thread.joinable())
         broadcast_thread.join();
+    if (psbt_thread.joinable())
+        psbt_thread.join();
     poll_thread.join();
     anim_thread.join();
 

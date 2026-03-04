@@ -155,6 +155,34 @@ struct BroadcastState {
     bool        has_result = false;
 };
 
+struct PsbtState {
+    std::string psbt;       // original base64 PSBT input
+    bool        submitting = false;
+    std::string result_txid;
+    std::string result_error;
+    bool        success    = false;
+    bool        has_result = false;
+    bool        incomplete = false; // finalizepsbt returned complete=false
+};
+
+// tools_sel navigation indices — vary based on which result rows are visible.
+struct ToolsNav {
+    int bcast_action; // always 0
+    int bcast_result; // 1 if broadcast succeeded, else -1
+    int psbt_action;  // 1 or 2
+    int psbt_result;  // psbt_action+1 if psbt succeeded, else -1
+    int max_sel;
+};
+inline ToolsNav tools_nav(bool bcast_has_result, bool psbt_has_result) {
+    ToolsNav n;
+    n.bcast_action = 0;
+    n.bcast_result = bcast_has_result ? 1 : -1;
+    n.psbt_action  = bcast_has_result ? 2 : 1;
+    n.psbt_result  = psbt_has_result ? n.psbt_action + 1 : -1;
+    n.max_sel      = n.psbt_result >= 0 ? n.psbt_result : n.psbt_action;
+    return n;
+}
+
 // ============================================================================
 // Result classification and navigation helpers (pure, inline)
 // ============================================================================
