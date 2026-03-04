@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(bitcoin-tui VERSION 0.3.0 LANGUAGES CXX)
+project(bitcoin-tui VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +21,9 @@ FetchContent_MakeAvailable(ftxui)
 
 add_executable(bitcoin-tui
   src/main.cpp
+  src/render.cpp
+  src/poll.cpp
+  src/search.cpp
   src/rpc_client.cpp
 )
 

@@ -1,8 +1,6 @@
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <chrono>
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -22,591 +20,14 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 
+#include "format.hpp"
+#include "poll.hpp"
+#include "render.hpp"
 #include "rpc_client.hpp"
+#include "search.hpp"
+#include "state.hpp"
 
 using namespace ftxui;
-
-// ============================================================================
-// Block animation parameters
-// ============================================================================
-static constexpr int BLOCK_ANIM_SLIDE_FRAMES = 12; // frames sliding right (~480 ms)
-static constexpr int BLOCK_ANIM_TOTAL_FRAMES = BLOCK_ANIM_SLIDE_FRAMES;
-
-// ============================================================================
-// Application state (shared between render thread and RPC polling thread)
-// ============================================================================
-struct BlockStat {
-    int64_t height       = 0;
-    int64_t txs          = 0;
-    int64_t total_size   = 0;
-    int64_t total_weight = 0;
-};
-
-struct PeerInfo {
-    int         id = 0;
-    std::string addr;
-    std::string network;
-    std::string subver;
-    bool        inbound       = false;
-    int64_t     bytes_sent    = 0;
-    int64_t     bytes_recv    = 0;
-    double      ping_ms       = -1.0;
-    int         version       = 0;
-    int64_t     synced_blocks = 0;
-};
-
-struct AppState {
-    // Blockchain
-    std::string chain      = "—";
-    int64_t     blocks     = 0;
-    int64_t     headers    = 0;
-    double      difficulty = 0.0;
-    double      progress   = 0.0;
-    bool        pruned     = false;
-    bool        ibd        = false;
-    std::string bestblockhash;
-
-    // Network
-    int         connections     = 0;
-    int         connections_in  = 0;
-    int         connections_out = 0;
-    std::string subversion;
-    int         protocol_version = 0;
-    bool        network_active   = true;
-    double      relay_fee        = 0.0;
-
-    // Mempool
-    int64_t mempool_tx      = 0;
-    int64_t mempool_bytes   = 0;
-    int64_t mempool_usage   = 0;
-    int64_t mempool_max     = 300000000;
-    double  mempool_min_fee = 0.0;
-    double  total_fee       = 0.0;
-
-    // Mining
-    double network_hashps = 0.0;
-
-    // Peers
-    std::vector<PeerInfo> peers;
-
-    // Recent blocks (index 0 = newest, populated by getblockstats)
-    std::vector<BlockStat> recent_blocks;
-    int64_t                blocks_fetched_at = -1;
-
-    // Block animation
-    bool                   block_anim_active = false;
-    int                    block_anim_frame  = 0;
-    std::vector<BlockStat> block_anim_old; // snapshot before new block arrived
-
-    // Status
-    std::string last_update;
-    std::string error_message;
-    bool        connected  = false;
-    bool        refreshing = false;
-};
-
-struct TxVin {
-    std::string txid;
-    int         vout        = 0;
-    bool        is_coinbase = false;
-};
-
-struct TxVout {
-    double      value = 0.0;
-    std::string address; // may be empty for non-standard scripts
-    std::string type;    // scriptPubKey type
-};
-
-struct TxSearchState {
-    std::string txid;
-    bool        searching = false;
-    bool        found     = false;
-    bool        is_block  = false; // true = block result, false = tx result
-    bool        confirmed = false; // tx only: true = in a block, false = in mempool
-    std::string error;
-    // Shared (tx)
-    int64_t vsize  = 0;
-    int64_t weight = 0;
-    // Mempool-only
-    double  fee         = 0.0; // BTC
-    double  fee_rate    = 0.0; // sat/vB
-    int64_t ancestors   = 0;
-    int64_t descendants = 0;
-    int64_t entry_time  = 0;
-    // Confirmed tx-only
-    std::string blockhash;
-    int64_t     block_height  = -1;
-    int64_t     confirmations = 0;
-    int64_t     blocktime     = 0;
-    int         vin_count     = 0;
-    int         vout_count    = 0;
-    double      total_output  = 0.0; // BTC, sum of all outputs
-    // Block result fields
-    std::string blk_hash;
-    int64_t     blk_height     = 0;
-    int64_t     blk_time       = 0;
-    int64_t     blk_ntx        = 0;
-    int64_t     blk_size       = 0;
-    int64_t     blk_weight     = 0;
-    double      blk_difficulty = 0.0;
-    std::string blk_miner;
-    int64_t     blk_confirmations = 0;
-    // Input/output navigation
-    std::vector<TxVin>  vin_list;
-    std::vector<TxVout> vout_list;
-    int                 io_selected = -1;
-    // Inputs overlay (opened by pressing Enter on the Inputs row)
-    bool inputs_overlay_open = false;
-    int  input_overlay_sel   = -1;
-    // Outputs overlay (opened by pressing Enter on the Outputs row)
-    bool outputs_overlay_open = false;
-    int  output_overlay_sel   = -1;
-};
-
-enum class TxResultKind { Searching, Block, Mempool, Confirmed, Error };
-
-static TxResultKind classify_result(const TxSearchState& ss) {
-    if (ss.searching)
-        return TxResultKind::Searching;
-    if (!ss.found)
-        return TxResultKind::Error;
-    if (ss.is_block)
-        return TxResultKind::Block;
-    return ss.confirmed ? TxResultKind::Confirmed : TxResultKind::Mempool;
-}
-
-// Navigation index helpers: pure, depend only on TxSearchState contents.
-// io_selected: -1=none, 0=block row, 1=inputs(if any), 1or2=outputs(if any)
-static int io_inputs_idx(const TxSearchState& ss) { return ss.vin_list.empty() ? -1 : 1; }
-static int io_outputs_idx(const TxSearchState& ss) {
-    if (ss.vout_list.empty())
-        return -1;
-    return ss.vin_list.empty() ? 1 : 2;
-}
-static int io_max_sel(const TxSearchState& ss) {
-    int n = 0;
-    if (!ss.vin_list.empty())
-        n++;
-    if (!ss.vout_list.empty())
-        n++;
-    return n;
-}
-
-// Query validators — pure predicates, no captures needed.
-static bool is_txid(const std::string& s) {
-    if (s.size() != 64)
-        return false;
-    return std::ranges::all_of(s, [](unsigned char c) { return std::isxdigit(c) != 0; });
-}
-static bool is_height(const std::string& s) {
-    return !s.empty() && s.size() <= 8 &&
-           std::ranges::all_of(s, [](unsigned char c) { return std::isdigit(c) != 0; });
-}
-
-// ============================================================================
-// Formatting helpers
-// ============================================================================
-static std::string fmt_int(int64_t n) {
-    bool        negative = n < 0;
-    std::string s        = std::to_string(std::abs(n));
-    int         pos      = static_cast<int>(s.size()) - 3;
-    while (pos > 0) {
-        s.insert(static_cast<size_t>(pos), ",");
-        pos -= 3;
-    }
-    return negative ? "-" + s : s;
-}
-
-static std::string fmt_height(int64_t n) {
-    std::string s   = std::to_string(n);
-    int         pos = static_cast<int>(s.size()) - 3;
-    while (pos > 0) {
-        s.insert(static_cast<size_t>(pos), "'");
-        pos -= 3;
-    }
-    return s;
-}
-
-static std::string fmt_bytes(int64_t b) {
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(1);
-    if (b >= 1'000'000'000LL)
-        ss << static_cast<double>(b) / 1e9 << " GB";
-    else if (b >= 1'000'000LL)
-        ss << static_cast<double>(b) / 1e6 << " MB";
-    else if (b >= 1'000LL)
-        ss << static_cast<double>(b) / 1e3 << " KB";
-    else
-        ss << b << " B";
-    return ss.str();
-}
-
-static std::string fmt_difficulty(double d) {
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2);
-    if (d >= 1e18)
-        ss << d / 1e18 << " E";
-    else if (d >= 1e15)
-        ss << d / 1e15 << " P";
-    else if (d >= 1e12)
-        ss << d / 1e12 << " T";
-    else if (d >= 1e9)
-        ss << d / 1e9 << " G";
-    else
-        ss << d;
-    return ss.str();
-}
-
-static std::string fmt_hashrate(double h) {
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2);
-    if (h >= 1e21)
-        ss << h / 1e21 << " ZH/s";
-    else if (h >= 1e18)
-        ss << h / 1e18 << " EH/s";
-    else if (h >= 1e15)
-        ss << h / 1e15 << " PH/s";
-    else if (h >= 1e12)
-        ss << h / 1e12 << " TH/s";
-    else if (h >= 1e9)
-        ss << h / 1e9 << " GH/s";
-    else if (h >= 1e6)
-        ss << h / 1e6 << " MH/s";
-    else if (h >= 1e3)
-        ss << h / 1e3 << " kH/s";
-    else
-        ss << h << " H/s";
-    return ss.str();
-}
-
-static std::string fmt_satsvb(double btc_per_kvb) {
-    double             sats_per_vb = btc_per_kvb * 1e5; // BTC/kvB → sat/vB
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(1) << sats_per_vb << " sat/vB";
-    return ss.str();
-}
-
-static std::string now_string() {
-    auto               t  = std::time(nullptr);
-    auto               tm = *std::localtime(&t);
-    std::ostringstream ss;
-    ss << std::put_time(&tm, "%H:%M:%S");
-    return ss.str();
-}
-
-static std::string fmt_btc(double btc, int precision = 8) {
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(precision) << btc << " BTC";
-    return ss.str();
-}
-
-static std::string fmt_age(int64_t secs) {
-    if (secs < 60)
-        return std::to_string(secs) + "s";
-    if (secs < 3600)
-        return std::to_string(secs / 60) + "m " + std::to_string(secs % 60) + "s";
-    return std::to_string(secs / 3600) + "h " + std::to_string((secs % 3600) / 60) + "m";
-}
-
-static std::string trimmed(std::string s) {
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
-        s.erase(s.begin());
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
-        s.pop_back();
-    return s;
-}
-
-static std::string extract_miner(const std::string& hex) {
-    std::string best, run;
-    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
-        int b = std::stoi(hex.substr(i, 2), nullptr, 16);
-        if (b >= 0x20 && b < 0x7f && b != '/') {
-            run += static_cast<char>(b);
-        } else {
-            if (run.size() >= 4 && run.size() > best.size())
-                best = run;
-            run.clear();
-        }
-    }
-    if (run.size() >= 4 && run.size() > best.size())
-        best = run;
-    if (best.size() > 24)
-        best = best.substr(0, 24);
-    return best.empty() ? "—" : best;
-}
-
-// ============================================================================
-// Tab renderers
-// ============================================================================
-static Element label_value(const std::string& lbl, const std::string& val,
-                           Color val_color = Color::Default) {
-    return hbox({
-        text(lbl) | color(Color::GrayDark),
-        text(val) | color(val_color) | bold,
-    });
-}
-
-static Element section_box(const std::string& title, Elements rows) {
-    Elements content;
-    content.reserve(rows.size() + 1);
-    content.push_back(text(" " + title + " ") | bold | color(Color::Gold1));
-    for (auto& r : rows)
-        content.push_back(std::move(r));
-    return vbox(std::move(content)) | border;
-}
-
-// --- Dashboard --------------------------------------------------------------
-static Element render_dashboard(const AppState& s) {
-    // Chain section
-    std::string chain_color_name = s.chain == "main" ? "mainnet" : s.chain;
-    Color       chain_color      = (s.chain == "main") ? Color::Green : Color::Yellow;
-
-    auto blockchain_section = section_box(
-        "Blockchain",
-        {
-            label_value("  Chain       : ", chain_color_name, chain_color),
-            label_value("  Height      : ", fmt_height(s.blocks)),
-            label_value("  Headers     : ", fmt_height(s.headers)),
-            label_value("  Difficulty  : ", fmt_difficulty(s.difficulty)),
-            label_value("  Hash Rate   : ", fmt_hashrate(s.network_hashps)),
-            hbox({
-                text("  Sync        : ") | color(Color::GrayDark),
-                gauge(static_cast<float>(s.progress)) | flex |
-                    color(s.progress >= 1.0 ? Color::Green : Color::Yellow),
-                text(" " + std::to_string(static_cast<int>(s.progress * 100)) + "%") | bold,
-            }),
-            label_value("  IBD         : ", s.ibd ? "yes" : "no",
-                        s.ibd ? Color::Yellow : Color::Green),
-            label_value("  Pruned      : ", s.pruned ? "yes" : "no"),
-        });
-
-    // Network section
-    Color net_color       = s.network_active ? Color::Green : Color::Red;
-    auto  network_section = section_box(
-        "Network", {
-                       label_value("  Active      : ", s.network_active ? "yes" : "no", net_color),
-                       label_value("  Connections : ", std::to_string(s.connections)),
-                       label_value("    In        : ", std::to_string(s.connections_in)),
-                       label_value("    Out       : ", std::to_string(s.connections_out)),
-                       label_value("  Client      : ", s.subversion),
-                       label_value("  Protocol    : ", std::to_string(s.protocol_version)),
-                       label_value("  Relay fee   : ", fmt_satsvb(s.relay_fee)),
-                   });
-
-    // Mempool section
-    double usage_frac      = s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) /
-                                                static_cast<double>(s.mempool_max)
-                                               : 0.0;
-    auto   mempool_section = section_box(
-        "Mempool",
-        {
-            label_value("  Transactions: ", fmt_int(s.mempool_tx)),
-            label_value("  Size        : ", fmt_bytes(s.mempool_bytes)),
-            label_value("  Total fee   : ", fmt_btc(s.total_fee, 4)),
-            label_value("  Min fee     : ", fmt_satsvb(s.mempool_min_fee)),
-            hbox({
-                text("  Memory      : ") | color(Color::GrayDark),
-                gauge(static_cast<float>(usage_frac)) | flex |
-                    color(usage_frac > 0.8 ? Color::Red : Color::Cyan),
-                text(" " + fmt_bytes(s.mempool_usage) + " / " + fmt_bytes(s.mempool_max)) | bold,
-            }),
-        });
-
-    return vbox({
-               hbox({
-                   blockchain_section | flex,
-                   network_section | flex,
-               }),
-               mempool_section,
-           }) |
-           flex;
-}
-
-// --- Mempool ----------------------------------------------------------------
-static Element render_mempool(const AppState& s) {
-    double usage_frac  = s.mempool_max > 0 ? static_cast<double>(s.mempool_usage) /
-                                                static_cast<double>(s.mempool_max)
-                                           : 0.0;
-    Color  usage_color = usage_frac > 0.8   ? Color::Red
-                         : usage_frac > 0.5 ? Color::Yellow
-                                            : Color::Cyan;
-
-    auto stats_section = section_box(
-        "Mempool", {
-                       label_value("  Transactions    : ", fmt_int(s.mempool_tx)),
-                       label_value("  Virtual size    : ", fmt_bytes(s.mempool_bytes)),
-                       label_value("  Total fees      : ", fmt_btc(s.total_fee)),
-                       label_value("  Min relay fee   : ", fmt_satsvb(s.mempool_min_fee)),
-                       separator(),
-                       text("  Memory usage") | color(Color::GrayDark),
-                       hbox({
-                           text("  "),
-                           gauge(static_cast<float>(usage_frac)) | flex | color(usage_color),
-                           text("  "),
-                       }),
-                       hbox({
-                           text("  Used : ") | color(Color::GrayDark),
-                           text(fmt_bytes(s.mempool_usage)) | bold,
-                           text("  /  Max : ") | color(Color::GrayDark),
-                           text(fmt_bytes(s.mempool_max)) | bold,
-                       }),
-                   });
-
-    // Block visualization — vertical fill bars, one column per block.
-    Element blocks_section;
-    if (s.recent_blocks.empty()) {
-        blocks_section =
-            section_box("Recent Blocks", {text("  Fetching…") | color(Color::GrayDark)});
-    } else {
-        const int     BAR_HEIGHT = 6;
-        const int     COL_WIDTH  = 10;
-        const int64_t MAX_WEIGHT = 4'000'000LL;
-
-        // Determine animation phase.
-        bool anim_slide = s.block_anim_active && !s.block_anim_old.empty();
-
-        // During slide: render old blocks minus the last (it slides off the right edge).
-        const std::vector<BlockStat>& src        = anim_slide ? s.block_anim_old : s.recent_blocks;
-        int                           num        = static_cast<int>(src.size());
-        int                           max_render = anim_slide ? std::max(0, num - 1) : num;
-
-        // Slide offset grows from 0 → (COL_WIDTH+1) chars over SLIDE_FRAMES frames.
-        int left_pad = 0;
-        if (anim_slide) {
-            double progress = (s.block_anim_frame + 1.0) / BLOCK_ANIM_SLIDE_FRAMES;
-            left_pad        = static_cast<int>(std::round(progress * (COL_WIDTH + 1)));
-        }
-
-        Elements block_cols;
-        for (int i = 0; i < max_render; ++i) {
-            const auto& b = src[i];
-            double fill   = b.total_weight > 0 ? std::min(1.0, static_cast<double>(b.total_weight) /
-                                                                   static_cast<double>(MAX_WEIGHT))
-                                               : 0.0;
-
-            Color bar_color = fill > 0.9   ? Color(Color::DarkOrange)
-                              : fill > 0.7 ? Color(Color::Yellow)
-                                           : Color(Color::Green);
-
-            int filled_rows = static_cast<int>(std::round(fill * BAR_HEIGHT));
-
-            Elements bar;
-            for (int r = 0; r < BAR_HEIGHT; ++r) {
-                bool is_filled = r >= (BAR_HEIGHT - filled_rows);
-                bar.push_back(is_filled ? text("██████████") | color(bar_color)
-                                        : text("░░░░░░░░░░") | color(Color::GrayDark));
-            }
-
-            if (!block_cols.empty())
-                block_cols.push_back(text(" "));
-
-            block_cols.push_back(
-                vbox({
-                    vbox(std::move(bar)),
-                    text(fmt_height(b.height)) | center,
-                    text(fmt_int(b.txs) + " tx") | center | color(Color::GrayDark),
-                    text(fmt_bytes(b.total_size)) | center | color(Color::GrayDark),
-                }) |
-                size(WIDTH, EQUAL, COL_WIDTH));
-        }
-
-        // Compose row: optional slide-offset pad on the left, then blocks.
-        Element blocks_row =
-            left_pad > 0 ? hbox({text(std::string(left_pad, ' ')), hbox(std::move(block_cols))})
-                         : hbox(std::move(block_cols));
-
-        blocks_section =
-            section_box("Recent Blocks", {text(""), hbox({text("  "), std::move(blocks_row)})});
-    }
-
-    return vbox({
-        stats_section,
-        blocks_section,
-    });
-}
-
-// --- Network ----------------------------------------------------------------
-static Element render_network(const AppState& s) {
-    return vbox({
-               section_box(
-                   "Network Status",
-                   {
-                       label_value("  Network active : ", s.network_active ? "yes" : "no",
-                                   s.network_active ? Color::Green : Color::Red),
-                       label_value("  Total peers    : ", std::to_string(s.connections)),
-                       label_value("  Inbound        : ", std::to_string(s.connections_in)),
-                       label_value("  Outbound       : ", std::to_string(s.connections_out)),
-                   }),
-               section_box(
-                   "Node",
-                   {
-                       label_value("  Client version : ", s.subversion),
-                       label_value("  Protocol       : ", std::to_string(s.protocol_version)),
-                       label_value("  Relay fee      : ", fmt_satsvb(s.relay_fee)),
-                   }),
-               filler(),
-           }) |
-           flex;
-}
-
-// --- Peers ------------------------------------------------------------------
-static Element render_peers(const AppState& s) {
-    if (s.peers.empty()) {
-        return vbox({
-                   text("No peers connected.") | color(Color::GrayDark) | center,
-                   filler(),
-               }) |
-               flex;
-    }
-
-    // Right-align text inside a fixed-width cell.
-    auto rcell = [](Element e, int w) -> Element {
-        return hbox({filler(), std::move(e)}) | size(WIDTH, EQUAL, w);
-    };
-
-    // Header row
-    Elements rows;
-    rows.push_back(hbox({
-                       text("ID") | bold | size(WIDTH, EQUAL, 5),
-                       text("Address") | bold | flex,
-                       text("Net") | bold | size(WIDTH, EQUAL, 5),
-                       text("I/O") | bold | size(WIDTH, EQUAL, 4),
-                       rcell(text("Ping ms") | bold, 8),
-                       rcell(text("Recv") | bold, 10),
-                       rcell(text("Sent") | bold, 10),
-                       rcell(text("Height") | bold, 9),
-                   }) |
-                   color(Color::Gold1));
-    rows.push_back(separator());
-
-    for (const auto& p : s.peers) {
-        std::string ping_str = p.ping_ms >= 0.0 ? [&] {
-            std::ostringstream ss;
-            ss << std::fixed << std::setprecision(1) << p.ping_ms;
-            return ss.str();
-        }()
-                                                : "—";
-
-        Color       io_color = p.inbound ? Color::Cyan : Color::Green;
-        std::string net_str  = p.network.empty() ? "?" : p.network.substr(0, 4);
-
-        rows.push_back(hbox({
-            text(std::to_string(p.id)) | size(WIDTH, EQUAL, 5),
-            text(p.addr) | flex,
-            text(net_str) | size(WIDTH, EQUAL, 5),
-            text(p.inbound ? "in" : "out") | color(io_color) | size(WIDTH, EQUAL, 4),
-            rcell(text(ping_str), 8),
-            rcell(text(fmt_bytes(p.bytes_recv)), 10),
-            rcell(text(fmt_bytes(p.bytes_sent)), 10),
-            rcell(text(fmt_height(p.synced_blocks)), 9),
-        }));
-    }
-
-    return vbox({
-               vbox(std::move(rows)) | border | flex,
-           }) |
-           flex;
-}
 
 // ============================================================================
 // Cookie authentication helpers
@@ -655,255 +76,6 @@ static void apply_cookie(RpcConfig& cfg, const std::string& path) {
         throw std::runtime_error("Invalid cookie file (no ':' found): " + path);
     cfg.user     = line.substr(0, colon);
     cfg.password = line.substr(colon + 1);
-}
-
-// ============================================================================
-// RPC polling
-// ============================================================================
-// on_core_ready is called after the 5 fast RPC calls so the UI can render
-// core data immediately, before the slower getblockstats fetches complete.
-static void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
-                     const std::function<void()>& on_core_ready = nullptr) {
-    // Read cached tip height so we can skip re-fetching block stats when tip hasn't moved.
-    int64_t cached_tip = 0;
-    {
-        std::lock_guard lk(mtx);
-        cached_tip = state.blocks_fetched_at;
-    }
-
-    try {
-        // ── Phase 1: fast calls ──────────────────────────────────────────────
-        auto bc  = rpc.call("getblockchaininfo")["result"];
-        auto net = rpc.call("getnetworkinfo")["result"];
-        auto mp  = rpc.call("getmempoolinfo")["result"];
-        auto pi  = rpc.call("getpeerinfo")["result"];
-
-        int64_t new_tip = bc.value("blocks", 0LL);
-
-        // Commit core state immediately so the UI can render before block stats arrive.
-        {
-            std::lock_guard lock(mtx);
-
-            // Blockchain
-            state.chain         = bc.value("chain", "—");
-            state.blocks        = bc.value("blocks", 0LL);
-            state.headers       = bc.value("headers", 0LL);
-            state.difficulty    = bc.value("difficulty", 0.0);
-            state.progress      = bc.value("verificationprogress", 0.0);
-            state.pruned        = bc.value("pruned", false);
-            state.ibd           = bc.value("initialblockdownload", false);
-            state.bestblockhash = bc.value("bestblockhash", "");
-
-            // Network
-            state.connections      = net.value("connections", 0);
-            state.connections_in   = net.value("connections_in", 0);
-            state.connections_out  = net.value("connections_out", 0);
-            state.subversion       = net.value("subversion", "");
-            state.protocol_version = net.value("protocolversion", 0);
-            state.network_active   = net.value("networkactive", true);
-            state.relay_fee        = net.value("relayfee", 0.0);
-
-            // Mempool
-            state.mempool_tx      = mp.value("size", 0LL);
-            state.mempool_bytes   = mp.value("bytes", 0LL);
-            state.mempool_usage   = mp.value("usage", 0LL);
-            state.mempool_max     = mp.value("maxmempool", 300000000LL);
-            state.mempool_min_fee = mp.value("mempoolminfee", 0.0);
-            state.total_fee       = mp.value("total_fee", 0.0);
-
-            // Hashrate derived from difficulty (saves a getmininginfo round-trip):
-            // difficulty × 2³² / 600  ≈  expected hashes per second at current difficulty
-            state.network_hashps = bc.value("difficulty", 0.0) * 4294967296.0 / 600.0;
-
-            // Peers
-            state.peers.clear();
-            for (const auto& p : pi) {
-                PeerInfo peer;
-                peer.id            = p.value("id", 0);
-                peer.addr          = p.value("addr", "");
-                peer.network       = p.value("network", "");
-                peer.subver        = p.value("subver", "");
-                peer.inbound       = p.value("inbound", false);
-                peer.bytes_sent    = p.value("bytessent", 0LL);
-                peer.bytes_recv    = p.value("bytesrecv", 0LL);
-                peer.version       = p.value("version", 0);
-                peer.synced_blocks = p.value("synced_blocks", 0LL);
-                if (p.contains("pingtime") && p["pingtime"].is_number()) {
-                    peer.ping_ms = p["pingtime"].get<double>() * 1000.0;
-                }
-                state.peers.push_back(std::move(peer));
-            }
-
-            state.connected = true;
-            state.error_message.clear();
-            state.last_update = now_string();
-        }
-
-        // Let the UI render with core data while block stats are fetched.
-        if (on_core_ready)
-            on_core_ready();
-
-        // ── Phase 2: per-block stats (slow — 7 sequential calls) ────────────
-        if (new_tip != cached_tip && new_tip > 0) {
-            std::vector<BlockStat> fresh_blocks;
-            for (int i = 0; i < 7 && (new_tip - i) >= 0; ++i) {
-                try {
-                    json      params = {new_tip - i,
-                                        json({"height", "txs", "total_size", "total_weight"})};
-                    auto      bs     = rpc.call("getblockstats", params)["result"];
-                    BlockStat blk;
-                    blk.height       = bs.value("height", 0LL);
-                    blk.txs          = bs.value("txs", 0LL);
-                    blk.total_size   = bs.value("total_size", 0LL);
-                    blk.total_weight = bs.value("total_weight", 0LL);
-                    fresh_blocks.push_back(blk);
-                } catch (...) {
-                    break;
-                }
-            }
-
-            std::lock_guard lock(mtx);
-            // Trigger slide animation when a new block arrives.
-            if (!state.recent_blocks.empty() && !fresh_blocks.empty()) {
-                state.block_anim_old    = state.recent_blocks;
-                state.block_anim_frame  = 0;
-                state.block_anim_active = true;
-            }
-            state.recent_blocks     = std::move(fresh_blocks);
-            state.blocks_fetched_at = new_tip;
-        }
-
-    } catch (const std::exception& e) {
-        std::lock_guard lock(mtx);
-        state.connected     = false;
-        state.error_message = e.what();
-        state.last_update   = now_string();
-    }
-}
-
-// ============================================================================
-// Transaction / block lookup — pure: takes config + query, returns result.
-// No shared state, no threads, no UI side-effects. Suitable for testing.
-// ============================================================================
-static TxSearchState perform_tx_search(const RpcConfig& cfg, const std::string& query,
-                                       bool is_height, int64_t tip) {
-    TxSearchState result;
-    result.txid = query;
-    try {
-        RpcConfig search_cfg       = cfg;
-        search_cfg.timeout_seconds = 5;
-        RpcClient search_rpc(search_cfg);
-
-        // Helper: populate result with block data from getblock (verbosity 1)
-        auto fetch_block = [&](const std::string& hash) {
-            auto blk                 = search_rpc.call("getblock", {json(hash), json(1)})["result"];
-            result.blk_hash          = blk.value("hash", hash);
-            result.blk_height        = blk.value("height", 0LL);
-            result.blk_time          = blk.value("time", 0LL);
-            result.blk_ntx           = blk.value("nTx", 0LL);
-            result.blk_size          = blk.value("size", 0LL);
-            result.blk_weight        = blk.value("weight", 0LL);
-            result.blk_difficulty    = blk.value("difficulty", 0.0);
-            result.blk_confirmations = blk.value("confirmations", 0LL);
-            // Extract miner tag from coinbase scriptSig
-            if (blk.contains("tx") && blk["tx"].is_array() && !blk["tx"].empty()) {
-                std::string coinbase_txid = blk["tx"][0].get<std::string>();
-                try {
-                    auto coinbase_tx = search_rpc.call("getrawtransaction",
-                                                       {json(coinbase_txid), json(true)})["result"];
-                    if (coinbase_tx.contains("vin") && coinbase_tx["vin"].is_array() &&
-                        !coinbase_tx["vin"].empty()) {
-                        std::string cb_hex = coinbase_tx["vin"][0].value("coinbase", "");
-                        result.blk_miner   = extract_miner(cb_hex);
-                    }
-                } catch (...) {
-                    result.blk_miner = "—";
-                }
-            }
-            result.is_block = true;
-            result.found    = true;
-        };
-
-        if (is_height) {
-            // Block height search: getblockhash → getblock
-            int64_t     height = std::stoll(query);
-            auto        hash_r = search_rpc.call("getblockhash", {height})["result"];
-            std::string hash   = hash_r.get<std::string>();
-            fetch_block(hash);
-        } else {
-            // 1. Try mempool first
-            try {
-                auto entry = search_rpc.call("getmempoolentry", {query})["result"];
-
-                if (entry.contains("fees") && entry["fees"].is_object())
-                    result.fee = entry["fees"].value("base", 0.0);
-                else
-                    result.fee = entry.value("fee", 0.0);
-
-                result.vsize       = entry.value("vsize", 0LL);
-                result.weight      = entry.value("weight", 0LL);
-                result.ancestors   = entry.value("ancestorcount", 0LL);
-                result.descendants = entry.value("descendantcount", 0LL);
-                result.entry_time  = entry.value("time", 0LL);
-                if (result.vsize > 0)
-                    result.fee_rate = result.fee * 1e8 / static_cast<double>(result.vsize);
-                result.confirmed = false;
-                result.found     = true;
-            } catch (...) {
-                // 2. Try confirmed tx (requires txindex=1)
-                try {
-                    auto tx =
-                        search_rpc.call("getrawtransaction", {json(query), json(true)})["result"];
-
-                    result.vsize         = tx.value("vsize", 0LL);
-                    result.weight        = tx.value("weight", 0LL);
-                    result.blockhash     = tx.value("blockhash", "");
-                    result.confirmations = tx.value("confirmations", 0LL);
-                    result.blocktime     = tx.value("blocktime", 0LL);
-
-                    if (tip > 0 && result.confirmations > 0)
-                        result.block_height = tip - result.confirmations + 1;
-
-                    if (tx.contains("vin") && tx["vin"].is_array()) {
-                        for (const auto& inp : tx["vin"]) {
-                            TxVin v;
-                            if (inp.contains("coinbase")) {
-                                v.is_coinbase = true;
-                            } else {
-                                v.txid = inp.value("txid", "");
-                                v.vout = inp.value("vout", 0);
-                            }
-                            result.vin_list.push_back(v);
-                        }
-                        result.vin_count = static_cast<int>(result.vin_list.size());
-                    }
-                    if (tx.contains("vout") && tx["vout"].is_array()) {
-                        for (const auto& out : tx["vout"]) {
-                            TxVout v;
-                            v.value = out.value("value", 0.0);
-                            if (out.contains("scriptPubKey")) {
-                                const auto& spk = out["scriptPubKey"];
-                                v.type          = spk.value("type", "");
-                                if (spk.contains("address"))
-                                    v.address = spk.value("address", "");
-                            }
-                            result.total_output += v.value;
-                            result.vout_list.push_back(v);
-                        }
-                        result.vout_count = static_cast<int>(result.vout_list.size());
-                    }
-                    result.confirmed = true;
-                    result.found     = true;
-                } catch (...) {
-                    // 3. Fall back: try as block hash
-                    fetch_block(query);
-                }
-            }
-        }
-    } catch (const std::exception& e) {
-        result.error = e.what();
-    }
-    return result;
 }
 
 // ============================================================================
@@ -1021,13 +193,22 @@ static int run(int argc, char* argv[]) {
     std::atomic<bool>          search_in_flight{false};
     std::thread                search_thread;
 
+    // Broadcast tools state
+    BroadcastState    broadcast_state;
+    std::mutex        broadcast_mtx;
+    bool              tools_input_active = false;
+    std::string       tools_hex_str;
+    std::atomic<bool> broadcast_in_flight{false};
+    std::thread       broadcast_thread;
+    int               tools_sel = 0; // 0=Broadcast, 1=result txid row (when present)
+
     std::atomic<bool> running{true};
 
     // FTXUI screen
     auto screen = ScreenInteractive::Fullscreen();
 
     // Tabs
-    std::vector<std::string> tab_labels = {"Dashboard", "Mempool", "Network", "Peers"};
+    std::vector<std::string> tab_labels = {"Dashboard", "Mempool", "Network", "Peers", "Tools"};
     int                      tab_index  = 0;
 
     auto tab_toggle = Toggle(&tab_labels, &tab_index);
@@ -1074,6 +255,49 @@ static int run(int argc, char* argv[]) {
             {
                 std::lock_guard lock(search_mtx);
                 search_state = result;
+            }
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    auto open_broadcast_dialog = [&] {
+        tools_input_active = true;
+        tools_sel          = 0;
+        tools_hex_str.clear();
+        screen.PostEvent(Event::Custom);
+    };
+
+    auto trigger_broadcast = [&](const std::string& hex) {
+        if (broadcast_in_flight.load())
+            return;
+        broadcast_in_flight = true;
+        {
+            std::lock_guard lock(broadcast_mtx);
+            broadcast_state = BroadcastState{.hex = hex, .submitting = true};
+        }
+        screen.PostEvent(Event::Custom);
+        if (broadcast_thread.joinable())
+            broadcast_thread.join();
+        broadcast_thread = std::thread([&, hex] {
+            BroadcastState result{.hex = hex};
+            try {
+                RpcConfig bcast_cfg       = cfg;
+                bcast_cfg.timeout_seconds = 30;
+                RpcClient bc(bcast_cfg);
+                json      res      = bc.call("sendrawtransaction", {hex});
+                result.result_txid = res["result"].get<std::string>();
+                result.success     = true;
+            } catch (const std::exception& e) {
+                result.result_error = e.what();
+                result.success      = false;
+            }
+            result.has_result   = true;
+            broadcast_in_flight = false;
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(broadcast_mtx);
+                broadcast_state = result;
             }
             screen.PostEvent(Event::Custom);
         });
@@ -1375,6 +599,15 @@ static int run(int argc, char* argv[]) {
         case 3:
             tab_content = render_peers(snap);
             break;
+        case 4: {
+            BroadcastState bs;
+            {
+                std::lock_guard lock(broadcast_mtx);
+                bs = broadcast_state;
+            }
+            tab_content = render_tools(snap, bs, tools_input_active, tools_hex_str, tools_sel);
+            break;
+        }
         default:
             tab_content = text("Unknown tab");
         }
@@ -1402,6 +635,10 @@ static int run(int argc, char* argv[]) {
         Element status_right =
             global_search_active
                 ? hbox({text("  [Enter] search  [Esc] cancel ") | color(Color::Yellow)})
+            : (tab_index == 4 && tools_input_active)
+                ? hbox({text("  [Enter] submit  [Esc] cancel ") | color(Color::Yellow)})
+            : (tab_index == 4)
+                ? hbox({text("  [↑/↓] navigate  [↵] activate  [q] quit ") | color(Color::GrayDark)})
             : overlay_outputs_open
                 ? hbox({text("  [↑/↓] navigate  [Esc] back  [q] quit ") | color(Color::Yellow)})
             : overlay_inputs_open
@@ -1511,6 +748,40 @@ static int run(int argc, char* argv[]) {
             }
             return false;
         }
+        // Tools broadcast input mode
+        if (tools_input_active) {
+            if (event == Event::Escape) {
+                tools_input_active = false;
+                tools_hex_str.clear();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Return) {
+                std::string hex    = trimmed(tools_hex_str);
+                tools_input_active = false;
+                tools_hex_str.clear();
+                if (!hex.empty())
+                    trigger_broadcast(hex);
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Backspace) {
+                if (!tools_hex_str.empty())
+                    tools_hex_str.pop_back();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            // Swallow Tab/arrows so they don't change tabs while typing
+            if (event == Event::Tab || event == Event::TabReverse || event == Event::ArrowLeft ||
+                event == Event::ArrowRight)
+                return true;
+            if (event.is_character()) {
+                tools_hex_str += event.character();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            return false;
+        }
         // Outputs sub-overlay mode
         {
             bool outputs_open = false;
@@ -1607,6 +878,42 @@ static int run(int argc, char* argv[]) {
             global_search_str.clear();
             screen.PostEvent(Event::Custom);
             return true;
+        }
+        // Tools tab keys
+        if (tab_index == 4) {
+            if (event == Event::Character('b')) {
+                open_broadcast_dialog();
+                return true;
+            }
+            if (event == Event::Return) {
+                if (tools_sel == 0) {
+                    open_broadcast_dialog();
+                } else if (tools_sel == 1) {
+                    std::string txid;
+                    {
+                        std::lock_guard lock(broadcast_mtx);
+                        if (broadcast_state.has_result && broadcast_state.success)
+                            txid = broadcast_state.result_txid;
+                    }
+                    if (!txid.empty())
+                        trigger_tx_search(txid, true);
+                }
+                return true;
+            }
+            if (event == Event::ArrowDown || event == Event::ArrowUp) {
+                bool has_result_row;
+                {
+                    std::lock_guard lock(broadcast_mtx);
+                    has_result_row = broadcast_state.has_result && broadcast_state.success;
+                }
+                int max_sel = has_result_row ? 1 : 0; // 0=action; 1=result txid (if any)
+                if (event == Event::ArrowDown)
+                    tools_sel = std::min(tools_sel + 1, max_sel);
+                else
+                    tools_sel = std::max(tools_sel - 1, 0);
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
         }
         if (event == Event::ArrowDown || event == Event::ArrowUp) {
             bool handled = false;
@@ -1757,6 +1064,8 @@ static int run(int argc, char* argv[]) {
     running = false;
     if (search_thread.joinable())
         search_thread.join();
+    if (broadcast_thread.joinable())
+        broadcast_thread.join();
     poll_thread.join();
     anim_thread.join();
 

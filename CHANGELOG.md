@@ -2,6 +2,13 @@
 
 All notable changes to bitcoin-tui are documented here.
 
+## [0.4.0] - 2026-03-03
+
+### Added
+- **Tools tab** - new fifth tab for transaction utilities
+- **Broadcast Transaction** - paste a raw hex transaction and submit it via `sendrawtransaction`; press `[b]` or navigate with `↑/↓` and press `Enter`, type or paste the hex, confirm with `Enter`; the result txid is selectable and pressing `Enter` on it opens the transaction in the search overlay
+- **Private Broadcast Queue** - live view of transactions pending private broadcast (`getprivatebroadcastinfo`, Bitcoin Core PR #29415); shown automatically when the queue is non-empty
+
 ## [0.3.0] - 2026-02-27
 
 ### Added

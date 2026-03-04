@@ -2,7 +2,7 @@
 
 A terminal UI for a [Bitcoin node](https://github.com/bitcoin/bitcoin) built with [FTXUI](https://github.com/ArthurSonzogni/FTXUI).
 
-Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live blockchain, mempool, network, and peer data - no external libraries required beyond FTXUI.
+Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live blockchain, mempool, network, and peer data — and lets you broadcast transactions directly from the terminal. No external libraries required beyond FTXUI.
 
 ## Screenshot
 
@@ -22,6 +22,7 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 - **Search** - press `/` to search mempool or confirmed transactions (txid); drill into blocks, inputs, and outputs (`txindex=1` required for confirmed lookups)
 - **Network** - connection counts (inbound/outbound), client version, protocol version, relay fee
 - **Peers** - live peer table with address, network type, direction, ping, bytes sent/received, and tip height
+- **Tools** - broadcast raw transactions via `sendrawtransaction`; live private broadcast queue (Bitcoin Core PR #29415, shown when non-empty)
 - Background polling thread - non-blocking UI with configurable refresh interval
 - No external dependencies beyond FTXUI (JSON parsing and HTTP handled in-tree)
 
