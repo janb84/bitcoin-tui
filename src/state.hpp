@@ -98,6 +98,24 @@ struct AppState {
     std::vector<std::string> privbcast_txids;
 };
 
+struct SoftFork {
+    std::string name;
+    std::string type; // "buried" | "bip9"
+    bool        active = false;
+    int64_t     height = -1; // activation height (-1 = unknown)
+    // bip9 extras (empty/0 for buried)
+    std::string bip9_status;             // defined | started | locked_in | active | failed
+    int64_t     bip9_since          = 0; // block height status started
+    int64_t     bip9_start_time     = 0; // unix timestamp
+    int64_t     bip9_timeout        = 0; // unix timestamp
+    int64_t     bip9_min_activation = 0;
+    // signalling stats (only present during "started")
+    int64_t bip9_elapsed   = 0;
+    int64_t bip9_count     = 0;
+    int64_t bip9_period    = 0;
+    int64_t bip9_threshold = 0;
+};
+
 struct TxVin {
     std::string txid;
     int         vout        = 0;

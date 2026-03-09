@@ -290,6 +290,39 @@ TEST_CASE("range-for over empty array") {
     CHECK(count == 0);
 }
 
+TEST_CASE("items() — object key/value iteration") {
+    json o = {{"alpha", 1}, {"beta", 2}, {"gamma", 3}};
+    CHECK(o.is_object());
+
+    std::map<std::string, int> seen;
+    for (const auto& [key, val] : o.items())
+        seen[key] = val.get<int>();
+
+    CHECK(seen.size() == 3);
+    CHECK(seen["alpha"] == 1);
+    CHECK(seen["beta"] == 2);
+    CHECK(seen["gamma"] == 3);
+}
+
+TEST_CASE("items() — parsed object key/value iteration") {
+    auto                     o = json::parse(R"({"x":"foo","y":"bar"})");
+    std::vector<std::string> keys;
+    for (const auto& [k, v] : o.items())
+        keys.push_back(k);
+    // std::map orders keys alphabetically
+    CHECK(keys.size() == 2);
+    CHECK(keys[0] == "x");
+    CHECK(keys[1] == "y");
+}
+
+TEST_CASE("items() — empty object") {
+    json o = json::object();
+    int  n = 0;
+    for (const auto& [k, v] : o.items())
+        ++n;
+    CHECK(n == 0);
+}
+
 // ============================================================================
 // parse — primitives
 // ============================================================================
@@ -724,4 +757,96 @@ TEST_CASE("getrawtransaction coinbase vin shape") {
     CHECK(vout.size() == 1);
     CHECK(vout[0].value("value", 0.0) == Catch::Approx(3.125).epsilon(1e-6));
     CHECK(vout[0]["scriptPubKey"].value("type", "") == "witness_v1_taproot");
+}
+
+TEST_CASE("getdeploymentinfo response shape") {
+    const std::string raw = R"({
+        "result": {
+            "hash": "000000000000000000029b8b516a6c5d8dc4aa1e6a2e3c9c4e87f3b7c2d1e0f",
+            "height": 884231,
+            "deployments": {
+                "bip34": {
+                    "type": "buried",
+                    "active": true,
+                    "height": 227931
+                },
+                "taproot": {
+                    "type": "bip9",
+                    "bip9": {
+                        "status": "active",
+                        "start_time": 1619222400,
+                        "timeout": 1628640000,
+                        "min_activation_height": 709632,
+                        "since": 709632
+                    },
+                    "active": true,
+                    "height": 709632
+                },
+                "dummy": {
+                    "type": "bip9",
+                    "bip9": {
+                        "status": "started",
+                        "start_time": 1700000000,
+                        "timeout": 1800000000,
+                        "min_activation_height": 0,
+                        "since": 880000,
+                        "statistics": {
+                            "period": 2016,
+                            "threshold": 1815,
+                            "elapsed": 100,
+                            "count": 80
+                        }
+                    },
+                    "active": false,
+                    "height": -1
+                }
+            }
+        },
+        "error": null,
+        "id": 8
+    })";
+
+    auto j = json::parse(raw);
+    CHECK(j["error"].is_null());
+
+    auto dep = j["result"]["deployments"];
+    CHECK(dep.is_object());
+    CHECK(dep.size() == 3);
+
+    // buried fork
+    auto bip34 = dep["bip34"];
+    CHECK(bip34.value("type", "") == "buried");
+    CHECK(bip34.value("active", false) == true);
+    CHECK(bip34.value("height", 0LL) == 227931LL);
+    CHECK(!bip34.contains("bip9"));
+
+    // active bip9 fork
+    auto taproot = dep["taproot"];
+    CHECK(taproot.value("type", "") == "bip9");
+    CHECK(taproot.value("active", false) == true);
+    CHECK(taproot.value("height", 0LL) == 709632LL);
+    CHECK(taproot.contains("bip9"));
+    auto b9 = taproot["bip9"];
+    CHECK(b9.value("status", "") == "active");
+    CHECK(b9.value("since", 0LL) == 709632LL);
+    CHECK(b9.value("min_activation_height", 0LL) == 709632LL);
+    CHECK(!b9.contains("statistics"));
+
+    // started bip9 with statistics
+    auto dummy = dep["dummy"];
+    CHECK(dummy.value("active", true) == false);
+    auto db9 = dummy["bip9"];
+    CHECK(db9.value("status", "") == "started");
+    CHECK(db9.contains("statistics"));
+    auto st = db9["statistics"];
+    CHECK(st.value("period", 0LL) == 2016LL);
+    CHECK(st.value("threshold", 0LL) == 1815LL);
+    CHECK(st.value("elapsed", 0LL) == 100LL);
+    CHECK(st.value("count", 0LL) == 80LL);
+
+    // items() iteration collects all deployment names
+    std::vector<std::string> names;
+    for (const auto& [name, _] : dep.items())
+        names.push_back(name);
+    CHECK(names.size() == 3);
 }

@@ -557,6 +557,15 @@ class json {
     auto end() const { return aval_.end(); }
 
     // -----------------------------------------------------------------------
+    // Iteration (objects) — returns reference to underlying map so callers
+    // can iterate with range-for and access .first/.second (key/value).
+    // -----------------------------------------------------------------------
+    [[nodiscard]] const object_t& items() const {
+        static const object_t empty_map{};
+        return kind_ == Kind::Object ? oval_ : empty_map;
+    }
+
+    // -----------------------------------------------------------------------
     // Static factories
     // -----------------------------------------------------------------------
     [[nodiscard]] static json array() {

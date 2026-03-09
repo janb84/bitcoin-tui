@@ -248,6 +248,13 @@ static int run(int argc, char* argv[]) {
     std::thread remove_addednode_thread;
     std::thread unban_action_thread;
 
+    // Network tab: softfork deployment info
+    std::vector<SoftFork> softforks;
+    std::mutex            softforks_mtx;
+    std::atomic<bool>     softforks_loaded{false};
+    std::atomic<bool>     softforks_loading{false};
+    std::thread           softforks_thread;
+
     // Peers tab: panel focus (0=peers, 1=added nodes, 2=ban list)
     int peers_panel    = 0;
     int addednodes_sel = -1;
@@ -586,6 +593,62 @@ static int run(int argc, char* argv[]) {
         });
     };
 
+    auto fetch_softforks = [&] {
+        if (softforks_loading.load())
+            return;
+        if (softforks_thread.joinable())
+            softforks_thread.join();
+        softforks_loading = true;
+        softforks_thread  = std::thread([&] {
+            std::vector<SoftFork> result;
+            try {
+                RpcClient rc(cfg);
+                auto      dep = rc.call("getdeploymentinfo")["result"]["deployments"];
+                if (dep.is_object()) {
+                    for (const auto& [name, val] : dep.items()) {
+                        SoftFork f;
+                        f.name   = name;
+                        f.type   = val.value("type", std::string{});
+                        f.active = val.value("active", false);
+                        f.height = val.value("height", int64_t{-1});
+                        if (val.contains("bip9") && val["bip9"].is_object()) {
+                            const auto& b9        = val["bip9"];
+                            f.bip9_status         = b9.value("status", std::string{});
+                            f.bip9_since          = b9.value("since", int64_t{0});
+                            f.bip9_start_time     = b9.value("start_time", int64_t{0});
+                            f.bip9_timeout        = b9.value("timeout", int64_t{0});
+                            f.bip9_min_activation = b9.value("min_activation_height", int64_t{0});
+                            if (b9.contains("statistics") && b9["statistics"].is_object()) {
+                                const auto& st   = b9["statistics"];
+                                f.bip9_elapsed   = st.value("elapsed", int64_t{0});
+                                f.bip9_count     = st.value("count", int64_t{0});
+                                f.bip9_period    = st.value("period", int64_t{0});
+                                f.bip9_threshold = st.value("threshold", int64_t{0});
+                            }
+                        }
+                        result.push_back(std::move(f));
+                    }
+                    std::sort(result.begin(), result.end(),
+                               [](const SoftFork& a, const SoftFork& b) {
+                                  if (a.active != b.active)
+                                      return a.active > b.active;
+                                  return a.name < b.name;
+                              });
+                }
+            } catch (...) { // NOLINT(bugprone-empty-catch)
+            }
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(softforks_mtx);
+                softforks = std::move(result);
+            }
+            softforks_loading = false;
+            softforks_loaded  = true;
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
     // Layout: tab toggle only — global search is handled via '/' key in the event handler
     // (The Toggle component consumes Tab internally, so FTXUI Input focus is unreachable.)
     auto layout = Container::Vertical({tab_toggle});
@@ -876,9 +939,17 @@ static int run(int argc, char* argv[]) {
             }
             break;
         }
-        case 2:
-            tab_content = render_network(snap);
+        case 2: {
+            if (!softforks_loaded.load() && !softforks_loading.load())
+                fetch_softforks();
+            std::vector<SoftFork> forks_snap;
+            {
+                std::lock_guard lock(softforks_mtx);
+                forks_snap = softforks;
+            }
+            tab_content = render_network(snap, forks_snap, softforks_loading.load());
             break;
+        }
         case 3:
             if (peer_disconnect_overlay) {
                 PeerActionResult action_snap;
@@ -1294,6 +1365,7 @@ static int run(int argc, char* argv[]) {
                 return false;
             }
         }
+
         // Peers tab: disconnecting overlay
         if (tab_index == 3 && peer_disconnect_overlay) {
             if (event == Event::Escape && !peer_action_in_flight.load()) {
@@ -1863,6 +1935,8 @@ static int run(int argc, char* argv[]) {
         added_nodes_thread.join();
     if (banned_list_thread.joinable())
         banned_list_thread.join();
+    if (softforks_thread.joinable())
+        softforks_thread.join();
     poll_thread.join();
     anim_thread.join();
 

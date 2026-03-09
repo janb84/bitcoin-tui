@@ -2,6 +2,7 @@
 #include <cmath>
 #include <ctime>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 #include <ftxui/dom/elements.hpp>
@@ -210,24 +211,61 @@ Element render_mempool(const AppState& s, int mempool_sel) {
 }
 
 // --- Network ----------------------------------------------------------------
-Element render_network(const AppState& s) {
+Element render_network(const AppState& s, const std::vector<SoftFork>& forks, bool forks_loading) {
+    auto left_col = section_box(
+        "Network Status", {
+                              label_value("  Active    : ", s.network_active ? "yes" : "no",
+                                          s.network_active ? Color::Green : Color::Red),
+                              label_value("  Peers     : ", std::to_string(s.connections)),
+                              label_value("  Inbound   : ", std::to_string(s.connections_in)),
+                              label_value("  Outbound  : ", std::to_string(s.connections_out)),
+                          });
+
+    auto right_col =
+        section_box("Node", {
+                                label_value("  Client    : ", s.subversion),
+                                label_value("  Protocol  : ", std::to_string(s.protocol_version)),
+                                label_value("  Relay fee : ", fmt_satsvb(s.relay_fee)),
+                            });
+
+    Elements fork_rows;
+    if (forks_loading) {
+        fork_rows.push_back(text("  Loading\u2026") | color(Color::GrayDark));
+    } else if (forks.empty()) {
+        fork_rows.push_back(text("  (unavailable \u2014 node may not support getdeploymentinfo)") |
+                            color(Color::GrayDark));
+    } else {
+        // Header
+        fork_rows.push_back(hbox({
+                                text("  "),
+                                text("Name") | bold | size(WIDTH, EQUAL, 18),
+                                text("Type") | bold | size(WIDTH, EQUAL, 8),
+                                text("Status") | bold | size(WIDTH, EQUAL, 12),
+                                text("Height") | bold,
+                                filler(),
+                            }) |
+                            color(Color::Gold1));
+        fork_rows.push_back(separator());
+        for (const auto& f : forks) {
+            const std::string& status       = f.bip9_status.empty() ? f.type : f.bip9_status;
+            Color              status_color = f.active                ? Color::Green
+                                              : status == "locked_in" ? Color::Yellow
+                                              : status == "started"   ? Color::Cyan
+                                                                      : Color::GrayDark;
+            fork_rows.push_back(hbox({
+                text("  "),
+                text(f.name) | size(WIDTH, EQUAL, 18),
+                text(f.type) | color(Color::GrayDark) | size(WIDTH, EQUAL, 8),
+                text(status) | color(status_color) | size(WIDTH, EQUAL, 12),
+                f.height >= 0 ? text(fmt_height(f.height)) | color(Color::GrayDark) : text("—"),
+                filler(),
+            }));
+        }
+    }
+
     return vbox({
-               section_box(
-                   "Network Status",
-                   {
-                       label_value("  Network active : ", s.network_active ? "yes" : "no",
-                                   s.network_active ? Color::Green : Color::Red),
-                       label_value("  Total peers    : ", std::to_string(s.connections)),
-                       label_value("  Inbound        : ", std::to_string(s.connections_in)),
-                       label_value("  Outbound       : ", std::to_string(s.connections_out)),
-                   }),
-               section_box(
-                   "Node",
-                   {
-                       label_value("  Client version : ", s.subversion),
-                       label_value("  Protocol       : ", std::to_string(s.protocol_version)),
-                       label_value("  Relay fee      : ", fmt_satsvb(s.relay_fee)),
-                   }),
+               hbox({std::move(left_col) | flex, std::move(right_col) | flex}),
+               section_box("Softfork Tracking", std::move(fork_rows)),
                filler(),
            }) |
            flex;

@@ -8,8 +8,10 @@ All notable changes to bitcoin-tui are documented here.
 - **Peer actions** - from the peer detail overlay, select Disconnect or Ban (24h) and press `Enter` to execute; result is shown in a floating overlay with a success or error message; press `Esc` to dismiss
 - **Added Nodes overlay** - press `[a]` from the Peers tab to open a centered overlay listing all added nodes with connection status (● connected / ○ not connected); press `down/up-arrow` to navigate, `Enter` to remove a node, `[a]` to add a new node, `Esc` to close
 - **Ban List overlay** - press `[b]` from the Peers tab to open a centered overlay listing all banned addresses with their expiry time; press `down/up-arrow` to navigate, `Enter` to unban, `Esc` to close
+- **Soft-fork Tracking** - Network tab now shows a table of all consensus deployments (`getdeploymentinfo`) with name, type (buried/bip9), status, and activation height; loaded once on first visit; status colored green (active), yellow (locked\_in), cyan (started)
 
 ### Changed
+- Network tab: Network Status and Node panels are now displayed side by side
 - Long peer addresses (onion, i2p) in the peer detail overlay are displayed on their own line to avoid truncation; IPv4 and IPv6 addresses remain on one line
 
 ## [0.6.1] - 2026-03-04
