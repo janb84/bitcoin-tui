@@ -21,7 +21,7 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 - **Mempool** - transaction count, virtual size, total fees, min relay fee, memory usage gauge, and animated recent block fill visualization (newest first, colored green/yellow/orange by weight - blocks slide right when a new block arrives; block age shown per column; number of columns adapts to terminal width)
 - **Search** - press `/` to search mempool or confirmed transactions (txid); drill into blocks, inputs, and outputs (`txindex=1` required for confirmed lookups)
 - **Network** - connection counts (inbound/outbound), client version, protocol version, relay fee
-- **Peers** - live peer table with address, network type, direction, ping, bytes sent/received, and tip height; navigate with `↑/↓` and press `Enter` to open a detail overlay for any peer
+- **Peers** - live peer table with address, network type, direction, ping, bytes sent/received, and tip height; navigate with `down/up-arrow` and press `Enter` to open a detail overlay for any peer; disconnect or ban (24h) from the detail overlay; press `[a]` to view/manage added nodes, `[b]` to view/manage the ban list
 - **Tools** - broadcast raw transactions via `sendrawtransaction`; live private broadcast queue (Bitcoin Core PR #29415, shown when non-empty)
 - Background polling thread - non-blocking UI with configurable refresh interval
 - No external dependencies beyond FTXUI (JSON parsing and HTTP handled in-tree)

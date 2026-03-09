@@ -165,6 +165,39 @@ struct BroadcastState {
     bool        has_result = false;
 };
 
+struct AddNodeState {
+    int         cmd_idx    = 0; // 0=onetry, 1=add, 2=remove
+    bool        pending    = false;
+    bool        has_result = false;
+    bool        success    = false;
+    std::string result_message;
+};
+
+struct BanNodeState {
+    bool        is_remove  = false; // false=ban, true=unban
+    bool        pending    = false;
+    bool        has_result = false;
+    bool        success    = false;
+    std::string result_message;
+};
+
+struct PeerActionResult {
+    bool        has_result = false;
+    bool        success    = false;
+    std::string message;
+};
+
+struct AddedNodeInfo {
+    std::string addednode;
+    bool        connected = false;
+};
+
+struct BannedEntry {
+    std::string address;
+    int64_t     banned_until = 0;
+    std::string ban_reason;
+};
+
 // ============================================================================
 // Result classification and navigation helpers (pure, inline)
 // ============================================================================

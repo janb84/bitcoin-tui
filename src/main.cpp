@@ -200,11 +200,58 @@ static int run(int argc, char* argv[]) {
     std::string       tools_hex_str;
     std::atomic<bool> broadcast_in_flight{false};
     std::thread       broadcast_thread;
-    int               tools_sel = 0; // 0=Broadcast, 1=result txid row (when present)
+    int               tools_sel = 0; // 0=Broadcast, 1=result txid (opt), N=AddNode, N+1=BanNode
+
+    // Add Node state
+    AddNodeState      addnode_state;
+    std::mutex        addnode_mtx;
+    bool              addnode_input_active = false;
+    std::string       addnode_str;
+    std::atomic<bool> addnode_in_flight{false};
+    std::thread       addnode_thread;
+
+    // Ban Node state
+    BanNodeState      ban_state;
+    std::mutex        ban_mtx;
+    bool              ban_input_active = false;
+    std::string       ban_str;
+    std::atomic<bool> ban_in_flight{false};
+    std::thread       ban_thread;
+
+    // Peer action result (shown in peer detail overlay)
+    PeerActionResult  peer_action;
+    std::mutex        peer_action_mtx;
+    std::atomic<bool> peer_action_in_flight{false};
+    std::thread       peer_action_thread;
 
     // Peer selection state
-    int  peer_selected    = -1;
-    bool peer_detail_open = false;
+    int  peer_selected           = -1;
+    bool peer_detail_open        = false;
+    int  peer_detail_sel         = 0; // 0=Disconnect, 1=Ban
+    bool peer_disconnect_overlay = false;
+
+    // Peers tab: added nodes list
+    std::vector<AddedNodeInfo> added_nodes;
+    std::mutex                 added_nodes_mtx;
+    std::atomic<bool>          added_nodes_loaded{false};
+    std::atomic<bool>          added_nodes_loading{false};
+    std::thread                added_nodes_thread;
+
+    // Peers tab: ban list
+    std::vector<BannedEntry> banned_list;
+    std::mutex               banned_list_mtx;
+    std::atomic<bool>        banned_list_loaded{false};
+    std::atomic<bool>        banned_list_loading{false};
+    std::thread              banned_list_thread;
+
+    // Peers tab: removed node / unban threads
+    std::thread remove_addednode_thread;
+    std::thread unban_action_thread;
+
+    // Peers tab: panel focus (0=peers, 1=added nodes, 2=ban list)
+    int peers_panel    = 0;
+    int addednodes_sel = -1;
+    int banlist_sel    = -1;
 
     // Mempool tab: selected block index (-1 = none, 0 = newest/leftmost)
     int mempool_sel = -1;
@@ -306,6 +353,235 @@ static int run(int argc, char* argv[]) {
                 std::lock_guard lock(broadcast_mtx);
                 broadcast_state = result;
             }
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    auto trigger_addnode = [&](const std::string& addr, const std::string& cmd) {
+        if (addnode_in_flight.load())
+            return;
+        addnode_in_flight = true;
+        {
+            std::lock_guard lock(addnode_mtx);
+            int             saved_cmd = addnode_state.cmd_idx;
+            addnode_state             = AddNodeState{.pending = true};
+            addnode_state.cmd_idx     = saved_cmd;
+        }
+        screen.PostEvent(Event::Custom);
+        if (addnode_thread.joinable())
+            addnode_thread.join();
+        addnode_thread = std::thread([&, addr, cmd] {
+            AddNodeState result;
+            try {
+                RpcClient rc(cfg);
+                rc.call("addnode", {addr, cmd});
+                result.success        = true;
+                result.result_message = cmd + " " + addr;
+            } catch (const std::exception& e) {
+                result.result_message = e.what();
+            }
+            result.has_result = true;
+            addnode_in_flight = false;
+            // Refresh added nodes list after addnode operation
+            added_nodes_loaded = false;
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(addnode_mtx);
+                addnode_state = result;
+            }
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    auto trigger_setban = [&](const std::string& addr, bool remove) {
+        if (ban_in_flight.load())
+            return;
+        ban_in_flight = true;
+        {
+            std::lock_guard lock(ban_mtx);
+            ban_state = BanNodeState{.pending = true};
+        }
+        screen.PostEvent(Event::Custom);
+        if (ban_thread.joinable())
+            ban_thread.join();
+        ban_thread = std::thread([&, addr, remove] {
+            BanNodeState result;
+            try {
+                RpcClient   rc(cfg);
+                std::string cmd = remove ? "remove" : "add";
+                rc.call("setban", {addr, cmd});
+                result.success        = true;
+                result.result_message = (remove ? "Unbanned " : "Banned ") + addr;
+            } catch (const std::exception& e) {
+                result.result_message = e.what();
+            }
+            result.has_result = true;
+            ban_in_flight     = false;
+            // Refresh ban list after setban operation
+            banned_list_loaded = false;
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(ban_mtx);
+                ban_state = result;
+            }
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    // addr should be just the IP (no port) for setban; for disconnectnode use full addr
+    auto trigger_peer_action = [&](const std::string& addr, bool is_ban) {
+        if (peer_action_in_flight.load())
+            return;
+        peer_action_in_flight = true;
+        {
+            std::lock_guard lock(peer_action_mtx);
+            peer_action = PeerActionResult{};
+        }
+        screen.PostEvent(Event::Custom);
+        if (peer_action_thread.joinable())
+            peer_action_thread.join();
+        peer_action_thread = std::thread([&, addr, is_ban] {
+            PeerActionResult result;
+            try {
+                RpcClient rc(cfg);
+                if (is_ban) {
+                    // Strip port: "[::1]:8333" → "[::1]", "1.2.3.4:8333" → "1.2.3.4"
+                    std::string ip = addr;
+                    if (!addr.empty() && addr[0] == '[') {
+                        auto end = addr.find(']');
+                        if (end != std::string::npos)
+                            ip = addr.substr(0, end + 1);
+                    } else {
+                        auto colon = addr.rfind(':');
+                        if (colon != std::string::npos)
+                            ip = addr.substr(0, colon);
+                    }
+                    rc.call("setban", {ip, std::string("add")});
+                    result.message = "Banned " + ip;
+                } else {
+                    rc.call("disconnectnode", {addr});
+                    result.message = "Disconnected";
+                }
+                result.success = true;
+            } catch (const std::exception& e) {
+                result.message = e.what();
+            }
+            result.has_result     = true;
+            peer_action_in_flight = false;
+            if (is_ban)
+                banned_list_loaded = false;
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(peer_action_mtx);
+                peer_action = result;
+            }
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    auto fetch_added_nodes = [&] {
+        if (added_nodes_loading.load())
+            return;
+        if (added_nodes_thread.joinable())
+            added_nodes_thread.join();
+        added_nodes_loading = true;
+        added_nodes_thread  = std::thread([&] {
+            std::vector<AddedNodeInfo> result;
+            try {
+                RpcClient rc(cfg);
+                auto      ans = rc.call("getaddednodeinfo")["result"];
+                for (const auto& n : ans) {
+                    AddedNodeInfo info;
+                    info.addednode = n.value("addednode", "");
+                    if (n.contains("addresses") && n["addresses"].is_array()) {
+                        for (const auto& a : n["addresses"]) {
+                            if (a.value("connected", false)) {
+                                info.connected = true;
+                                break;
+                            }
+                        }
+                    }
+                    result.push_back(std::move(info));
+                }
+            } catch (...) { // NOLINT(bugprone-empty-catch)
+            }
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(added_nodes_mtx);
+                added_nodes = std::move(result);
+            }
+            added_nodes_loading = false;
+            added_nodes_loaded  = true;
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    auto fetch_ban_list = [&] {
+        if (banned_list_loading.load())
+            return;
+        if (banned_list_thread.joinable())
+            banned_list_thread.join();
+        banned_list_loading = true;
+        banned_list_thread  = std::thread([&] {
+            std::vector<BannedEntry> result;
+            try {
+                RpcClient rc(cfg);
+                auto      bl = rc.call("listbanned")["result"];
+                for (const auto& b : bl) {
+                    BannedEntry entry;
+                    entry.address      = b.value("address", "");
+                    entry.banned_until = b.value("banned_until", 0LL);
+                    entry.ban_reason   = b.value("ban_reason", "");
+                    result.push_back(std::move(entry));
+                }
+            } catch (...) { // NOLINT(bugprone-empty-catch)
+            }
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(banned_list_mtx);
+                banned_list = std::move(result);
+            }
+            banned_list_loading = false;
+            banned_list_loaded  = true;
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    auto do_remove_added_node = [&](const std::string& addr) {
+        if (remove_addednode_thread.joinable())
+            remove_addednode_thread.join();
+        remove_addednode_thread = std::thread([&, addr] {
+            try {
+                RpcClient rc(cfg);
+                rc.call("addnode", {addr, std::string("remove")});
+            } catch (...) { // NOLINT(bugprone-empty-catch)
+            }
+            if (!running.load())
+                return;
+            added_nodes_loaded  = false;
+            added_nodes_loading = false;
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    auto do_unban = [&](const std::string& addr) {
+        if (unban_action_thread.joinable())
+            unban_action_thread.join();
+        unban_action_thread = std::thread([&, addr] {
+            try {
+                RpcClient rc(cfg);
+                rc.call("setban", {addr, std::string("remove")});
+            } catch (...) { // NOLINT(bugprone-empty-catch)
+            }
+            if (!running.load())
+                return;
+            banned_list_loaded  = false;
+            banned_list_loading = false;
             screen.PostEvent(Event::Custom);
         });
     };
@@ -604,17 +880,108 @@ static int run(int argc, char* argv[]) {
             tab_content = render_network(snap);
             break;
         case 3:
-            if (peer_detail_open && peer_selected >= 0 &&
-                peer_selected < static_cast<int>(snap.peers.size())) {
+            if (peer_disconnect_overlay) {
+                PeerActionResult action_snap;
+                {
+                    std::lock_guard lock(peer_action_mtx);
+                    action_snap = peer_action;
+                }
+                bool    in_flight = peer_action_in_flight.load();
+                Element msg;
+                if (in_flight || !action_snap.has_result) {
+                    msg = text("  Working\u2026  ") | bold | color(Color::Yellow);
+                } else if (action_snap.success) {
+                    msg = vbox({
+                        text("  \u2713 " + action_snap.message + "  ") | bold | color(Color::Green),
+                        text("  [Esc] to dismiss  ") | color(Color::GrayDark),
+                    });
+                } else {
+                    msg = vbox({
+                        text("  \u2717 " + action_snap.message + "  ") | bold | color(Color::Red),
+                        text("  [Esc] to dismiss  ") | color(Color::GrayDark),
+                    });
+                }
+                tab_content = vbox({
+                                  filler(),
+                                  hbox({filler(), msg | border, filler()}),
+                                  filler(),
+                              }) |
+                              flex;
+            } else if (peer_detail_open && peer_selected >= 0 &&
+                       peer_selected < static_cast<int>(snap.peers.size())) {
+                PeerActionResult action_snap;
+                {
+                    std::lock_guard lock(peer_action_mtx);
+                    action_snap = peer_action;
+                }
+                tab_content = vbox({
+                                  filler(),
+                                  hbox({filler(),
+                                        render_peer_detail(snap.peers[peer_selected], action_snap,
+                                                           peer_detail_sel),
+                                        filler()}),
+                                  filler(),
+                              }) |
+                              flex;
+            } else if (addnode_input_active) {
+                AddNodeState addnode_snap;
+                {
+                    std::lock_guard lock(addnode_mtx);
+                    addnode_snap = addnode_state;
+                }
                 tab_content =
-                    vbox({
-                        filler(),
-                        hbox({filler(), render_peer_detail(snap.peers[peer_selected]), filler()}),
-                        filler(),
-                    }) |
+                    vbox({filler(),
+                          hbox({filler(), render_addnode_overlay(addnode_snap, addnode_str),
+                                filler()}),
+                          filler()}) |
                     flex;
+            } else if (ban_input_active) {
+                BanNodeState ban_snap;
+                {
+                    std::lock_guard lock(ban_mtx);
+                    ban_snap = ban_state;
+                }
+                tab_content =
+                    vbox({filler(),
+                          hbox({filler(), render_ban_overlay(ban_snap, ban_str), filler()}),
+                          filler()}) |
+                    flex;
+            } else if (peers_panel == 1) {
+                if (!added_nodes_loaded.load() && !added_nodes_loading.load())
+                    fetch_added_nodes();
+                std::vector<AddedNodeInfo> an_snap;
+                {
+                    std::lock_guard lock(added_nodes_mtx);
+                    an_snap = added_nodes;
+                }
+                tab_content = vbox({
+                                  filler(),
+                                  hbox({filler(),
+                                        render_added_nodes_panel(
+                                            an_snap, added_nodes_loading.load(), addednodes_sel),
+                                        filler()}),
+                                  filler(),
+                              }) |
+                              flex;
+            } else if (peers_panel == 2) {
+                if (!banned_list_loaded.load() && !banned_list_loading.load())
+                    fetch_ban_list();
+                std::vector<BannedEntry> bl_snap;
+                {
+                    std::lock_guard lock(banned_list_mtx);
+                    bl_snap = banned_list;
+                }
+                tab_content = vbox({
+                                  filler(),
+                                  hbox({filler(),
+                                        render_ban_list_panel(bl_snap, banned_list_loading.load(),
+                                                              banlist_sel),
+                                        filler()}),
+                                  filler(),
+                              }) |
+                              flex;
             } else {
-                tab_content = render_peers(snap, peer_selected);
+                tab_content = render_peers(snap, peer_selected) | flex;
             }
             break;
         case 4: {
@@ -655,8 +1022,29 @@ static int run(int argc, char* argv[]) {
                 ? hbox({text("  [Enter] search  [Esc] cancel ") | color(Color::Yellow)})
             : (tab_index == 4 && tools_input_active)
                 ? hbox({text("  [Enter] submit  [Esc] cancel ") | color(Color::Yellow)})
-            : (tab_index == 4)
-                ? hbox({text("  [↑/↓] navigate  [↵] activate  [q] quit ") | color(Color::GrayDark)})
+            : (tab_index == 3 && addnode_input_active)
+                ? hbox({text("  [Enter] submit  [←/→] change  [Esc] cancel ") |
+                        color(Color::Yellow)})
+            : (tab_index == 3 && ban_input_active)
+                ? hbox({text("  [Enter] submit  [←/→] ban\u2215unban  [Esc] cancel ") |
+                        color(Color::Yellow)})
+            : (tab_index == 3 && peer_disconnect_overlay && !peer_action_in_flight.load())
+                ? hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
+            : (tab_index == 3 && peer_disconnect_overlay)
+                ? hbox({text("  [q] quit ") | color(Color::GrayDark)})
+            : (tab_index == 3 && peers_panel == 1)
+                ? hbox({text("  [\u2191/\u2193] navigate  [\u23ce] remove  [a] add node  [Esc] "
+                             "close  [q] quit ") |
+                        color(Color::Yellow)})
+            : (tab_index == 3 && peers_panel == 2)
+                ? hbox({text("  [\u2191/\u2193] navigate  [\u23ce] unban  [Esc] close  [q] quit ") |
+                        color(Color::Yellow)})
+            : (tab_index == 3 && peer_detail_open)
+                ? hbox({text("  [\u2190/\u2192] select action  [\u23ce] confirm  [Esc] back  [q] "
+                             "quit ") |
+                        color(Color::Yellow)})
+            : (tab_index == 4) ? hbox({text("  [↑/↓] navigate  [↵/b] activate  [q] quit ") |
+                                       color(Color::GrayDark)})
             : overlay_outputs_open
                 ? hbox({text("  [↑/↓] navigate  [Esc] back  [q] quit ") | color(Color::Yellow)})
             : overlay_inputs_open
@@ -681,12 +1069,16 @@ static int run(int argc, char* argv[]) {
                 ? hbox({refresh_indicator,
                         text("  [↓] select block  [Tab/←/→] switch  [/] search  [q] quit ") |
                             color(Color::GrayDark)})
-            : (tab_index == 3 && peer_detail_open)
-                ? hbox({text("  [Esc] back  [q] quit ") | color(Color::Yellow)})
             : (tab_index == 3 && peer_selected >= 0)
-                ? hbox({refresh_indicator,
-                        text("  [↑/↓] navigate  [↵] details  [/] search  [q] quit ") |
-                            color(Color::GrayDark)})
+                ? hbox({refresh_indicator, text("  [\u2191/\u2193] navigate  [\u23ce] details  [a] "
+                                                "added nodes  [b] ban list  [q] quit ") |
+                                               color(Color::GrayDark)})
+            : (tab_index == 3)
+                ? hbox(
+                      {refresh_indicator,
+                       text(
+                           "  [\u2191/\u2193] navigate  [a] added nodes  [b] ban list  [q] quit ") |
+                           color(Color::GrayDark)})
                 : hbox({refresh_indicator, text("  [Tab/←/→] switch  [/] search  [q] quit ") |
                                                color(Color::GrayDark)});
 
@@ -902,11 +1294,269 @@ static int run(int argc, char* argv[]) {
                 return false;
             }
         }
+        // Peers tab: disconnecting overlay
+        if (tab_index == 3 && peer_disconnect_overlay) {
+            if (event == Event::Escape && !peer_action_in_flight.load()) {
+                peer_disconnect_overlay = false;
+                {
+                    std::lock_guard lock(peer_action_mtx);
+                    peer_action = PeerActionResult{};
+                }
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Character('q')) {
+                screen.ExitLoopClosure()();
+                return true;
+            }
+            return true; // swallow all other keys while overlay is visible
+        }
         // Peers tab: detail overlay mode
         if (tab_index == 3 && peer_detail_open) {
             if (event == Event::Escape) {
                 peer_detail_open = false;
+                {
+                    std::lock_guard lock(peer_action_mtx);
+                    peer_action = PeerActionResult{};
+                }
                 screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::ArrowLeft || event == Event::ArrowRight ||
+                event == Event::ArrowUp || event == Event::ArrowDown) {
+                peer_detail_sel = 1 - peer_detail_sel; // toggle 0↔1
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Return || event == Event::Character('d') ||
+                event == Event::Character('b')) {
+                int action_sel = peer_detail_sel;
+                if (event == Event::Character('d'))
+                    action_sel = 0;
+                else if (event == Event::Character('b'))
+                    action_sel = 1;
+                std::string addr;
+                {
+                    std::lock_guard lock(state_mtx);
+                    if (peer_selected >= 0 && peer_selected < (int)state.peers.size())
+                        addr = state.peers[peer_selected].addr;
+                }
+                if (!addr.empty()) {
+                    if (action_sel == 0) {
+                        peer_detail_open        = false;
+                        peer_disconnect_overlay = true;
+                        trigger_peer_action(addr, false);
+                    } else {
+                        peer_detail_open        = false;
+                        peer_disconnect_overlay = true;
+                        trigger_peer_action(addr, true);
+                    }
+                }
+                return true;
+            }
+            if (event == Event::Character('q')) {
+                screen.ExitLoopClosure()();
+                return true;
+            }
+            return false;
+        }
+        // Add Node overlay input mode
+        if (addnode_input_active) {
+            if (event == Event::Escape) {
+                addnode_input_active = false;
+                addnode_str.clear();
+                {
+                    std::lock_guard lock(addnode_mtx);
+                    addnode_state = AddNodeState{};
+                }
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            bool addnode_done;
+            {
+                std::lock_guard lock(addnode_mtx);
+                addnode_done = addnode_state.pending || addnode_state.has_result;
+            }
+            if (!addnode_done) {
+                if (event == Event::Return) {
+                    std::string addr = trimmed(addnode_str);
+                    if (!addr.empty()) {
+                        static const char* cmds[] = {"onetry", "add"};
+                        AddNodeState       snap;
+                        {
+                            std::lock_guard lock(addnode_mtx);
+                            snap = addnode_state;
+                        }
+                        trigger_addnode(addr, cmds[snap.cmd_idx]);
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::Backspace) {
+                    if (!addnode_str.empty())
+                        addnode_str.pop_back();
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::ArrowLeft) {
+                    {
+                        std::lock_guard lock(addnode_mtx);
+                        addnode_state.cmd_idx = (addnode_state.cmd_idx + 1) % 2;
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::ArrowRight) {
+                    {
+                        std::lock_guard lock(addnode_mtx);
+                        addnode_state.cmd_idx = (addnode_state.cmd_idx + 1) % 2;
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::Tab || event == Event::TabReverse)
+                    return true;
+                if (event.is_character()) {
+                    addnode_str += event.character();
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+            }
+            return true; // swallow all other keys while overlay is open
+        }
+        // Ban / Unban Node overlay input mode
+        if (ban_input_active) {
+            if (event == Event::Escape) {
+                ban_input_active = false;
+                ban_str.clear();
+                {
+                    std::lock_guard lock(ban_mtx);
+                    ban_state = BanNodeState{};
+                }
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            bool ban_done;
+            {
+                std::lock_guard lock(ban_mtx);
+                ban_done = ban_state.pending || ban_state.has_result;
+            }
+            if (!ban_done) {
+                if (event == Event::Return) {
+                    std::string addr = trimmed(ban_str);
+                    if (!addr.empty()) {
+                        bool remove;
+                        {
+                            std::lock_guard lock(ban_mtx);
+                            remove = ban_state.is_remove;
+                        }
+                        trigger_setban(addr, remove);
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::Backspace) {
+                    if (!ban_str.empty())
+                        ban_str.pop_back();
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::ArrowLeft || event == Event::ArrowRight) {
+                    {
+                        std::lock_guard lock(ban_mtx);
+                        ban_state.is_remove = !ban_state.is_remove;
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::Tab || event == Event::TabReverse)
+                    return true;
+                if (event.is_character()) {
+                    ban_str += event.character();
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+            }
+            return true; // swallow all other keys while overlay is open
+        }
+        // Peers tab: Added Nodes overlay
+        if (tab_index == 3 && peers_panel == 1) {
+            if (event == Event::Escape) {
+                peers_panel = 0;
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::ArrowDown || event == Event::ArrowUp) {
+                std::lock_guard lock(added_nodes_mtx);
+                int             n = static_cast<int>(added_nodes.size());
+                if (n > 0) {
+                    if (addednodes_sel < 0)
+                        addednodes_sel = 0;
+                    else if (event == Event::ArrowDown)
+                        addednodes_sel = std::min(addednodes_sel + 1, n - 1);
+                    else
+                        addednodes_sel = std::max(addednodes_sel - 1, 0);
+                }
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Return && addednodes_sel >= 0) {
+                std::string addr;
+                {
+                    std::lock_guard lock(added_nodes_mtx);
+                    if (addednodes_sel < static_cast<int>(added_nodes.size()))
+                        addr = added_nodes[addednodes_sel].addednode;
+                }
+                if (!addr.empty()) {
+                    do_remove_added_node(addr);
+                    addednodes_sel = -1;
+                }
+                return true;
+            }
+            if (event == Event::Character('a')) {
+                addnode_input_active = true;
+                addnode_str.clear();
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Character('q')) {
+                screen.ExitLoopClosure()();
+                return true;
+            }
+            return false;
+        }
+        // Peers tab: Ban List overlay
+        if (tab_index == 3 && peers_panel == 2) {
+            if (event == Event::Escape) {
+                peers_panel = 0;
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::ArrowDown || event == Event::ArrowUp) {
+                std::lock_guard lock(banned_list_mtx);
+                int             n = static_cast<int>(banned_list.size());
+                if (n > 0) {
+                    if (banlist_sel < 0)
+                        banlist_sel = 0;
+                    else if (event == Event::ArrowDown)
+                        banlist_sel = std::min(banlist_sel + 1, n - 1);
+                    else
+                        banlist_sel = std::max(banlist_sel - 1, 0);
+                }
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Return && banlist_sel >= 0) {
+                std::string addr;
+                {
+                    std::lock_guard lock(banned_list_mtx);
+                    if (banlist_sel < static_cast<int>(banned_list.size()))
+                        addr = banned_list[banlist_sel].address;
+                }
+                if (!addr.empty()) {
+                    do_unban(addr);
+                    banlist_sel = -1;
+                }
                 return true;
             }
             if (event == Event::Character('q')) {
@@ -924,12 +1574,29 @@ static int run(int argc, char* argv[]) {
                         peer_selected = std::min(peer_selected + 1, n - 1);
                     else
                         peer_selected = std::max(peer_selected - 1, 0);
-                    screen.PostEvent(Event::Custom);
-                    return true;
                 }
+                screen.PostEvent(Event::Custom);
+                return true;
             }
             if (event == Event::Return && peer_selected >= 0) {
                 peer_detail_open = true;
+                peer_detail_sel  = 0;
+                {
+                    std::lock_guard lock(peer_action_mtx);
+                    peer_action = PeerActionResult{};
+                }
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Character('a')) {
+                peers_panel    = 1;
+                addednodes_sel = -1;
+                screen.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::Character('b')) {
+                peers_panel = 2;
+                banlist_sel = -1;
                 screen.PostEvent(Event::Custom);
                 return true;
             }
@@ -1022,7 +1689,7 @@ static int run(int argc, char* argv[]) {
                     std::lock_guard lock(broadcast_mtx);
                     has_result_row = broadcast_state.has_result && broadcast_state.success;
                 }
-                int max_sel = has_result_row ? 1 : 0; // 0=action; 1=result txid (if any)
+                int max_sel = has_result_row ? 1 : 0;
                 if (event == Event::ArrowDown)
                     tools_sel = std::min(tools_sel + 1, max_sel);
                 else
@@ -1182,6 +1849,20 @@ static int run(int argc, char* argv[]) {
         search_thread.join();
     if (broadcast_thread.joinable())
         broadcast_thread.join();
+    if (addnode_thread.joinable())
+        addnode_thread.join();
+    if (ban_thread.joinable())
+        ban_thread.join();
+    if (peer_action_thread.joinable())
+        peer_action_thread.join();
+    if (remove_addednode_thread.joinable())
+        remove_addednode_thread.join();
+    if (unban_action_thread.joinable())
+        unban_action_thread.join();
+    if (added_nodes_thread.joinable())
+        added_nodes_thread.join();
+    if (banned_list_thread.joinable())
+        banned_list_thread.join();
     poll_thread.join();
     anim_thread.join();
 
