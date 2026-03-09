@@ -6,13 +6,17 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 
 ## Screenshot
 
+**Dashboard tab:**
 
-<img width="863" height="671" alt="Screenshot dashboard" src="https://github.com/user-attachments/assets/95ebcd57-b1df-41c8-80bf-f555755dbae8" />
-
+<img width="941" height="694" alt="Screenshot of Dashboard tab" src="https://github.com/user-attachments/assets/b411bbb6-e64f-4581-812a-f91fef2e6532" />
 
 **Mempool tab:**
 
-<img width="879" height="674" alt="Screenshot mempool" src="https://github.com/user-attachments/assets/d8cf47f0-bd12-403a-9534-602bd12ce139" />
+<img width="933" height="691" alt="Screenshot of Mempool tab" src="https://github.com/user-attachments/assets/58496173-b7c8-495e-b591-147d8ae8f578" />
+
+**Block search overlay:**
+
+<img width="938" height="695" alt="Screenshot of Block search overlay" src="https://github.com/user-attachments/assets/f8d1d57e-e93d-4dbd-bb6d-a75e429cd100" />
 
 
 ## Features
