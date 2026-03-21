@@ -218,7 +218,7 @@ static int run(int argc, char* argv[]) {
     AppState   state;
     std::mutex state_mtx;
 
-    // Transaction search state
+    // Transaction search state (for / search → overlay)
     TxSearchState              search_state;
     std::vector<TxSearchState> search_history;
     std::mutex                 search_mtx;
@@ -226,6 +226,14 @@ static int run(int argc, char* argv[]) {
     bool                       global_search_active = false;
     std::atomic<bool>          search_in_flight{false};
     std::thread                search_thread;
+
+    // Explorer browse state (block/mempool inline display)
+    TxSearchState        browse_block_ss;   // current block browse result
+    TxSearchState        browse_mempool_ss; // current mempool browse result
+    std::mutex           browse_mtx;
+    std::atomic<bool>    browse_in_flight{false};
+    std::atomic<int64_t> last_mempool_refresh_time{0};
+    std::thread          browse_thread;
 
     // Broadcast tools state
     BroadcastState    broadcast_state;
@@ -294,8 +302,13 @@ static int run(int argc, char* argv[]) {
     int addednodes_sel = -1;
     int banlist_sel    = -1;
 
-    // Mempool tab: selected block index (-1 = none, 0 = newest/leftmost)
-    int mempool_sel = -1;
+    // Explorer tab: 0 = mempool block, 1..N = real blocks (recent_blocks[sel-1])
+    int         mempool_sel       = 0;
+    int         mempool_pane      = -1;   // -1 = unfocused, 0 = blocks pane, 1 = tx list pane
+    int         mempool_tx_sel    = -1;   // selected tx in tx list pane
+    int         explorer_win_size = 8;    // visible tx rows; updated each render
+    std::string mempool_restore_txid;     // txid to restore after mempool refresh
+    int         mempool_restore_idx = -1; // fallback position if txid not found
 
     std::atomic<bool> running{true};
 
@@ -303,13 +316,15 @@ static int run(int argc, char* argv[]) {
     auto screen = ScreenInteractive::Fullscreen();
 
     // Tabs
-    std::vector<std::string> tab_labels = {"Dashboard", "Mempool", "Network", "Peers", "Tools"};
+    std::vector<std::string> tab_labels = {"Dashboard", "Explorer", "Network", "Peers", "Tools"};
     int                      tab_index  = 0;
+    int                      prev_tab_index = 0;
 
     auto tab_toggle = Toggle(&tab_labels, &tab_index);
 
-    // Shared search trigger — switches to Mempool tab when switch_tab is true
-    auto trigger_tx_search = [&](const std::string& query, bool switch_tab) {
+    // Search trigger for / searches — result always shown as overlay.
+    auto trigger_tx_search = [&](const std::string& query, bool switch_tab,
+                                 const std::string& blockhash_hint = "", bool push_history = true) {
         if (search_in_flight.load())
             return;
         search_in_flight = true;
@@ -319,7 +334,7 @@ static int run(int argc, char* argv[]) {
             std::lock_guard lock(search_mtx);
             if (switch_tab) {
                 search_history.clear();
-            } else if (!search_state.txid.empty()) {
+            } else if (push_history && !search_state.txid.empty()) {
                 search_history.push_back(search_state);
             }
             search_state           = TxSearchState{};
@@ -337,14 +352,13 @@ static int run(int argc, char* argv[]) {
             tip_at_search = state.blocks;
         }
 
-        // Determine whether the query is a block height (all digits) or a hash/txid
         bool query_is_height = !query.empty() && std::ranges::all_of(query, [](unsigned char c) {
             return std::isdigit(c) != 0;
         });
 
-        search_thread = std::thread([&, query, query_is_height, tip_at_search] {
+        search_thread = std::thread([&, query, query_is_height, tip_at_search, blockhash_hint] {
             TxSearchState result =
-                perform_tx_search(cfg, auth, query, query_is_height, tip_at_search);
+                perform_tx_search(cfg, auth, query, query_is_height, tip_at_search, blockhash_hint);
             search_in_flight = false;
             if (!running.load())
                 return;
@@ -354,6 +368,94 @@ static int run(int argc, char* argv[]) {
             }
             screen.PostEvent(Event::Custom);
         });
+    };
+
+    // Browse trigger — fetches block/mempool data for the Explorer inline panes.
+    auto trigger_browse_block = [&](int64_t height) {
+        if (browse_in_flight.load())
+            return;
+        browse_in_flight = true;
+        if (browse_thread.joinable())
+            browse_thread.join();
+
+        browse_thread = std::thread([&, height] {
+            TxSearchState result = perform_block_search(cfg, auth, height);
+            browse_in_flight     = false;
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(browse_mtx);
+                if (result.found && result.is_block)
+                    browse_block_ss = std::move(result);
+            }
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    auto trigger_browse_mempool = [&]() {
+        if (browse_in_flight.load())
+            return;
+        browse_in_flight = true;
+        if (browse_thread.joinable())
+            browse_thread.join();
+        browse_thread = std::thread([&] {
+            TxSearchState result = perform_mempool_search(cfg, auth);
+            browse_in_flight     = false;
+            if (!running.load())
+                return;
+            {
+                std::lock_guard lock(browse_mtx);
+                if (result.found && result.is_mempool) {
+                    browse_mempool_ss         = std::move(result);
+                    last_mempool_refresh_time = static_cast<int64_t>(std::time(nullptr));
+                }
+            }
+            screen.PostEvent(Event::Custom);
+        });
+    };
+
+    // Trigger block/mempool load for the current mempool_sel if not already loaded.
+    auto trigger_browse_if_needed = [&]() {
+        if (browse_in_flight.load())
+            return;
+        if (mempool_sel == 0) {
+            bool need_load = false;
+            {
+                std::lock_guard lock(browse_mtx);
+                bool            loaded = browse_mempool_ss.is_mempool && browse_mempool_ss.found;
+                if (!loaded) {
+                    need_load = true;
+                } else if (static_cast<int64_t>(std::time(nullptr)) -
+                               last_mempool_refresh_time.load() >
+                           30) {
+                    // Stale: save current selection so we can restore it after refresh.
+                    if (mempool_tx_sel >= 0 &&
+                        mempool_tx_sel < static_cast<int>(browse_mempool_ss.blk_tx_list.size()))
+                        mempool_restore_txid = browse_mempool_ss.blk_tx_list[mempool_tx_sel].txid;
+                    mempool_restore_idx = mempool_tx_sel;
+                    need_load           = true;
+                }
+            }
+            if (!need_load)
+                return;
+            trigger_browse_mempool();
+        } else {
+            int64_t expected_height = -1;
+            {
+                std::lock_guard lock(state_mtx);
+                int             idx = mempool_sel - 1;
+                if (idx < static_cast<int>(state.recent_blocks.size()))
+                    expected_height = state.recent_blocks[idx].height;
+            }
+            if (expected_height < 0)
+                return;
+            {
+                std::lock_guard lock(browse_mtx);
+                if (browse_block_ss.is_block && browse_block_ss.blk_height == expected_height)
+                    return; // already loaded
+            }
+            trigger_browse_block(expected_height);
+        }
     };
 
     auto open_broadcast_dialog = [&] {
@@ -697,13 +799,14 @@ static int run(int argc, char* argv[]) {
         }
 
         // Is a search result overlay currently visible?
-        bool overlay_visible;
-        bool overlay_is_confirmed_tx;    // confirmed tx (not a block)
-        bool overlay_block_row_selected; // block # row highlighted (io_selected == 0)
-        bool overlay_inputs_row_sel;     // inputs row highlighted
-        bool overlay_outputs_row_sel;    // outputs row highlighted
-        bool overlay_inputs_open;        // inputs sub-overlay is open
-        bool overlay_outputs_open;       // outputs sub-overlay is open
+        bool          overlay_visible;
+        bool          overlay_is_confirmed_tx;    // confirmed tx (not a block)
+        bool          overlay_block_row_selected; // block # row highlighted (io_selected == 0)
+        bool          overlay_inputs_row_sel;     // inputs row highlighted
+        bool          overlay_outputs_row_sel;    // outputs row highlighted
+        bool          overlay_inputs_open;        // inputs sub-overlay is open
+        bool          overlay_outputs_open;       // outputs sub-overlay is open
+        TxSearchState search_snap;                // copy of search_state for overlay render
         {
             std::lock_guard lock(search_mtx);
             overlay_visible         = !search_state.txid.empty();
@@ -719,6 +822,8 @@ static int run(int argc, char* argv[]) {
                 overlay_is_confirmed_tx && sel == outputs_idx && outputs_idx >= 0;
             overlay_inputs_open  = overlay_is_confirmed_tx && search_state.inputs_overlay_open;
             overlay_outputs_open = overlay_is_confirmed_tx && search_state.outputs_overlay_open;
+            if (overlay_visible)
+                search_snap = search_state;
         }
 
         // Tab content
@@ -728,20 +833,25 @@ static int run(int argc, char* argv[]) {
             tab_content = render_dashboard(snap);
             break;
         case 1: {
-            TxSearchState ss;
-            {
-                std::lock_guard lock(search_mtx);
-                ss = search_state;
-            }
+            // Hold browse_mtx for the Explorer tab render to avoid copying
+            // TxSearchState (blk_tx_list can be 100k+ entries for mempool).
+            std::lock_guard      lock(browse_mtx);
+            const TxSearchState& browse = (mempool_sel == 0) ? browse_mempool_ss : browse_block_ss;
 
-            // Mempool content is always the background layer
-            auto base = vbox({render_mempool(snap, mempool_sel), filler()}) | flex;
+            // Panes 1-3 always rendered inline via render_mempool.
+            auto base = vbox({render_mempool(snap, mempool_sel, browse, mempool_tx_sel,
+                                             mempool_pane, explorer_win_size),
+                              filler()}) |
+                        flex;
 
-            // No search yet — just show the mempool
-            if (ss.txid.empty()) {
+            // No search overlay on Explorer tab — just show the browse panes.
+            if (!overlay_visible) {
                 tab_content = std::move(base);
                 break;
             }
+
+            // Overlay a search result on top of the Explorer base.
+            const auto& ss = search_snap;
 
             // Abbreviated txid: first 20 + "…" + last 20
             std::string txid_abbrev = ss.txid.size() > 40 ? ss.txid.substr(0, 20) + "…" +
@@ -1169,13 +1279,14 @@ static int run(int argc, char* argv[]) {
             : overlay_is_confirmed_tx
                 ? hbox({text("  [↑/↓] navigate  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
             : overlay_visible ? hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
-            : (tab_index == 1 && mempool_sel >= 0)
-                ? hbox({text("  [↵] view block  [←/→] navigate  [Esc] deselect  [q] quit ") |
+            : (tab_index == 1 && mempool_pane == 1)
+                ? hbox({text("  [↑/↓] navigate  [↵] lookup tx  [Esc] back  [q] quit ") |
                         color(Color::Yellow)})
-            : (tab_index == 1)
-                ? hbox({refresh_indicator,
-                        text("  [↓] select  [Tab/←/→] switch  [/] search  [q] quit ") |
-                            color(Color::GrayDark)})
+            : (tab_index == 1 && mempool_pane == 0)
+                ? hbox({text("  [↑/↓/←/→] navigate  [/] search  [q] quit ") | color(Color::Yellow)})
+            : (tab_index == 1) ? hbox({refresh_indicator,
+                                       text("  [↓] select  [←/→] navigate  [/] search  [q] quit ") |
+                                           color(Color::GrayDark)})
             : (tab_index == 3 && peer_selected >= 0)
                 ? hbox({refresh_indicator, text("  [\u2191/\u2193] navigate  [\u23ce] details  [a] "
                                                 "added nodes  [b] ban list  [q] quit ") |
@@ -1755,59 +1866,154 @@ static int run(int argc, char* argv[]) {
                 return true;
             }
         }
-        // Mempool tab: block navigation (↓ to enter, ←/→ to navigate, Enter to view)
+        // Explorer tab navigation
         if (tab_index == 1) {
+            // Reset to unfocused when switching into the Explorer tab from another tab.
+            if (prev_tab_index != 1) {
+                mempool_pane   = -1;
+                mempool_tx_sel = -1;
+            }
+            prev_tab_index = 1;
+
+            // Check whether a search result overlay is showing.
             bool has_overlay;
             {
                 std::lock_guard lock(search_mtx);
                 has_overlay = !search_state.txid.empty();
             }
-            if (!has_overlay) {
-                // arrow-down enters block navigation mode
-                if (event == Event::ArrowDown && mempool_sel < 0) {
-                    int n;
-                    {
-                        std::lock_guard lock(state_mtx);
-                        n = static_cast<int>(state.recent_blocks.size());
-                    }
-                    if (n > 0) {
-                        mempool_sel = 0;
-                        screen.PostEvent(Event::Custom);
-                        return true;
-                    }
+
+            if (has_overlay) {
+                // Block L/R from switching tabs while overlay is open.
+                if (event == Event::ArrowLeft || event == Event::ArrowRight)
+                    return true;
+            } else if (mempool_pane == 1) {
+                // ── Tx list pane navigation ─────────────────────────────────
+                int ntx;
+                {
+                    std::lock_guard lock(browse_mtx);
+                    const auto&     bs = (mempool_sel == 0) ? browse_mempool_ss : browse_block_ss;
+                    ntx                = static_cast<int>(bs.blk_tx_list.size());
                 }
-                // arrow-left/arrow-right navigate blocks once in block navigation mode
-                if (mempool_sel >= 0 && (event == Event::ArrowLeft || event == Event::ArrowRight)) {
-                    int n;
-                    {
-                        std::lock_guard lock(state_mtx);
-                        n = static_cast<int>(state.recent_blocks.size());
-                    }
-                    if (event == Event::ArrowLeft)
-                        mempool_sel = std::max(mempool_sel - 1, 0);
-                    else
-                        mempool_sel = std::min(mempool_sel + 1, n - 1);
+                if (ntx == 0)
+                    return true; // nothing to navigate (shouldn't happen)
+                if (event == Event::ArrowDown) {
+                    mempool_tx_sel = std::min(mempool_tx_sel + 1, ntx - 1);
                     screen.PostEvent(Event::Custom);
                     return true;
                 }
-                if (event == Event::Return && mempool_sel >= 0) {
-                    std::string height_str;
+                if (event == Event::ArrowUp) {
+                    if (mempool_tx_sel <= 0)
+                        mempool_pane = 0;
+                    else
+                        mempool_tx_sel--;
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::PageDown) {
+                    mempool_tx_sel = std::min(mempool_tx_sel + explorer_win_size, ntx - 1);
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::PageUp) {
+                    mempool_tx_sel = std::max(mempool_tx_sel - explorer_win_size, 0);
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::Return && mempool_tx_sel >= 0 && mempool_tx_sel < ntx) {
+                    std::string txid, blkhash;
+                    {
+                        std::lock_guard lock(browse_mtx);
+                        const auto& bs = (mempool_sel == 0) ? browse_mempool_ss : browse_block_ss;
+                        txid           = bs.blk_tx_list[mempool_tx_sel].txid;
+                        blkhash        = bs.blk_hash; // empty for mempool txs
+                    }
+                    if (!txid.empty())
+                        trigger_tx_search(txid, false, blkhash);
+                    return true;
+                }
+                if (event == Event::Escape) {
+                    mempool_pane   = 0;
+                    mempool_tx_sel = -1;
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                // Block L/R from switching tabs while in tx list.
+                if (event == Event::ArrowLeft || event == Event::ArrowRight)
+                    return true;
+            } else {
+                // ── Blocks pane navigation ──────────────────────────────────
+                bool browse_loaded;
+                {
+                    std::lock_guard lock(browse_mtx);
+                    const auto&     bs = (mempool_sel == 0) ? browse_mempool_ss : browse_block_ss;
+                    browse_loaded      = bs.found;
+                }
+                // On Custom events: restore mempool selection after refresh,
+                // then auto-trigger block/mempool load if needed.
+                if (event == Event::Custom) {
+                    if (mempool_restore_idx >= 0 || !mempool_restore_txid.empty()) {
+                        std::lock_guard lock(browse_mtx);
+                        if (browse_mempool_ss.is_mempool && browse_mempool_ss.found) {
+                            const auto& list = browse_mempool_ss.blk_tx_list;
+                            int         n    = static_cast<int>(list.size());
+                            int         sel  = -1;
+                            for (int i = 0; i < n; ++i) {
+                                if (list[i].txid == mempool_restore_txid) {
+                                    sel = i;
+                                    break;
+                                }
+                            }
+                            if (sel < 0 && mempool_restore_idx >= 0 && n > 0)
+                                sel = std::min(mempool_restore_idx, n - 1);
+                            if (sel >= 0)
+                                mempool_tx_sel = sel;
+                            mempool_restore_txid.clear();
+                            mempool_restore_idx = -1;
+                        }
+                    }
+                    trigger_browse_if_needed();
+                    return false; // don't consume — let render proceed
+                }
+                // ↓ focus blocks pane (unfocused→focused) or enter tx list.
+                if (event == Event::ArrowDown) {
+                    if (mempool_pane == -1) {
+                        mempool_pane = 0;
+                        trigger_browse_if_needed();
+                    } else if (browse_loaded) {
+                        mempool_pane   = 1;
+                        mempool_tx_sel = 0;
+                    }
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                // ↑ when blocks pane focused, unfocus back to top level.
+                if (mempool_pane == 0 && event == Event::ArrowUp) {
+                    mempool_pane = -1;
+                    screen.PostEvent(Event::Custom);
+                    return true;
+                }
+                // ←/→ navigate blocks — only when blocks pane has focus.
+                if (mempool_pane == 0 &&
+                    (event == Event::ArrowLeft || event == Event::ArrowRight)) {
+                    int n;
                     {
                         std::lock_guard lock(state_mtx);
-                        if (mempool_sel < static_cast<int>(state.recent_blocks.size()))
-                            height_str = std::to_string(state.recent_blocks[mempool_sel].height);
+                        n = static_cast<int>(state.recent_blocks.size());
                     }
-                    if (!height_str.empty()) {
-                        trigger_tx_search(height_str, false);
-                        return true;
-                    }
-                }
-                if (event == Event::Escape && mempool_sel >= 0) {
-                    mempool_sel = -1;
+                    // TODO: allow scrolling the block bar when there are more
+                    // blocks than fit on screen, instead of clamping here.
+                    int max_visible = std::max(2, (Terminal::Size().dimx - 4) / 11) - 1;
+                    int max_sel     = std::min(n, max_visible);
+                    int delta       = (event == Event::ArrowLeft) ? -1 : 1;
+                    mempool_sel     = std::clamp(mempool_sel + delta, 0, max_sel);
+                    mempool_tx_sel  = -1;
+                    trigger_browse_if_needed();
                     screen.PostEvent(Event::Custom);
                     return true;
                 }
             }
+        } else {
+            prev_tab_index = tab_index;
         }
         // Normal mode
         if (event == Event::Character('/')) {
@@ -2035,6 +2241,8 @@ static int run(int argc, char* argv[]) {
     running = false;
     if (search_thread.joinable())
         search_thread.join();
+    if (browse_thread.joinable())
+        browse_thread.join();
     if (broadcast_thread.joinable())
         broadcast_thread.join();
     if (addnode_thread.joinable())
