@@ -115,6 +115,12 @@ struct SoftFork {
     int64_t bip9_threshold = 0;
 };
 
+struct TxListEntry {
+    std::string txid;
+    int64_t     vsize   = 0;   // virtual bytes (0 if unknown)
+    double      feerate = 0.0; // sat/vB (0 for coinbase or if unknown)
+};
+
 struct TxVin {
     std::string txid;
     int         vout        = 0;
@@ -152,15 +158,17 @@ struct TxSearchState {
     int         vout_count    = 0;
     double      total_output  = 0.0; // BTC, sum of all outputs
     // Block result fields
-    std::string blk_hash;
-    int64_t     blk_height     = 0;
-    int64_t     blk_time       = 0;
-    int64_t     blk_ntx        = 0;
-    int64_t     blk_size       = 0;
-    int64_t     blk_weight     = 0;
-    double      blk_difficulty = 0.0;
-    std::string blk_miner;
-    int64_t     blk_confirmations = 0;
+    std::string              blk_hash;
+    int64_t                  blk_height     = 0;
+    int64_t                  blk_time       = 0;
+    int64_t                  blk_ntx        = 0;
+    int64_t                  blk_size       = 0;
+    int64_t                  blk_weight     = 0;
+    double                   blk_difficulty = 0.0;
+    std::string              blk_miner;
+    int64_t                  blk_confirmations = 0;
+    std::vector<TxListEntry> blk_tx_list;        // txs in block order or by feerate desc (mempool)
+    bool                     is_mempool = false; // result of a getrawmempool search
     // Input/output navigation
     std::vector<TxVin>  vin_list;
     std::vector<TxVout> vout_list;
