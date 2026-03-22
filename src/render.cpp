@@ -672,6 +672,16 @@ Element render_tools(const AppState& snap, const BroadcastState& bs, bool input_
         layout.push_back(section_box("Private Broadcast Queue", queue_rows));
     }
 
+    // ── Node control ────────────────────────────────────────────────────────
+    int      shutdown_idx = 1 + (has_result_row ? 1 : 0);
+    Elements node_rows;
+    node_rows.push_back(text(""));
+    node_rows.push_back(menu_row("Shutdown bitcoind & exit", "[Q]", tools_sel == shutdown_idx));
+    node_rows.push_back(text(""));
+    node_rows.push_back(text("  Sends RPC stop to Bitcoin Core, then exits the TUI.") |
+                        color(Color::GrayDark));
+    layout.push_back(section_box("Shutdown", node_rows));
+
     layout.push_back(filler());
     return vbox(std::move(layout)) | flex;
 }

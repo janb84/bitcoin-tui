@@ -1114,8 +1114,9 @@ static int run(int argc, char* argv[]) {
                 ? hbox({text("  [\u2190/\u2192] select action  [\u23ce] confirm  [Esc] back  [q] "
                              "quit ") |
                         color(Color::Yellow)})
-            : (tab_index == 4) ? hbox({text("  [↑/↓] navigate  [↵/b] activate  [q] quit ") |
-                                       color(Color::GrayDark)})
+            : (tab_index == 4)
+                ? hbox({text("  [↑/↓] navigate  [↵/b] broadcast  [Q] shutdown  [q] quit ") |
+                        color(Color::GrayDark)})
             : overlay_outputs_open
                 ? hbox({text("  [↑/↓] navigate  [Esc] back  [q] quit ") | color(Color::Yellow)})
             : overlay_inputs_open
@@ -1736,14 +1737,35 @@ static int run(int argc, char* argv[]) {
         }
         // Tools tab keys
         if (tab_index == 4) {
+            // Compute shutdown row index: after broadcast (0) + optional result txid (1)
+            bool has_result_row;
+            {
+                std::lock_guard lock(broadcast_mtx);
+                has_result_row = broadcast_state.has_result && broadcast_state.success;
+            }
+            int shutdown_idx = 1 + (has_result_row ? 1 : 0);
+
+            auto do_shutdown = [&]() {
+                try {
+                    rpc.call("stop", {});
+                } catch (...) { // NOLINT(bugprone-empty-catch)
+                }
+                screen.ExitLoopClosure()();
+            };
             if (event == Event::Character('b')) {
                 open_broadcast_dialog();
+                return true;
+            }
+            if (event == Event::Character('Q')) {
+                do_shutdown();
                 return true;
             }
             if (event == Event::Return) {
                 if (tools_sel == 0) {
                     open_broadcast_dialog();
-                } else if (tools_sel == 1) {
+                } else if (tools_sel == shutdown_idx) {
+                    do_shutdown();
+                } else if (tools_sel == 1 && has_result_row) {
                     std::string txid;
                     {
                         std::lock_guard lock(broadcast_mtx);
@@ -1756,14 +1778,8 @@ static int run(int argc, char* argv[]) {
                 return true;
             }
             if (event == Event::ArrowDown || event == Event::ArrowUp) {
-                bool has_result_row;
-                {
-                    std::lock_guard lock(broadcast_mtx);
-                    has_result_row = broadcast_state.has_result && broadcast_state.success;
-                }
-                int max_sel = has_result_row ? 1 : 0;
                 if (event == Event::ArrowDown)
-                    tools_sel = std::min(tools_sel + 1, max_sel);
+                    tools_sel = std::min(tools_sel + 1, shutdown_idx);
                 else
                     tools_sel = std::max(tools_sel - 1, 0);
                 screen.PostEvent(Event::Custom);
