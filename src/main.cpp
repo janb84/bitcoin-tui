@@ -20,6 +20,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 
+#include "bitcoind.hpp"
 #include "format.hpp"
 #include "poll.hpp"
 #include "render.hpp"
@@ -121,6 +122,8 @@ static int run(int argc, char* argv[]) {
     std::string      cookie_file;            // explicit --cookie override
     std::string      datadir;                // explicit --datadir override
     bool             explicit_creds = false; // true when -u/-P were given
+    std::string      bitcoind_cmd;           // --bitcoind override
+    bool             explicit_host = false;  // true when --host was given
 
     for (int i = 1; i < argc; ++i) {
         std::string arg  = argv[i];
@@ -129,9 +132,10 @@ static int run(int argc, char* argv[]) {
                 return argv[++i];
             return {};
         };
-        if (arg == "--host" || arg == "-h")
-            cfg.host = next();
-        else if (arg == "--port" || arg == "-p")
+        if (arg == "--host" || arg == "-h") {
+            cfg.host      = next();
+            explicit_host = true;
+        } else if (arg == "--port" || arg == "-p")
             cfg.port = std::stoi(next());
         else if (arg == "--user" || arg == "-u") {
             auth.update([&](auto& a) { a.user = next(); });
@@ -154,7 +158,9 @@ static int run(int argc, char* argv[]) {
         } else if (arg == "--signet") {
             cfg.port = 38332;
             network  = "signet";
-        } else if (arg == "--version" || arg == "-v") {
+        } else if (arg == "--bitcoind")
+            bitcoind_cmd = next();
+        else if (arg == "--version" || arg == "-v") {
             std::puts("bitcoin-tui " BITCOIN_TUI_VERSION);
             return 0;
         } else if (arg == "--help") {
@@ -173,6 +179,9 @@ static int run(int argc, char* argv[]) {
                 "  -d, --datadir <path>   Bitcoin data directory for cookie lookup\n"
                 "  -u, --user <user>      RPC username         (disables cookie auth)\n"
                 "  -P, --password <pass>  RPC password         (disables cookie auth)\n"
+                "\n"
+                "Node:\n"
+                "      --bitcoind <path>  Path to bitcoind binary   (default: bitcoind from PATH)\n"
                 "\n"
                 "Network:\n"
                 "      --testnet          Use testnet3 port (18332) and cookie subdir\n"
@@ -214,6 +223,12 @@ static int run(int argc, char* argv[]) {
         }
     }
 
+    // Determine if we can offer to launch bitcoind.
+    // Only when connecting to localhost (default or explicit loopback), or --bitcoind was given.
+    bool can_launch = !bitcoind_cmd.empty() || !explicit_host;
+    if (can_launch && bitcoind_cmd.empty())
+        bitcoind_cmd = "bitcoind";
+
     // State
     AppState   state;
     std::mutex state_mtx;
@@ -235,6 +250,15 @@ static int run(int argc, char* argv[]) {
     std::atomic<bool> broadcast_in_flight{false};
     std::thread       broadcast_thread;
     int               tools_sel = 0; // 0=Broadcast, 1=result txid (opt), N=AddNode, N+1=BanNode
+    int               conn_overlay_sel = 0; // 0=Launch (if can_launch), last=Quit
+
+    // Launch bitcoind state
+    std::atomic<bool>        launch_in_flight{false};
+    std::atomic<bool>        launch_done{false};
+    int                      launch_exit_code = 0;
+    std::vector<std::string> launch_output;
+    std::mutex               launch_mtx;
+    std::thread              launch_thread;
 
     // Add Node state
     AddNodeState      addnode_state;
@@ -1236,8 +1260,9 @@ static int run(int argc, char* argv[]) {
             }) | border,
 
             // Content — show connection overlay when disconnected
-            !snap.connected
-                ? vbox({
+            snap.connected
+                ? tab_content | flex
+                : vbox({
                       filler(),
                       hbox({filler(),
                             vbox({
@@ -1245,10 +1270,9 @@ static int run(int argc, char* argv[]) {
                                           color(Color::Red),
                                       filler()}),
                                 separator(),
-                                text(""),
                                 hbox({text(" Network : ") | color(Color::GrayDark),
                                       text(network) | color(Color::White)}),
-                                hbox({text(" Endpoint: ") | color(Color::GrayDark),
+                                hbox({text(" RPC port: ") | color(Color::GrayDark),
                                       text(cfg.host + ":" + std::to_string(cfg.port)) |
                                           color(Color::White)}),
                                 hbox({text(" Datadir : ") | color(Color::GrayDark),
@@ -1258,19 +1282,57 @@ static int run(int argc, char* argv[]) {
                                                ? auth.get().user + ":<hidden>"
                                                : "cookie (" + cookie_path(network, datadir) + ")") |
                                           color(Color::White)}),
-                                hbox({text(" Error   : ") | color(Color::GrayDark),
-                                      paragraph(snap.error_message.empty()
-                                                    ? std::string("connecting…")
-                                                    : snap.error_message) |
-                                          color(Color::Yellow)}),
+                                [&]() -> Element {
+                                    if (launch_in_flight.load() || launch_done.load()) {
+                                        Elements rows;
+                                        rows.push_back(
+                                            text(launch_in_flight.load() ? "  Launching bitcoind…"
+                                                 : launch_exit_code == 0 ? "  ✓ bitcoind started"
+                                                                         : "  ✗ bitcoind failed") |
+                                            color(launch_in_flight.load() ? Color::Yellow
+                                                  : launch_exit_code == 0 ? Color::Green
+                                                                          : Color::Red) |
+                                            bold);
+                                        {
+                                            std::lock_guard lock(launch_mtx);
+                                            for (auto& line : launch_output)
+                                                rows.push_back(paragraph("  " + line) |
+                                                               color(Color::White));
+                                        }
+                                        return vbox(std::move(rows));
+                                    }
+                                    Elements rows;
+                                    rows.push_back(text("  Error:") | color(Color::GrayDark));
+                                    rows.push_back(
+                                        paragraph("  " + (snap.error_message.empty()
+                                                              ? std::string("connecting…")
+                                                              : snap.error_message)) |
+                                        color(Color::Yellow));
+                                    return vbox(std::move(rows));
+                                }(),
                                 separator(),
-                                hbox({text("  "), text(" Quit ") | inverted}),
+                                hbox({
+                                    text("  "),
+                                    can_launch
+                                        ? text(" Launch bitcoind ") |
+                                              (!launch_in_flight.load() && !launch_done.load() &&
+                                                       conn_overlay_sel == 0
+                                                   ? inverted
+                                                   : dim)
+                                        : text(""),
+                                    filler(),
+                                    text(" Quit ") |
+                                        (!launch_in_flight.load() &&
+                                                 conn_overlay_sel == (can_launch ? 1 : 0)
+                                             ? inverted
+                                             : dim),
+                                    text("  "),
+                                }),
                             }) | border |
                                 size(WIDTH, EQUAL, 80),
                             filler()}),
                       filler(),
-                  }) | flex
-                : tab_content | flex,
+                  }) | flex,
 
             // Status bar
             hbox({status_left, filler(), status_right}) | border,
@@ -1279,13 +1341,49 @@ static int run(int argc, char* argv[]) {
 
     // Event handling: '/' activates global search; Escape/Enter commit or cancel
     auto event_handler = CatchEvent(renderer, [&](const Event& event) -> bool {
-        // Connection overlay: only quit actions are available; consume all events
         {
+            // Connection overlay: navigate buttons, launch or quit; consume all events
             std::lock_guard lock(state_mtx);
-            if (!state.connected) {
-                if (event == Event::Escape || event == Event::Character('q') ||
-                    event == Event::Return) {
+            if (state.connected) {
+                launch_done = false;
+            } else {
+                int max_sel = can_launch ? 1 : 0;
+                if (event == Event::Escape || event == Event::Character('q')) {
                     screen.ExitLoopClosure()();
+                }
+                if (event == Event::Return) {
+                    if (can_launch && conn_overlay_sel == 0 && !launch_in_flight.load() &&
+                        !launch_done.load()) {
+                        launch_in_flight = true;
+                        launch_done      = false;
+                        {
+                            std::lock_guard launch_lock(launch_mtx);
+                            launch_output.clear();
+                        }
+                        if (launch_thread.joinable())
+                            launch_thread.join();
+                        launch_thread = std::thread([&] {
+                            launch_exit_code = launch_bitcoind(
+                                bitcoind_cmd, datadir, network, [&](const std::string& line) {
+                                    {
+                                        std::lock_guard launch_lock(launch_mtx);
+                                        launch_output.push_back(line);
+                                    }
+                                    screen.PostEvent(Event::Custom);
+                                });
+                            launch_in_flight = false;
+                            launch_done      = true;
+                            screen.PostEvent(Event::Custom);
+                        });
+                    } else if (!launch_in_flight.load()) {
+                        screen.ExitLoopClosure()();
+                    }
+                } else if (event == Event::ArrowLeft || event == Event::ArrowRight) {
+                    if (event == Event::ArrowLeft)
+                        conn_overlay_sel = std::max(conn_overlay_sel - 1, 0);
+                    else
+                        conn_overlay_sel = std::min(conn_overlay_sel + 1, max_sel);
+                    screen.PostEvent(Event::Custom);
                 }
                 return true;
             }
@@ -2053,6 +2151,8 @@ static int run(int argc, char* argv[]) {
         banned_list_thread.join();
     if (softforks_thread.joinable())
         softforks_thread.join();
+    if (launch_thread.joinable())
+        launch_thread.join();
     poll_thread.join();
     anim_thread.join();
 

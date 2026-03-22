@@ -25,6 +25,7 @@ add_executable(bitcoin-tui
   src/poll.cpp
   src/search.cpp
   src/rpc_client.cpp
+  src/bitcoind.cpp
 )
 
 # src/ is on the include path so rpc_client.hpp can find json.hpp
