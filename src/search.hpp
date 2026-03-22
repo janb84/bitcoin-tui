@@ -7,5 +7,5 @@
 
 // Pure transaction/block lookup — no shared state, no UI side-effects.
 // query_is_height: true when query is a decimal block height string.
-TxSearchState perform_tx_search(const RpcConfig& cfg, const std::string& query,
+TxSearchState perform_tx_search(const RpcConfig& cfg, const RpcAuth& auth, const std::string& query,
                                 bool query_is_height, int64_t tip);

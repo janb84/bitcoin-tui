@@ -8,7 +8,8 @@
 #include <cerrno>
 #include <cstring>
 
-RpcClient::RpcClient(RpcConfig config) : config_(std::move(config)) {}
+RpcClient::RpcClient(RpcConfig config, RpcAuth auth)
+    : config_(std::move(config)), auth_(std::move(auth)) {}
 
 // ---------------------------------------------------------------------------
 // base64 encoder (RFC 4648)
@@ -84,7 +85,7 @@ std::string RpcClient::http_post(const std::string& body) {
 
     // Build HTTP/1.1 request with Connection: close so the server closes after
     // responding, allowing recv() to reach EOF without waiting for a timeout.
-    const std::string auth    = base64_encode(config_.user + ":" + config_.password);
+    const std::string auth    = base64_encode(auth_.user + ":" + auth_.password);
     const std::string request = "POST / HTTP/1.1\r\n"
                                 "Host: " +
                                 config_.host +

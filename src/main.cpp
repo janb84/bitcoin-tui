@@ -30,6 +30,35 @@
 using namespace ftxui;
 
 // ============================================================================
+// Mutex helper
+// ============================================================================
+
+template <typename T> class Guarded {
+  private:
+    mutable std::mutex mtx;
+    T                  value;
+
+  public:
+    Guarded()            = default;
+    Guarded(Guarded&& v) = default;
+    ~Guarded()           = default;
+
+    explicit Guarded(T v) : value{std::move(v)} {}
+
+    T get() const {
+        std::lock_guard lock(mtx);
+        return value;
+    }
+
+    operator T() const { return get(); }
+
+    template <typename Fn> auto update(Fn&& fn) {
+        std::lock_guard lock(mtx);
+        return fn(value);
+    }
+};
+
+// ============================================================================
 // Cookie authentication helpers
 // ============================================================================
 
@@ -61,9 +90,9 @@ static std::string cookie_path(const std::string& network, const std::string& da
     return datadir + "/" + network_subdir(network) + ".cookie";
 }
 
-// Reads a Bitcoin Core cookie file and populates cfg.user / cfg.password.
+// Reads a Bitcoin Core cookie file and populates auth.user / auth.password.
 // File format: __cookie__:<password>
-static void apply_cookie(RpcConfig& cfg, const std::string& path) {
+static void apply_cookie(RpcAuth& auth, const std::string& path) {
     std::ifstream f(path);
     if (!f)
         throw std::runtime_error("Cannot open cookie file: " + path);
@@ -76,8 +105,8 @@ static void apply_cookie(RpcConfig& cfg, const std::string& path) {
     auto colon = line.find(':');
     if (colon == std::string::npos)
         throw std::runtime_error("Invalid cookie file (no ':' found): " + path);
-    cfg.user     = line.substr(0, colon);
-    cfg.password = line.substr(colon + 1);
+    auth.user     = line.substr(0, colon);
+    auth.password = line.substr(colon + 1);
 }
 
 // ============================================================================
@@ -85,12 +114,13 @@ static void apply_cookie(RpcConfig& cfg, const std::string& path) {
 // ============================================================================
 static int run(int argc, char* argv[]) {
     // Parse CLI args
-    RpcConfig   cfg;
-    int         refresh_secs = 5;
-    std::string network      = "main";  // tracks chain for cookie path lookup
-    std::string cookie_file;            // explicit --cookie override
-    std::string datadir;                // explicit --datadir override
-    bool        explicit_creds = false; // true when -u/-P were given
+    RpcConfig        cfg;
+    Guarded<RpcAuth> auth;
+    int              refresh_secs = 5;
+    std::string      network      = "main";  // tracks chain for cookie path lookup
+    std::string      cookie_file;            // explicit --cookie override
+    std::string      datadir;                // explicit --datadir override
+    bool             explicit_creds = false; // true when -u/-P were given
 
     for (int i = 1; i < argc; ++i) {
         std::string arg  = argv[i];
@@ -104,10 +134,10 @@ static int run(int argc, char* argv[]) {
         else if (arg == "--port" || arg == "-p")
             cfg.port = std::stoi(next());
         else if (arg == "--user" || arg == "-u") {
-            cfg.user       = next();
+            auth.update([&](auto& a) { a.user = next(); });
             explicit_creds = true;
         } else if (arg == "--password" || arg == "-P") {
-            cfg.password   = next();
+            auth.update([&](auto& a) { a.password = next(); });
             explicit_creds = true;
         } else if (arg == "--cookie" || arg == "-c")
             cookie_file = next();
@@ -173,7 +203,7 @@ static int run(int argc, char* argv[]) {
     if (!explicit_creds) {
         std::string path = cookie_file.empty() ? cookie_path(network, datadir) : cookie_file;
         try {
-            apply_cookie(cfg, path);
+            auth.update([&](auto& a) { apply_cookie(a, path); });
         } catch (const std::exception& e) {
             // If the user specified --cookie explicitly, fail loudly.
             // Otherwise silently skip — the RPC call will report auth errors.
@@ -187,7 +217,7 @@ static int run(int argc, char* argv[]) {
     // State + RPC client
     AppState   state;
     std::mutex state_mtx;
-    RpcClient  rpc(cfg);
+    RpcClient  rpc(cfg, auth);
 
     // Transaction search state
     TxSearchState              search_state;
@@ -314,8 +344,9 @@ static int run(int argc, char* argv[]) {
         });
 
         search_thread = std::thread([&, query, query_is_height, tip_at_search] {
-            TxSearchState result = perform_tx_search(cfg, query, query_is_height, tip_at_search);
-            search_in_flight     = false;
+            TxSearchState result =
+                perform_tx_search(cfg, auth, query, query_is_height, tip_at_search);
+            search_in_flight = false;
             if (!running.load())
                 return;
             {
@@ -349,7 +380,7 @@ static int run(int argc, char* argv[]) {
             try {
                 RpcConfig bcast_cfg       = cfg;
                 bcast_cfg.timeout_seconds = 30;
-                RpcClient bc(bcast_cfg);
+                RpcClient bc(bcast_cfg, auth);
                 json      res      = bc.call("sendrawtransaction", {hex});
                 result.result_txid = res["result"].get<std::string>();
                 result.success     = true;
@@ -385,7 +416,7 @@ static int run(int argc, char* argv[]) {
         addnode_thread = std::thread([&, addr, cmd] {
             AddNodeState result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 rc.call("addnode", {addr, cmd});
                 result.success        = true;
                 result.result_message = cmd + " " + addr;
@@ -420,7 +451,7 @@ static int run(int argc, char* argv[]) {
         ban_thread = std::thread([&, addr, remove] {
             BanNodeState result;
             try {
-                RpcClient   rc(cfg);
+                RpcClient   rc(cfg, auth);
                 std::string cmd = remove ? "remove" : "add";
                 rc.call("setban", {addr, cmd});
                 result.success        = true;
@@ -457,7 +488,7 @@ static int run(int argc, char* argv[]) {
         peer_action_thread = std::thread([&, addr, is_ban] {
             PeerActionResult result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 if (is_ban) {
                     // Strip port: "[::1]:8333" → "[::1]", "1.2.3.4:8333" → "1.2.3.4"
                     std::string ip = addr;
@@ -503,7 +534,7 @@ static int run(int argc, char* argv[]) {
         added_nodes_thread  = std::thread([&] {
             std::vector<AddedNodeInfo> result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 auto      ans = rc.call("getaddednodeinfo")["result"];
                 for (const auto& n : ans) {
                     AddedNodeInfo info;
@@ -541,7 +572,7 @@ static int run(int argc, char* argv[]) {
         banned_list_thread  = std::thread([&] {
             std::vector<BannedEntry> result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 auto      bl = rc.call("listbanned")["result"];
                 for (const auto& b : bl) {
                     BannedEntry entry;
@@ -569,7 +600,7 @@ static int run(int argc, char* argv[]) {
             remove_addednode_thread.join();
         remove_addednode_thread = std::thread([&, addr] {
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 rc.call("addnode", {addr, std::string("remove")});
             } catch (...) { // NOLINT(bugprone-empty-catch)
             }
@@ -586,7 +617,7 @@ static int run(int argc, char* argv[]) {
             unban_action_thread.join();
         unban_action_thread = std::thread([&, addr] {
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 rc.call("setban", {addr, std::string("remove")});
             } catch (...) { // NOLINT(bugprone-empty-catch)
             }
@@ -607,7 +638,7 @@ static int run(int argc, char* argv[]) {
         softforks_thread  = std::thread([&] {
             std::vector<SoftFork> result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 auto      dep = rc.call("getdeploymentinfo")["result"]["deployments"];
                 if (dep.is_object()) {
                     for (const auto& [name, val] : dep.items()) {
@@ -1223,7 +1254,7 @@ static int run(int argc, char* argv[]) {
                                       text(datadir) | color(Color::White)}),
                                 hbox({text("  Auth     : ") | color(Color::GrayDark),
                                       text(explicit_creds
-                                               ? cfg.user + ":<hidden>"
+                                               ? auth.get().user + ":<hidden>"
                                                : "cookie (" + cookie_path(network, datadir) + ")") |
                                           color(Color::White)}),
                                 text(""),
