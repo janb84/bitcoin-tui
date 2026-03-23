@@ -30,38 +30,69 @@
 using namespace ftxui;
 
 // ============================================================================
+// Mutex helper
+// ============================================================================
+
+template <typename T> class Guarded {
+  private:
+    mutable std::mutex mtx;
+    T                  value;
+
+  public:
+    Guarded()            = default;
+    Guarded(Guarded&& v) = default;
+    ~Guarded()           = default;
+
+    explicit Guarded(T v) : value{std::move(v)} {}
+
+    T get() const {
+        std::lock_guard lock(mtx);
+        return value;
+    }
+
+    operator T() const { return get(); }
+
+    template <typename Fn> auto update(Fn&& fn) {
+        std::lock_guard lock(mtx);
+        return fn(value);
+    }
+};
+
+// ============================================================================
 // Cookie authentication helpers
 // ============================================================================
 
-// Returns the platform-specific default path to Bitcoin Core's .cookie file.
-// network is one of: "main", "testnet3", "signet", "regtest".
-static std::string cookie_default_path(const std::string& network, const std::string& datadir) {
-    std::string base;
-    if (!datadir.empty()) {
-        base = datadir;
-    } else {
-        const char* home = std::getenv("HOME");
-        if (!home)
-            throw std::runtime_error("HOME not set; use --datadir or --cookie to locate .cookie");
+// Returns the platform-specific default Bitcoin data directory.
+static std::string default_datadir() {
+    const char* home = std::getenv("HOME");
+    if (!home)
+        throw std::runtime_error("HOME not set; use --datadir or --cookie to locate .cookie");
 #ifdef __APPLE__
-        base = std::string(home) + "/Library/Application Support/Bitcoin";
+    return std::string(home) + "/Library/Application Support/Bitcoin";
 #else
-        base = std::string(home) + "/.bitcoin";
+    return std::string(home) + "/.bitcoin";
 #endif
-    }
-    std::string sub;
-    if (network == "testnet3")
-        sub = "testnet3/";
-    else if (network == "signet")
-        sub = "signet/";
-    else if (network == "regtest")
-        sub = "regtest/";
-    return base + "/" + sub + ".cookie";
 }
 
-// Reads a Bitcoin Core cookie file and populates cfg.user / cfg.password.
+// Returns the chain subdirectory name for the given network.
+static std::string network_subdir(const std::string& network) {
+    if (network == "testnet3")
+        return "testnet3/";
+    if (network == "signet")
+        return "signet/";
+    if (network == "regtest")
+        return "regtest/";
+    return "";
+}
+
+// Returns the path to the .cookie file for the given network and data directory.
+static std::string cookie_path(const std::string& network, const std::string& datadir) {
+    return datadir + "/" + network_subdir(network) + ".cookie";
+}
+
+// Reads a Bitcoin Core cookie file and populates auth.user / auth.password.
 // File format: __cookie__:<password>
-static void apply_cookie(RpcConfig& cfg, const std::string& path) {
+static void apply_cookie(RpcAuth& auth, const std::string& path) {
     std::ifstream f(path);
     if (!f)
         throw std::runtime_error("Cannot open cookie file: " + path);
@@ -74,8 +105,8 @@ static void apply_cookie(RpcConfig& cfg, const std::string& path) {
     auto colon = line.find(':');
     if (colon == std::string::npos)
         throw std::runtime_error("Invalid cookie file (no ':' found): " + path);
-    cfg.user     = line.substr(0, colon);
-    cfg.password = line.substr(colon + 1);
+    auth.user     = line.substr(0, colon);
+    auth.password = line.substr(colon + 1);
 }
 
 // ============================================================================
@@ -83,12 +114,13 @@ static void apply_cookie(RpcConfig& cfg, const std::string& path) {
 // ============================================================================
 static int run(int argc, char* argv[]) {
     // Parse CLI args
-    RpcConfig   cfg;
-    int         refresh_secs = 5;
-    std::string network      = "main";  // tracks chain for cookie path lookup
-    std::string cookie_file;            // explicit --cookie override
-    std::string datadir;                // explicit --datadir override
-    bool        explicit_creds = false; // true when -u/-P were given
+    RpcConfig        cfg;
+    Guarded<RpcAuth> auth;
+    int              refresh_secs = 5;
+    std::string      network      = "main";  // tracks chain for cookie path lookup
+    std::string      cookie_file;            // explicit --cookie override
+    std::string      datadir;                // explicit --datadir override
+    bool             explicit_creds = false; // true when -u/-P were given
 
     for (int i = 1; i < argc; ++i) {
         std::string arg  = argv[i];
@@ -102,10 +134,10 @@ static int run(int argc, char* argv[]) {
         else if (arg == "--port" || arg == "-p")
             cfg.port = std::stoi(next());
         else if (arg == "--user" || arg == "-u") {
-            cfg.user       = next();
+            auth.update([&](auto& a) { a.user = next(); });
             explicit_creds = true;
         } else if (arg == "--password" || arg == "-P") {
-            cfg.password   = next();
+            auth.update([&](auto& a) { a.password = next(); });
             explicit_creds = true;
         } else if (arg == "--cookie" || arg == "-c")
             cookie_file = next();
@@ -163,12 +195,15 @@ static int run(int argc, char* argv[]) {
         }
     }
 
+    // Resolve data directory (needed for cookie path and overlay display).
+    if (datadir.empty())
+        datadir = default_datadir();
+
     // Apply cookie authentication unless explicit -u/-P credentials were given.
     if (!explicit_creds) {
-        std::string path =
-            cookie_file.empty() ? cookie_default_path(network, datadir) : cookie_file;
+        std::string path = cookie_file.empty() ? cookie_path(network, datadir) : cookie_file;
         try {
-            apply_cookie(cfg, path);
+            auth.update([&](auto& a) { apply_cookie(a, path); });
         } catch (const std::exception& e) {
             // If the user specified --cookie explicitly, fail loudly.
             // Otherwise silently skip — the RPC call will report auth errors.
@@ -179,10 +214,9 @@ static int run(int argc, char* argv[]) {
         }
     }
 
-    // State + RPC client
+    // State
     AppState   state;
     std::mutex state_mtx;
-    RpcClient  rpc(cfg);
 
     // Transaction search state
     TxSearchState              search_state;
@@ -309,8 +343,9 @@ static int run(int argc, char* argv[]) {
         });
 
         search_thread = std::thread([&, query, query_is_height, tip_at_search] {
-            TxSearchState result = perform_tx_search(cfg, query, query_is_height, tip_at_search);
-            search_in_flight     = false;
+            TxSearchState result =
+                perform_tx_search(cfg, auth, query, query_is_height, tip_at_search);
+            search_in_flight = false;
             if (!running.load())
                 return;
             {
@@ -344,7 +379,7 @@ static int run(int argc, char* argv[]) {
             try {
                 RpcConfig bcast_cfg       = cfg;
                 bcast_cfg.timeout_seconds = 30;
-                RpcClient bc(bcast_cfg);
+                RpcClient bc(bcast_cfg, auth);
                 json      res      = bc.call("sendrawtransaction", {hex});
                 result.result_txid = res["result"].get<std::string>();
                 result.success     = true;
@@ -380,7 +415,7 @@ static int run(int argc, char* argv[]) {
         addnode_thread = std::thread([&, addr, cmd] {
             AddNodeState result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 rc.call("addnode", {addr, cmd});
                 result.success        = true;
                 result.result_message = cmd + " " + addr;
@@ -415,7 +450,7 @@ static int run(int argc, char* argv[]) {
         ban_thread = std::thread([&, addr, remove] {
             BanNodeState result;
             try {
-                RpcClient   rc(cfg);
+                RpcClient   rc(cfg, auth);
                 std::string cmd = remove ? "remove" : "add";
                 rc.call("setban", {addr, cmd});
                 result.success        = true;
@@ -452,7 +487,7 @@ static int run(int argc, char* argv[]) {
         peer_action_thread = std::thread([&, addr, is_ban] {
             PeerActionResult result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 if (is_ban) {
                     // Strip port: "[::1]:8333" → "[::1]", "1.2.3.4:8333" → "1.2.3.4"
                     std::string ip = addr;
@@ -498,7 +533,7 @@ static int run(int argc, char* argv[]) {
         added_nodes_thread  = std::thread([&] {
             std::vector<AddedNodeInfo> result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 auto      ans = rc.call("getaddednodeinfo")["result"];
                 for (const auto& n : ans) {
                     AddedNodeInfo info;
@@ -536,7 +571,7 @@ static int run(int argc, char* argv[]) {
         banned_list_thread  = std::thread([&] {
             std::vector<BannedEntry> result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 auto      bl = rc.call("listbanned")["result"];
                 for (const auto& b : bl) {
                     BannedEntry entry;
@@ -564,7 +599,7 @@ static int run(int argc, char* argv[]) {
             remove_addednode_thread.join();
         remove_addednode_thread = std::thread([&, addr] {
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 rc.call("addnode", {addr, std::string("remove")});
             } catch (...) { // NOLINT(bugprone-empty-catch)
             }
@@ -581,7 +616,7 @@ static int run(int argc, char* argv[]) {
             unban_action_thread.join();
         unban_action_thread = std::thread([&, addr] {
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 rc.call("setban", {addr, std::string("remove")});
             } catch (...) { // NOLINT(bugprone-empty-catch)
             }
@@ -602,7 +637,7 @@ static int run(int argc, char* argv[]) {
         softforks_thread  = std::thread([&] {
             std::vector<SoftFork> result;
             try {
-                RpcClient rc(cfg);
+                RpcClient rc(cfg, auth);
                 auto      dep = rc.call("getdeploymentinfo")["result"]["deployments"];
                 if (dep.is_object()) {
                     for (const auto& [name, val] : dep.items()) {
@@ -1114,8 +1149,9 @@ static int run(int argc, char* argv[]) {
                 ? hbox({text("  [\u2190/\u2192] select action  [\u23ce] confirm  [Esc] back  [q] "
                              "quit ") |
                         color(Color::Yellow)})
-            : (tab_index == 4) ? hbox({text("  [↑/↓] navigate  [↵/b] activate  [q] quit ") |
-                                       color(Color::GrayDark)})
+            : (tab_index == 4)
+                ? hbox({text("  [↑/↓] navigate  [↵/b] broadcast  [Q] shutdown  [q] quit ") |
+                        color(Color::GrayDark)})
             : overlay_outputs_open
                 ? hbox({text("  [↑/↓] navigate  [Esc] back  [q] quit ") | color(Color::Yellow)})
             : overlay_inputs_open
@@ -1198,8 +1234,42 @@ static int run(int argc, char* argv[]) {
                 }(),
             }) | border,
 
-            // Content
-            tab_content | flex,
+            // Content — show connection overlay when disconnected
+            !snap.connected
+                ? vbox({
+                      filler(),
+                      hbox({filler(),
+                            vbox({
+                                hbox({text(" Connection Failed ") | bold | color(Color::Red),
+                                      filler()}),
+                                separator(),
+                                text(""),
+                                hbox({text("  Network  : ") | color(Color::GrayDark),
+                                      text(network) | color(Color::White)}),
+                                hbox({text("  Endpoint : ") | color(Color::GrayDark),
+                                      text(cfg.host + ":" + std::to_string(cfg.port)) |
+                                          color(Color::White)}),
+                                hbox({text("  Datadir  : ") | color(Color::GrayDark),
+                                      text(datadir) | color(Color::White)}),
+                                hbox({text("  Auth     : ") | color(Color::GrayDark),
+                                      text(explicit_creds
+                                               ? auth.get().user + ":<hidden>"
+                                               : "cookie (" + cookie_path(network, datadir) + ")") |
+                                          color(Color::White)}),
+                                text(""),
+                                text("  Error:") | color(Color::GrayDark),
+                                paragraph("  " + (snap.error_message.empty()
+                                                      ? std::string("connecting…")
+                                                      : snap.error_message)) |
+                                    color(Color::Yellow),
+                                separator(),
+                                hbox({text("  "), text(" Quit ") | inverted}),
+                            }) | border |
+                                size(WIDTH, EQUAL, 60),
+                            filler()}),
+                      filler(),
+                  }) | flex
+                : tab_content | flex,
 
             // Status bar
             hbox({status_left, filler(), status_right}) | border,
@@ -1208,6 +1278,18 @@ static int run(int argc, char* argv[]) {
 
     // Event handling: '/' activates global search; Escape/Enter commit or cancel
     auto event_handler = CatchEvent(renderer, [&](const Event& event) -> bool {
+        // Connection overlay: only quit actions are available
+        {
+            std::lock_guard lock(state_mtx);
+            if (!state.connected) {
+                if (event == Event::Escape || event == Event::Character('q') ||
+                    event == Event::Return) {
+                    screen.ExitLoopClosure()();
+                    return true;
+                }
+                return false;
+            }
+        }
         if (global_search_active) {
             if (event == Event::Escape) {
                 global_search_active = false;
@@ -1736,14 +1818,36 @@ static int run(int argc, char* argv[]) {
         }
         // Tools tab keys
         if (tab_index == 4) {
+            // Compute shutdown row index: after broadcast (0) + optional result txid (1)
+            bool has_result_row;
+            {
+                std::lock_guard lock(broadcast_mtx);
+                has_result_row = broadcast_state.has_result && broadcast_state.success;
+            }
+            int shutdown_idx = 1 + (has_result_row ? 1 : 0);
+
+            auto do_shutdown = [&]() {
+                try {
+                    RpcClient rpc(cfg, auth);
+                    rpc.call("stop", {});
+                } catch (...) { // NOLINT(bugprone-empty-catch)
+                }
+                screen.ExitLoopClosure()();
+            };
             if (event == Event::Character('b')) {
                 open_broadcast_dialog();
+                return true;
+            }
+            if (event == Event::Character('Q')) {
+                do_shutdown();
                 return true;
             }
             if (event == Event::Return) {
                 if (tools_sel == 0) {
                     open_broadcast_dialog();
-                } else if (tools_sel == 1) {
+                } else if (tools_sel == shutdown_idx) {
+                    do_shutdown();
+                } else if (tools_sel == 1 && has_result_row) {
                     std::string txid;
                     {
                         std::lock_guard lock(broadcast_mtx);
@@ -1756,14 +1860,8 @@ static int run(int argc, char* argv[]) {
                 return true;
             }
             if (event == Event::ArrowDown || event == Event::ArrowUp) {
-                bool has_result_row;
-                {
-                    std::lock_guard lock(broadcast_mtx);
-                    has_result_row = broadcast_state.has_result && broadcast_state.success;
-                }
-                int max_sel = has_result_row ? 1 : 0;
                 if (event == Event::ArrowDown)
-                    tools_sel = std::min(tools_sel + 1, max_sel);
+                    tools_sel = std::min(tools_sel + 1, shutdown_idx);
                 else
                     tools_sel = std::max(tools_sel - 1, 0);
                 screen.PostEvent(Event::Custom);
@@ -1854,6 +1952,8 @@ static int run(int argc, char* argv[]) {
 
     // Background polling thread
     std::thread poll_thread([&] {
+        RpcClient rpc(cfg, auth);
+
         // Initial fetch immediately
         {
             std::lock_guard lock(state_mtx);
@@ -1882,6 +1982,22 @@ static int run(int argc, char* argv[]) {
                 state.refreshing = true;
             }
             screen.PostEvent(Event::Custom);
+
+            // Re-read cookie when disconnected (bitcoind restart creates a new one).
+            if (!explicit_creds) {
+                std::lock_guard lock(state_mtx);
+                if (!state.connected) {
+                    std::string path =
+                        cookie_file.empty() ? cookie_path(network, datadir) : cookie_file;
+                    auth.update([&](auto& a) {
+                        try {
+                            apply_cookie(a, path);
+                            rpc = RpcClient(cfg, a);
+                        } catch (...) { // NOLINT(bugprone-empty-catch)
+                        }
+                    });
+                }
+            }
 
             poll_rpc(rpc, state, state_mtx, wake_screen);
 

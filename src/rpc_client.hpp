@@ -13,21 +13,25 @@ class RpcError : public std::runtime_error {
 // default member initializers trigger "needed within definition of enclosing
 // class outside of member functions".
 struct RpcConfig {
-    std::string host = "127.0.0.1";
-    int         port = 8332;
+    std::string host            = "127.0.0.1";
+    int         port            = 8332;
+    int         timeout_seconds = 30;
+};
+
+struct RpcAuth {
     std::string user;
     std::string password;
-    int         timeout_seconds = 30;
 };
 
 class RpcClient {
   public:
-    explicit RpcClient(RpcConfig config = {});
+    explicit RpcClient(RpcConfig config, RpcAuth auth);
 
     json call(const std::string& method, const json& params = json::array());
 
   private:
     RpcConfig config_;
+    RpcAuth   auth_;
     int       request_id_ = 0;
 
     std::string        http_post(const std::string& body);

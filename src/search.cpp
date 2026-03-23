@@ -5,14 +5,14 @@
 // Transaction / block lookup — pure: takes config + query, returns result.
 // No shared state, no threads, no UI side-effects. Suitable for testing.
 // ============================================================================
-TxSearchState perform_tx_search(const RpcConfig& cfg, const std::string& query,
+TxSearchState perform_tx_search(const RpcConfig& cfg, const RpcAuth& auth, const std::string& query,
                                 bool query_is_height, int64_t tip) {
     TxSearchState result;
     result.txid = query;
     try {
         RpcConfig search_cfg       = cfg;
         search_cfg.timeout_seconds = 5;
-        RpcClient search_rpc(search_cfg);
+        RpcClient search_rpc(search_cfg, auth);
 
         // Helper: populate result with block data from getblock (verbosity 1)
         auto fetch_block = [&](const std::string& hash) {
