@@ -755,7 +755,8 @@ static int run(int argc, char* argv[]) {
                 break;
             case TxResultKind::Block: {
                 auto               blk_time_t = static_cast<std::time_t>(ss.blk_time);
-                auto               blk_tm     = *std::localtime(&blk_time_t);
+                auto*              blk_tm_ptr = std::localtime(&blk_time_t);
+                std::tm            blk_tm     = blk_tm_ptr ? *blk_tm_ptr : std::tm{};
                 std::ostringstream blk_time_ss;
                 blk_time_ss << std::put_time(&blk_tm, "%Y-%m-%d %H:%M:%S");
 
@@ -1150,8 +1151,7 @@ static int run(int argc, char* argv[]) {
                              "quit ") |
                         color(Color::Yellow)})
             : (tab_index == 4)
-                ? hbox({text("  [↑/↓] navigate  [↵/b] broadcast  [Q] shutdown  [q] quit ") |
-                        color(Color::GrayDark)})
+                ? hbox({text("  [↑/↓] navigate  [↵] select  [q] quit ") | color(Color::GrayDark)})
             : overlay_outputs_open
                 ? hbox({text("  [↑/↓] navigate  [Esc] back  [q] quit ") | color(Color::Yellow)})
             : overlay_inputs_open
@@ -1214,7 +1214,8 @@ static int run(int argc, char* argv[]) {
                         if (i > 0)
                             tabs.push_back(text("│") | automerge);
                         auto e = text(" " + tab_labels[i] + " ");
-                        tabs.push_back(i == tab_index ? e | bold | inverted : e | dim);
+                        tabs.push_back(i == tab_index && snap.connected ? e | bold | inverted
+                                                                        : e | dim);
                     }
                     return hbox(std::move(tabs)) | flex;
                 }(),
@@ -1240,32 +1241,32 @@ static int run(int argc, char* argv[]) {
                       filler(),
                       hbox({filler(),
                             vbox({
-                                hbox({text(" Connection Failed ") | bold | color(Color::Red),
+                                hbox({text(" Connection Failed - Reconnecting ") | bold |
+                                          color(Color::Red),
                                       filler()}),
                                 separator(),
                                 text(""),
-                                hbox({text("  Network  : ") | color(Color::GrayDark),
+                                hbox({text(" Network : ") | color(Color::GrayDark),
                                       text(network) | color(Color::White)}),
-                                hbox({text("  Endpoint : ") | color(Color::GrayDark),
+                                hbox({text(" Endpoint: ") | color(Color::GrayDark),
                                       text(cfg.host + ":" + std::to_string(cfg.port)) |
                                           color(Color::White)}),
-                                hbox({text("  Datadir  : ") | color(Color::GrayDark),
+                                hbox({text(" Datadir : ") | color(Color::GrayDark),
                                       text(datadir) | color(Color::White)}),
-                                hbox({text("  Auth     : ") | color(Color::GrayDark),
+                                hbox({text(" Auth    : ") | color(Color::GrayDark),
                                       text(explicit_creds
                                                ? auth.get().user + ":<hidden>"
                                                : "cookie (" + cookie_path(network, datadir) + ")") |
                                           color(Color::White)}),
-                                text(""),
-                                text("  Error:") | color(Color::GrayDark),
-                                paragraph("  " + (snap.error_message.empty()
-                                                      ? std::string("connecting…")
-                                                      : snap.error_message)) |
-                                    color(Color::Yellow),
+                                hbox({text(" Error   : ") | color(Color::GrayDark),
+                                      paragraph(snap.error_message.empty()
+                                                    ? std::string("connecting…")
+                                                    : snap.error_message) |
+                                          color(Color::Yellow)}),
                                 separator(),
                                 hbox({text("  "), text(" Quit ") | inverted}),
                             }) | border |
-                                size(WIDTH, EQUAL, 60),
+                                size(WIDTH, EQUAL, 80),
                             filler()}),
                       filler(),
                   }) | flex
@@ -1278,16 +1279,15 @@ static int run(int argc, char* argv[]) {
 
     // Event handling: '/' activates global search; Escape/Enter commit or cancel
     auto event_handler = CatchEvent(renderer, [&](const Event& event) -> bool {
-        // Connection overlay: only quit actions are available
+        // Connection overlay: only quit actions are available; consume all events
         {
             std::lock_guard lock(state_mtx);
             if (!state.connected) {
                 if (event == Event::Escape || event == Event::Character('q') ||
                     event == Event::Return) {
                     screen.ExitLoopClosure()();
-                    return true;
                 }
-                return false;
+                return true;
             }
         }
         if (global_search_active) {

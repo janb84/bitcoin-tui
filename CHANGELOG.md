@@ -2,6 +2,16 @@
 
 All notable changes to bitcoin-tui are documented here.
 
+## [0.8.0] - 2026-03-22
+
+### Added
+- **Connection overlay** — when bitcoin-tui cannot reach Bitcoin Core, the tab area is replaced by a centered overlay showing network, endpoint, data directory, auth method, and the error message; Enter/Esc/q all quit from this state
+- **Shutdown bitcoind** — Tools tab now has a "Shutdown" section with a "Shutdown bitcoind & exit" option; press `[Q]` or navigate with `arrows` and press `Enter`; sends `stop` RPC command and exits the TUI
+
+### Changed
+- Cookie credentials are refreshed from disk before each poll cycle when disconnected, so a bitcoind restart (which writes a new `.cookie`) is picked up automatically without restarting bitcoin-tui
+- Credentials split into a separate `RpcAuth` struct (from `RpcConfig`), protected by a `Guarded<T>` mutex wrapper; makes credential updates from the poll thread safe while other threads construct `RpcClient` instances
+
 ## [0.7.1] - 2026-03-17
 
 ### Changed

@@ -89,8 +89,11 @@ inline std::string fmt_satsvb(double btc_per_kvb) {
 }
 
 inline std::string now_string() {
-    auto               t  = std::time(nullptr);
-    auto               tm = *std::localtime(&t);
+    auto  t      = std::time(nullptr);
+    auto* tm_ptr = std::localtime(&t);
+    if (!tm_ptr)
+        return "??:??:??";
+    auto               tm = *tm_ptr;
     std::ostringstream ss;
     ss << std::put_time(&tm, "%H:%M:%S");
     return ss.str();

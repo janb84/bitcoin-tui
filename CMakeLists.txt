@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(bitcoin-tui VERSION 0.7.1 LANGUAGES CXX)
+project(bitcoin-tui VERSION 0.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,3 +58,8 @@ add_executable(test_json tests/test_json.cpp)
 target_include_directories(test_json PRIVATE src/)
 target_link_libraries(test_json PRIVATE Catch2::Catch2WithMain)
 add_test(NAME test_json COMMAND test_json)
+
+add_executable(test_rpc_config tests/test_rpc_config.cpp src/rpc_client.cpp)
+target_include_directories(test_rpc_config PRIVATE src/)
+target_link_libraries(test_rpc_config PRIVATE Catch2::Catch2WithMain)
+add_test(NAME test_rpc_config COMMAND test_rpc_config)
