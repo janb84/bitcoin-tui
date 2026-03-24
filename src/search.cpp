@@ -29,8 +29,9 @@ TxSearchState perform_tx_search(const RpcConfig& cfg, const RpcAuth& auth, const
             if (blk.contains("tx") && blk["tx"].is_array() && !blk["tx"].empty()) {
                 std::string coinbase_txid = blk["tx"][0].get<std::string>();
                 try {
-                    auto coinbase_tx = search_rpc.call("getrawtransaction",
-                                                       {json(coinbase_txid), json(true)})["result"];
+                    auto coinbase_tx =
+                        search_rpc.call("getrawtransaction",
+                                        {json(coinbase_txid), json(true), json(hash)})["result"];
                     if (coinbase_tx.contains("vin") && coinbase_tx["vin"].is_array() &&
                         !coinbase_tx["vin"].empty()) {
                         std::string cb_hex = coinbase_tx["vin"][0].value("coinbase", "");
