@@ -2,6 +2,11 @@
 
 All notable changes to bitcoin-tui are documented here.
 
+## [0.8.1] - 2026-03-24
+
+### Added
+- **Launch bitcoind** — when the connection failed overlay is shown on localhost, bitcoin-tui now checks whether `bitcoind` is present in `PATH` (or an explicit `--bitcoind <path>` was given) and if present, offers a "Launch bitcoind" button; pressing `Enter` starts the mode.
+
 ## [0.8.0] - 2026-03-22
 
 ### Added

@@ -75,6 +75,9 @@ Network:
       --regtest          Use regtest  port (18443) and cookie subdir
       --signet           Use signet   port (38332) and cookie subdir
 
+Launch:
+      --bitcoind <path>  Path to bitcoind binary (default: found via PATH)
+
 Display:
   -r, --refresh <secs>   Refresh interval     (default: 5)
   -v, --version          Print version and exit

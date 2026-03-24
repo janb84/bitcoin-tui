@@ -64,3 +64,8 @@ add_executable(test_rpc_config tests/test_rpc_config.cpp src/rpc_client.cpp)
 target_include_directories(test_rpc_config PRIVATE src/)
 target_link_libraries(test_rpc_config PRIVATE Catch2::Catch2WithMain)
 add_test(NAME test_rpc_config COMMAND test_rpc_config)
+
+add_executable(test_bitcoind tests/test_bitcoind.cpp src/bitcoind.cpp)
+target_include_directories(test_bitcoind PRIVATE src/)
+target_link_libraries(test_bitcoind PRIVATE Catch2::Catch2WithMain)
+add_test(NAME test_bitcoind COMMAND test_bitcoind)
