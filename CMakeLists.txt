@@ -9,11 +9,18 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 include(FetchContent)
 
 # FTXUI
-FetchContent_Declare(
-  ftxui
-  GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
-  GIT_TAG        v5.0.0
-)
+if (DEFINED ENV{FTXUI_SRC})
+  FetchContent_Declare(
+    ftxui
+    SOURCE_DIR "$ENV{FTXUI_SRC}"
+  )
+else()
+  FetchContent_Declare(
+    ftxui
+    GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
+    GIT_TAG        v5.0.0
+  )
+endif()
 set(FTXUI_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(FTXUI_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
@@ -46,11 +53,18 @@ if(WIN32)
 endif()
 
 # Catch2
-FetchContent_Declare(
-  Catch2
-  GIT_REPOSITORY https://github.com/catchorg/Catch2
-  GIT_TAG        v3.7.1
-)
+if (DEFINED ENV{CATCH2_SRC})
+  FetchContent_Declare(
+    Catch2
+    SOURCE_DIR "$ENV{CATCH2_SRC}"
+  )
+else()
+  FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2
+    GIT_TAG        v3.7.1
+  )
+endif()
 FetchContent_MakeAvailable(Catch2)
 
 enable_testing()
