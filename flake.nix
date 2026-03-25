@@ -20,6 +20,19 @@
   in {
     packages = forAllSystems (pkgs: system: {
       bitcoin-tui = pkgs.callPackage ./nix/bitcoin-tui.nix {};
+
+      bitcoin-tui-tar = pkgs.callPackage ./nix/bitcoin-tui-tar.nix {
+        inherit (self.packages."${system}") bitcoin-tui;
+        inherit system;
+      };
+
+      bitcoin-tui-debian = pkgs.callPackage ./nix/bitcoin-tui-debian.nix {
+        inherit (self.packages."${system}") bitcoin-tui-tar;
+      };
+
+      bitcoin-tui-fedora = pkgs.callPackage ./nix/bitcoin-tui-fedora.nix {
+        inherit (self.packages."${system}") bitcoin-tui-tar;
+      };
     });
   };
 }
