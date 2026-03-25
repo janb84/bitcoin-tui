@@ -13,7 +13,8 @@ ftxui::Element label_value(const std::string& lbl, const std::string& val,
                            ftxui::Color val_color = ftxui::Color::Default);
 
 ftxui::Element render_dashboard(const AppState& s);
-ftxui::Element render_mempool(const AppState& s, int mempool_sel = -1);
+ftxui::Element render_mempool(const AppState& s, int mempool_sel, const TxSearchState& ss,
+                              int tx_sel, int active_pane, int& win_size_out);
 ftxui::Element render_network(const AppState& s, const std::vector<SoftFork>& forks,
                               bool forks_loading);
 ftxui::Element render_peers(const AppState& s, int selected = -1);

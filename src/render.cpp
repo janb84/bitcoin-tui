@@ -112,30 +112,186 @@ Element render_dashboard(const AppState& s) {
            flex;
 }
 
-// --- Mempool ----------------------------------------------------------------
-Element render_mempool(const AppState& s, int mempool_sel) {
-    auto stats_section = mempool_stats_box(s);
+// --- Explorer pane helpers ---------------------------------------------------
 
-    // Block visualization — vertical fill bars, one column per block.
-    Element blocks_section;
+// Pane 2: summary section — mempool stats or block details.
+// mempool_sel: 0 = mempool, >0 = real block at recent_blocks[mempool_sel-1].
+// ss: most recent block/mempool search result (may be stale or absent).
+static Element render_summary_pane(const AppState& s, int mempool_sel, const TxSearchState& ss) {
+    // Mempool selected (or nothing highlighted yet): live stats from AppState.
+    if (mempool_sel <= 0)
+        return mempool_stats_box(s);
+
+    int block_idx = mempool_sel - 1;
+    if (block_idx >= static_cast<int>(s.recent_blocks.size()))
+        return section_box("Block", {text("  —") | color(Color::GrayDark)});
+
+    const auto& blk = s.recent_blocks[block_idx];
+
+    // Always render the full row set so height never changes while loading.
+    // Use RPC result fields when available, BlockStat fields as immediate fallback.
+    bool full = ss.is_block && ss.found && ss.blk_height == blk.height;
+
+    auto    now = static_cast<int64_t>(std::time(nullptr));
+    int64_t age = blk.time > 0 ? std::max(int64_t{0}, now - blk.time) : int64_t{0};
+
+    std::string time_str = "—";
+    std::string diff_str = "—";
+    if (full && ss.blk_time > 0) {
+        auto               t      = static_cast<std::time_t>(ss.blk_time);
+        auto*              tm_ptr = std::localtime(&t);
+        std::tm            tm     = tm_ptr ? *tm_ptr : std::tm{};
+        std::ostringstream os;
+        os << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+        time_str = os.str();
+        std::ostringstream ds;
+        ds << std::fixed << std::setprecision(2) << ss.blk_difficulty / 1e12 << " T";
+        diff_str = ds.str();
+        age      = std::max(int64_t{0}, now - ss.blk_time);
+    }
+
+    return section_box(
+        "Block",
+        {
+            label_value("  Height       : ", fmt_height(blk.height)),
+            label_value("  Hash         : ", full ? ss.blk_hash : "—"),
+            label_value("  Time         : ", time_str),
+            label_value("  Age          : ", blk.time > 0 ? fmt_age(age) : "—"),
+            label_value("  Transactions : ", fmt_int(full ? ss.blk_ntx : blk.txs)),
+            label_value("  Size         : ", fmt_int(full ? ss.blk_size : blk.total_size) + " B"),
+            label_value("  Weight       : ",
+                        fmt_int(full ? ss.blk_weight : blk.total_weight) + " WU"),
+            label_value("  Difficulty   : ", diff_str),
+            label_value("  Miner        : ", full ? ss.blk_miner : "—"),
+            label_value("  Confirmations: ", full ? fmt_int(ss.blk_confirmations) : "—"),
+        });
+}
+
+// Pane 3: transaction list.
+static Element render_tx_list_pane(const AppState& s, int mempool_sel, const TxSearchState& ss,
+                                   int tx_sel, bool focused, int win_size) {
+    std::string title    = mempool_sel == 0 ? "Mempool Transactions" : "Transactions";
+    bool        is_mp_ss = ss.is_mempool;
+
+    // Helper: pad rows to win_size so the pane height never changes while loading.
+    auto padded_placeholder = [&](const std::string& msg) {
+        Elements rows;
+        rows.push_back(text(msg) | color(Color::GrayDark));
+        while (static_cast<int>(rows.size()) < win_size)
+            rows.push_back(text(""));
+        return section_box(title, std::move(rows));
+    };
+
+    if (ss.blk_tx_list.empty()) {
+        if (ss.is_mempool && !ss.found && !ss.error.empty())
+            return padded_placeholder("  " + ss.error);
+        std::string hint =
+            mempool_sel == 0 ? ("  " + fmt_int(s.mempool_tx) + " txs") : "  Loading…";
+        return padded_placeholder(hint);
+    }
+
+    // Ensure the tx list belongs to the current selection.
+    bool list_matches = (mempool_sel == 0 && is_mp_ss) ||
+                        (mempool_sel > 0 && ss.is_block &&
+                         mempool_sel - 1 < static_cast<int>(s.recent_blocks.size()) &&
+                         ss.blk_height == s.recent_blocks[mempool_sel - 1].height);
+    if (!list_matches)
+        return padded_placeholder("  Loading…");
+
+    int n   = static_cast<int>(ss.blk_tx_list.size());
+    int win = std::min(n, win_size);
+    int top = 0;
+    if (tx_sel >= 0) {
+        top = std::max(0, tx_sel - win / 2);
+        top = std::min(top, n - win);
+    }
+
+    Elements rows;
+    for (int i = top; i < top + win; ++i) {
+        const auto& entry = ss.blk_tx_list[i];
+        bool        is_cb = (!is_mp_ss && i == 0); // coinbase only for blocks
+
+        std::ostringstream pfx;
+        if (is_cb)
+            pfx << "  [   cb]  ";
+        else
+            pfx << "  [" << std::setw(5) << i << "]  ";
+
+        std::ostringstream fee_ss;
+        if (is_cb || entry.feerate == 0.0)
+            fee_ss << std::setw(8) << "--";
+        else
+            fee_ss << std::fixed << std::setprecision(2) << std::setw(8) << entry.feerate;
+
+        auto row = hbox({
+            text(pfx.str()) | color(Color::GrayDark),
+            text(fee_ss.str()) | color(Color::GrayDark),
+            text(" s/vB  "),
+            text(entry.txid) | (is_cb ? color(Color::GrayDark) : color(Color::Default)),
+            filler(),
+        });
+        if (i == tx_sel)
+            row = std::move(row) | (focused ? inverted : bold);
+        rows.push_back(std::move(row));
+    }
+    if (n > win) {
+        rows.push_back(hbox({filler(), text(std::to_string(top + 1) + "–" +
+                                            std::to_string(top + win) + " / " + std::to_string(n)) |
+                                           color(Color::GrayDark)}));
+    }
+
+    if (focused)
+        title += " ▼";
+    return section_box(title, rows);
+}
+
+// --- Explorer (formerly Mempool) --------------------------------------------
+// mempool_sel: 0 = mempool block, 1..N = real blocks (recent_blocks[sel-1]).
+// ss: most recent block/mempool browse result (not a tx result).
+Element render_mempool(const AppState& s, int mempool_sel, const TxSearchState& ss, int tx_sel,
+                       int active_pane, int& win_size_out) {
+
+    const int     BAR_HEIGHT = 6;
+    const int     COL_WIDTH  = 10;
+    const int64_t MAX_WEIGHT = 4'000'000LL;
+
+    // ── Fake mempool column (always leftmost, not animated) ─────────────────
+    double mp_fill   = std::min(1.0, static_cast<double>(s.mempool_bytes) / 1e6);
+    int    mp_filled = static_cast<int>(std::round(mp_fill * BAR_HEIGHT));
+
+    Elements mp_bar;
+    for (int r = 0; r < BAR_HEIGHT; ++r) {
+        bool is_filled = r >= (BAR_HEIGHT - mp_filled);
+        mp_bar.push_back(is_filled ? text("██████████") | color(Color::Cyan)
+                                   : text("░░░░░░░░░░") | color(Color::GrayDark));
+    }
+    bool mp_sel = (mempool_sel == 0);
+    auto mp_col =
+        vbox({
+            vbox(std::move(mp_bar)),
+            mp_sel ? text("Mempool") | center | inverted | bold : text("Mempool") | center,
+            text(fmt_int(s.mempool_tx) + " tx") | center | color(Color::GrayDark),
+            text(fmt_bytes(s.mempool_bytes)) | center | color(Color::GrayDark),
+            text("now") | center | color(Color::GrayDark),
+        }) |
+        size(WIDTH, EQUAL, COL_WIDTH);
+
+    // ── Real block columns (animated) ──────────────────────────────────────
+    Element     blocks_section;
+    std::string blocks_title = active_pane == 0 ? "Recent Blocks ▼" : "Recent Blocks";
     if (s.recent_blocks.empty()) {
-        blocks_section =
-            section_box("Recent Blocks", {text("  Fetching…") | color(Color::GrayDark)});
+        blocks_section = section_box(
+            blocks_title, {text(""), hbox({text("  "), std::move(mp_col),
+                                           text("  Fetching…") | color(Color::GrayDark)})});
     } else {
-        const int     BAR_HEIGHT = 6;
-        const int     COL_WIDTH  = 10;
-        const int64_t MAX_WEIGHT = 4'000'000LL;
-
-        // Determine animation phase.
         bool anim_slide = s.block_anim_active && !s.block_anim_old.empty();
 
-        // During slide: render old blocks minus the last (it slides off the right edge).
         const std::vector<BlockStat>& src = anim_slide ? s.block_anim_old : s.recent_blocks;
         int                           num = static_cast<int>(src.size());
-        int max_cols   = std::max(1, (Terminal::Size().dimx - 4) / (COL_WIDTH + 1));
-        int max_render = std::min(anim_slide ? std::max(0, num - 1) : num, max_cols);
+        // Reserve one column for the fake mempool block.
+        int max_cols   = std::max(2, (Terminal::Size().dimx - 4) / (COL_WIDTH + 1));
+        int max_render = std::min(anim_slide ? std::max(0, num - 1) : num, max_cols - 1);
 
-        // Slide offset grows from 0 → (COL_WIDTH+1) chars over SLIDE_FRAMES frames.
         int left_pad = 0;
         if (anim_slide) {
             double progress = (s.block_anim_frame + 1.0) / BLOCK_ANIM_SLIDE_FRAMES;
@@ -165,7 +321,8 @@ Element render_mempool(const AppState& s, int mempool_sel) {
             if (!block_cols.empty())
                 block_cols.push_back(text(" "));
 
-            bool is_selected = (i == mempool_sel);
+            // Real block loop index i maps to mempool_sel = i+1.
+            bool is_selected = (i + 1 == mempool_sel);
             block_cols.push_back(
                 vbox({
                     vbox(std::move(bar)),
@@ -178,19 +335,28 @@ Element render_mempool(const AppState& s, int mempool_sel) {
                 size(WIDTH, EQUAL, COL_WIDTH));
         }
 
-        // Compose row: optional slide-offset pad on the left, then blocks.
-        Element blocks_row =
+        Element real_row =
             left_pad > 0 ? hbox({text(std::string(left_pad, ' ')), hbox(std::move(block_cols))})
                          : hbox(std::move(block_cols));
 
-        blocks_section =
-            section_box("Recent Blocks", {text(""), hbox({text("  "), std::move(blocks_row)})});
+        blocks_section = section_box(
+            blocks_title,
+            {text(""), hbox({text("  "), std::move(mp_col), text(" "), std::move(real_row)})});
     }
 
-    return vbox({
-        stats_section,
-        blocks_section,
-    });
+    auto summary_pane = render_summary_pane(s, mempool_sel, ss);
+
+    // Measure actual heights so win_size stays correct if these panes ever change.
+    blocks_section->ComputeRequirement();
+    summary_pane->ComputeRequirement();
+    // 9 = outer chrome: title bar(3) + tab bar(3) + status bar(3)
+    // 4 = tx pane own overhead: border(2) + title(1) + scroll indicator(1)
+    int win_size = std::max(8, Terminal::Size().dimy - 9 - blocks_section->requirement().min_y -
+                                   summary_pane->requirement().min_y - 4);
+    win_size_out = win_size;
+
+    auto tx_pane = render_tx_list_pane(s, mempool_sel, ss, tx_sel, active_pane == 1, win_size);
+    return vbox({blocks_section, summary_pane, tx_pane});
 }
 
 // --- Network ----------------------------------------------------------------

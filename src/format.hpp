@@ -84,7 +84,7 @@ inline std::string fmt_hashrate(double h) {
 inline std::string fmt_satsvb(double btc_per_kvb) {
     double             sats_per_vb = btc_per_kvb * 1e5; // BTC/kvB → sat/vB
     std::ostringstream ss;
-    ss << std::fixed << std::setprecision(1) << sats_per_vb << " sat/vB";
+    ss << std::fixed << std::setprecision(2) << sats_per_vb << " sat/vB";
     return ss.str();
 }
 
