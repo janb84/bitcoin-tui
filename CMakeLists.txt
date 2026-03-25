@@ -26,6 +26,10 @@ add_executable(bitcoin-tui
   src/search.cpp
   src/rpc_client.cpp
   src/bitcoind.cpp
+  src/tabs/network.cpp
+  src/tabs/mempool.cpp
+  src/tabs/peers.cpp
+  src/tabs/tools.cpp
 )
 
 # src/ is on the include path so rpc_client.hpp can find json.hpp
@@ -43,6 +47,10 @@ target_link_libraries(bitcoin-tui PRIVATE
 
 if(WIN32)
   target_link_libraries(bitcoin-tui PRIVATE ws2_32)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(bitcoin-tui PRIVATE -Wthread-safety)
 endif()
 
 # Catch2
@@ -69,3 +77,19 @@ add_executable(test_bitcoind tests/test_bitcoind.cpp src/bitcoind.cpp)
 target_include_directories(test_bitcoind PRIVATE src/)
 target_link_libraries(test_bitcoind PRIVATE Catch2::Catch2WithMain)
 add_test(NAME test_bitcoind COMMAND test_bitcoind)
+
+add_executable(test_format tests/test_format.cpp)
+target_include_directories(test_format PRIVATE src/)
+target_link_libraries(test_format PRIVATE Catch2::Catch2WithMain)
+add_test(NAME test_format COMMAND test_format)
+
+add_executable(test_state tests/test_state.cpp)
+target_include_directories(test_state PRIVATE src/)
+target_link_libraries(test_state PRIVATE Catch2::Catch2WithMain)
+add_test(NAME test_state COMMAND test_state)
+
+find_package(Threads REQUIRED)
+add_executable(test_guarded tests/test_guarded.cpp)
+target_include_directories(test_guarded PRIVATE src/)
+target_link_libraries(test_guarded PRIVATE Catch2::Catch2WithMain Threads::Threads)
+add_test(NAME test_guarded COMMAND test_guarded)
