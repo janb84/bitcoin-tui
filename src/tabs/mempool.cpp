@@ -23,7 +23,7 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
     if (switch_tab)
         tab_index_out = 1;
     {
-        StdLockGuard lock(search_mtx_);
+        STDLOCK(search_mtx_);
         if (switch_tab) {
             search_history_.clear();
         } else if (!search_state_.txid.empty()) {
@@ -55,7 +55,7 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
         if (!running_.load())
             return;
         {
-            StdLockGuard lock(search_mtx_);
+            STDLOCK(search_mtx_);
             search_state_ = result;
         }
         screen_.PostEvent(Event::Custom);
@@ -64,7 +64,7 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
 
 MempoolOverlayInfo MempoolTab::overlay_info() const {
     MempoolOverlayInfo oi;
-    StdLockGuard          lock(search_mtx_);
+    STDLOCK(search_mtx_);
     oi.visible = !search_state_.txid.empty();
     oi.is_confirmed_tx =
         oi.visible && search_state_.found && search_state_.confirmed && !search_state_.is_block;
@@ -82,7 +82,7 @@ MempoolOverlayInfo MempoolTab::overlay_info() const {
 Element MempoolTab::render(const AppState& snap) {
     TxSearchState ss;
     {
-        StdLockGuard lock(search_mtx_);
+        STDLOCK(search_mtx_);
         ss = search_state_;
     }
 
@@ -168,11 +168,10 @@ Element MempoolTab::render(const AppState& snap) {
                 block_row = std::move(block_row) | inverted;
             result_rows.push_back(std::move(block_row));
         }
-        std::string bh_short =
-            ss.blockhash.size() > 48
-                ? ss.blockhash.substr(0, 4) + "\u2026" +
-                      ss.blockhash.substr(ss.blockhash.size() - 44)
-                : ss.blockhash;
+        std::string bh_short = ss.blockhash.size() > 48
+                                   ? ss.blockhash.substr(0, 4) + "\u2026" +
+                                         ss.blockhash.substr(ss.blockhash.size() - 44)
+                                   : ss.blockhash;
         result_rows.push_back(label_value("  Block hash   : ", bh_short));
         result_rows.push_back(
             label_value("  Block age    : ", ss.blocktime > 0 ? fmt_age(age) : "\u2014"));
@@ -308,14 +307,14 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
     {
         bool outputs_open = false;
         {
-            StdLockGuard lock(search_mtx_);
+            STDLOCK(search_mtx_);
             outputs_open = search_state_.found && search_state_.confirmed &&
                            !search_state_.is_block && search_state_.outputs_overlay_open;
         }
         if (outputs_open) {
             if (event == Event::Escape) {
                 {
-                    StdLockGuard lock(search_mtx_);
+                    STDLOCK(search_mtx_);
                     search_state_.outputs_overlay_open = false;
                 }
                 screen_.PostEvent(Event::Custom);
@@ -323,8 +322,8 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
             }
             if (event == Event::ArrowDown || event == Event::ArrowUp) {
                 {
-                    StdLockGuard lock(search_mtx_);
-                    int             n = static_cast<int>(search_state_.vout_list.size());
+                    STDLOCK(search_mtx_);
+                    int n = static_cast<int>(search_state_.vout_list.size());
                     if (event == Event::ArrowDown)
                         search_state_.output_overlay_sel =
                             std::min(search_state_.output_overlay_sel + 1, n - 1);
@@ -346,14 +345,14 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
     {
         bool inputs_open = false;
         {
-            StdLockGuard lock(search_mtx_);
+            STDLOCK(search_mtx_);
             inputs_open = search_state_.found && search_state_.confirmed &&
                           !search_state_.is_block && search_state_.inputs_overlay_open;
         }
         if (inputs_open) {
             if (event == Event::Escape) {
                 {
-                    StdLockGuard lock(search_mtx_);
+                    STDLOCK(search_mtx_);
                     search_state_.inputs_overlay_open = false;
                 }
                 screen_.PostEvent(Event::Custom);
@@ -361,8 +360,8 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
             }
             if (event == Event::ArrowDown || event == Event::ArrowUp) {
                 {
-                    StdLockGuard lock(search_mtx_);
-                    int             n = static_cast<int>(search_state_.vin_list.size());
+                    STDLOCK(search_mtx_);
+                    int n = static_cast<int>(search_state_.vin_list.size());
                     if (event == Event::ArrowDown)
                         search_state_.input_overlay_sel =
                             std::min(search_state_.input_overlay_sel + 1, n - 1);
@@ -376,8 +375,8 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
             if (event == Event::Return) {
                 std::string query;
                 {
-                    StdLockGuard lock(search_mtx_);
-                    int             sel = search_state_.input_overlay_sel;
+                    STDLOCK(search_mtx_);
+                    int sel = search_state_.input_overlay_sel;
                     if (sel >= 0 && sel < static_cast<int>(search_state_.vin_list.size()) &&
                         !search_state_.vin_list[sel].is_coinbase)
                         query = search_state_.vin_list[sel].txid;
@@ -401,7 +400,7 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
 bool MempoolTab::handle_navigation(const Event& event) {
     bool has_overlay;
     {
-        StdLockGuard lock(search_mtx_);
+        STDLOCK(search_mtx_);
         has_overlay = !search_state_.txid.empty();
     }
     if (has_overlay)
@@ -463,7 +462,7 @@ bool MempoolTab::handle_io_nav(const Event& event) {
         return false;
     bool handled = false;
     {
-        StdLockGuard lock(search_mtx_);
+        STDLOCK(search_mtx_);
         if (search_state_.found && search_state_.confirmed && !search_state_.is_block) {
             int max_sel = io_max_sel(search_state_);
             if (event == Event::ArrowDown)
@@ -486,7 +485,7 @@ bool MempoolTab::handle_enter(const Event& event) {
     bool        open_inputs = false, open_outputs = false;
     std::string query;
     {
-        StdLockGuard lock(search_mtx_);
+        STDLOCK(search_mtx_);
         if (search_state_.found && search_state_.confirmed && !search_state_.is_block) {
             int sel         = search_state_.io_selected;
             int inputs_idx  = io_inputs_idx(search_state_);
@@ -521,7 +520,7 @@ bool MempoolTab::handle_escape(const Event& event) {
         return false;
     bool had_overlay = false;
     {
-        StdLockGuard lock(search_mtx_);
+        STDLOCK(search_mtx_);
         if (!search_history_.empty()) {
             search_state_ = search_history_.back();
             search_history_.pop_back();

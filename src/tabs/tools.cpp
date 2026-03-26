@@ -23,7 +23,7 @@ void ToolsTab::trigger_broadcast(const std::string& hex) {
         return;
     broadcast_in_flight_ = true;
     {
-        StdLockGuard lock(broadcast_mtx_);
+        STDLOCK(broadcast_mtx_);
         broadcast_state_ = BroadcastState{.hex = hex, .submitting = true};
     }
     screen_.PostEvent(Event::Custom);
@@ -47,7 +47,7 @@ void ToolsTab::trigger_broadcast(const std::string& hex) {
         if (!running_.load())
             return;
         {
-            StdLockGuard lock(broadcast_mtx_);
+            STDLOCK(broadcast_mtx_);
             broadcast_state_ = result;
         }
         screen_.PostEvent(Event::Custom);
@@ -66,7 +66,7 @@ void ToolsTab::do_shutdown() {
 Element ToolsTab::render(const AppState& snap) {
     BroadcastState bs;
     {
-        StdLockGuard lock(broadcast_mtx_);
+        STDLOCK(broadcast_mtx_);
         bs = broadcast_state_;
     }
     return render_tools(snap, bs, tools_input_active, tools_hex_str_, tools_sel);
@@ -110,7 +110,7 @@ bool ToolsTab::handle_tools_input(const Event& event) {
 bool ToolsTab::handle_keys(const Event& event) {
     bool has_result_row;
     {
-        StdLockGuard lock(broadcast_mtx_);
+        STDLOCK(broadcast_mtx_);
         has_result_row = broadcast_state_.has_result && broadcast_state_.success;
     }
     int shutdown_idx = 1 + (has_result_row ? 1 : 0);
@@ -130,7 +130,7 @@ bool ToolsTab::handle_keys(const Event& event) {
         } else if (tools_sel == 1 && has_result_row) {
             std::string txid;
             {
-                StdLockGuard lock(broadcast_mtx_);
+                STDLOCK(broadcast_mtx_);
                 if (broadcast_state_.has_result && broadcast_state_.success)
                     txid = broadcast_state_.result_txid;
             }

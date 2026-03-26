@@ -52,7 +52,7 @@
 #define UNIQUE_NAME(x) PASTE2(x, __COUNTER__)
 
 // StdMutex: std::mutex annotated for Clang Thread Safety Analysis.
-// Use GUARDED_BY(mtx) on member variables, StdLockGuard to lock.
+// Use GUARDED_BY(mtx) on member variables, STDLOCK(mtx) to lock.
 class LOCKABLE StdMutex : public std::mutex {
 public:
 #ifdef __clang__
@@ -70,11 +70,11 @@ public:
 
     // Returns cs after asserting it is not already held.
     // Enables compile-time re-entrant locking detection via STDLOCK.
-    static StdMutex& CheckNotHeld(StdMutex& cs)
-        EXCLUSIVE_LOCKS_REQUIRED(!cs) LOCK_RETURNED(cs) { return cs; }
+    static StdMutex& CheckNotHeld(StdMutex& cs) EXCLUSIVE_LOCKS_REQUIRED(!cs) LOCK_RETURNED(cs) {
+        return cs;
+    }
 };
 
 // Locks cs after asserting it is not already held.
-#define STDLOCK(cs) StdMutex::Guard UNIQUE_NAME(criticalblock){StdMutex::CheckNotHeld(cs)}
-
-using StdLockGuard = StdMutex::Guard;
+#define STDLOCK(cs)                                                                                \
+    StdMutex::Guard UNIQUE_NAME(criticalblock) { StdMutex::CheckNotHeld(cs) }

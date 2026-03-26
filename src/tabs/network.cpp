@@ -56,7 +56,7 @@ void NetworkTab::fetch() {
         if (!running_.load())
             return;
         {
-            StdLockGuard lock(mtx_);
+            STDLOCK(mtx_);
             softforks_ = std::move(result);
         }
         loading_ = false;
@@ -70,7 +70,7 @@ Element NetworkTab::render(const AppState& snap) {
         fetch();
     std::vector<SoftFork> forks_snap;
     {
-        StdLockGuard lock(mtx_);
+        STDLOCK(mtx_);
         forks_snap = softforks_;
     }
     return render_network(snap, forks_snap, loading_.load());

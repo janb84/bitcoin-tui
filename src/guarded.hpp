@@ -17,14 +17,14 @@ template <typename T> class Guarded {
     explicit Guarded(T v) : value_{std::move(v)} {}
 
     T get() const {
-        StdLockGuard lock(mtx_);
+        STDLOCK(mtx_);
         return value_;
     }
 
     operator T() const { return get(); }
 
     template <typename Fn> auto update(Fn&& fn) {
-        StdLockGuard lock(mtx_);
+        STDLOCK(mtx_);
         return fn(value_);
     }
 };

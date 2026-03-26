@@ -19,7 +19,7 @@ void PeersTab::trigger_peer_action(const std::string& addr, bool is_ban) {
         return;
     peer_action_in_flight = true;
     {
-        StdLockGuard lock(peer_action_mtx_);
+        STDLOCK(peer_action_mtx_);
         peer_action_ = PeerActionResult{};
     }
     screen_.PostEvent(Event::Custom);
@@ -57,7 +57,7 @@ void PeersTab::trigger_peer_action(const std::string& addr, bool is_ban) {
         if (!running_.load())
             return;
         {
-            StdLockGuard lock(peer_action_mtx_);
+            STDLOCK(peer_action_mtx_);
             peer_action_ = result;
         }
         screen_.PostEvent(Event::Custom);
@@ -69,10 +69,10 @@ void PeersTab::trigger_addnode(const std::string& addr, const std::string& cmd) 
         return;
     addnode_in_flight_ = true;
     {
-        StdLockGuard lock(addnode_mtx_);
-        int             saved_cmd = addnode_state_.cmd_idx;
-        addnode_state_            = AddNodeState{.pending = true};
-        addnode_state_.cmd_idx    = saved_cmd;
+        STDLOCK(addnode_mtx_);
+        int saved_cmd          = addnode_state_.cmd_idx;
+        addnode_state_         = AddNodeState{.pending = true};
+        addnode_state_.cmd_idx = saved_cmd;
     }
     screen_.PostEvent(Event::Custom);
     if (addnode_thread_.joinable())
@@ -93,7 +93,7 @@ void PeersTab::trigger_addnode(const std::string& addr, const std::string& cmd) 
         if (!running_.load())
             return;
         {
-            StdLockGuard lock(addnode_mtx_);
+            STDLOCK(addnode_mtx_);
             addnode_state_ = result;
         }
         screen_.PostEvent(Event::Custom);
@@ -105,7 +105,7 @@ void PeersTab::trigger_setban(const std::string& addr, bool remove) {
         return;
     ban_in_flight_ = true;
     {
-        StdLockGuard lock(ban_mtx_);
+        STDLOCK(ban_mtx_);
         ban_state_ = BanNodeState{.pending = true};
     }
     screen_.PostEvent(Event::Custom);
@@ -128,7 +128,7 @@ void PeersTab::trigger_setban(const std::string& addr, bool remove) {
         if (!running_.load())
             return;
         {
-            StdLockGuard lock(ban_mtx_);
+            STDLOCK(ban_mtx_);
             ban_state_ = result;
         }
         screen_.PostEvent(Event::Custom);
@@ -164,7 +164,7 @@ void PeersTab::fetch_added_nodes() {
         if (!running_.load())
             return;
         {
-            StdLockGuard lock(added_nodes_mtx_);
+            STDLOCK(added_nodes_mtx_);
             added_nodes_ = std::move(result);
         }
         added_nodes_loading_ = false;
@@ -196,7 +196,7 @@ void PeersTab::fetch_ban_list() {
         if (!running_.load())
             return;
         {
-            StdLockGuard lock(banned_list_mtx_);
+            STDLOCK(banned_list_mtx_);
             banned_list_ = std::move(result);
         }
         banned_list_loading_ = false;
@@ -247,7 +247,7 @@ Element PeersTab::render(const AppState& snap) {
     if (peer_disconnect_overlay) {
         PeerActionResult action_snap;
         {
-            StdLockGuard lock(peer_action_mtx_);
+            STDLOCK(peer_action_mtx_);
             action_snap = peer_action_;
         }
         bool    in_flight = peer_action_in_flight.load();
@@ -272,7 +272,7 @@ Element PeersTab::render(const AppState& snap) {
         peer_selected < static_cast<int>(snap.peers.size())) {
         PeerActionResult action_snap;
         {
-            StdLockGuard lock(peer_action_mtx_);
+            STDLOCK(peer_action_mtx_);
             action_snap = peer_action_;
         }
         return vbox({filler(),
@@ -287,7 +287,7 @@ Element PeersTab::render(const AppState& snap) {
     if (addnode_input_active) {
         AddNodeState addnode_snap;
         {
-            StdLockGuard lock(addnode_mtx_);
+            STDLOCK(addnode_mtx_);
             addnode_snap = addnode_state_;
         }
         return vbox({filler(),
@@ -299,7 +299,7 @@ Element PeersTab::render(const AppState& snap) {
     if (ban_input_active) {
         BanNodeState ban_snap;
         {
-            StdLockGuard lock(ban_mtx_);
+            STDLOCK(ban_mtx_);
             ban_snap = ban_state_;
         }
         return vbox({filler(), hbox({filler(), render_ban_overlay(ban_snap, ban_str_), filler()}),
@@ -312,7 +312,7 @@ Element PeersTab::render(const AppState& snap) {
             fetch_added_nodes();
         std::vector<AddedNodeInfo> an_snap;
         {
-            StdLockGuard lock(added_nodes_mtx_);
+            STDLOCK(added_nodes_mtx_);
             an_snap = added_nodes_;
         }
         return vbox({filler(),
@@ -329,7 +329,7 @@ Element PeersTab::render(const AppState& snap) {
             fetch_ban_list();
         std::vector<BannedEntry> bl_snap;
         {
-            StdLockGuard lock(banned_list_mtx_);
+            STDLOCK(banned_list_mtx_);
             bl_snap = banned_list_;
         }
         return vbox(
@@ -355,7 +355,7 @@ bool PeersTab::handle_addnode_input(const Event& event) {
         addnode_input_active = false;
         addnode_str_.clear();
         {
-            StdLockGuard lock(addnode_mtx_);
+            STDLOCK(addnode_mtx_);
             addnode_state_ = AddNodeState{};
         }
         screen_.PostEvent(Event::Custom);
@@ -363,7 +363,7 @@ bool PeersTab::handle_addnode_input(const Event& event) {
     }
     bool addnode_done;
     {
-        StdLockGuard lock(addnode_mtx_);
+        STDLOCK(addnode_mtx_);
         addnode_done = addnode_state_.pending || addnode_state_.has_result;
     }
     if (!addnode_done) {
@@ -373,7 +373,7 @@ bool PeersTab::handle_addnode_input(const Event& event) {
                 static const char* cmds[] = {"onetry", "add"};
                 AddNodeState       snap;
                 {
-                    StdLockGuard lock(addnode_mtx_);
+                    STDLOCK(addnode_mtx_);
                     snap = addnode_state_;
                 }
                 trigger_addnode(addr, cmds[snap.cmd_idx]);
@@ -389,7 +389,7 @@ bool PeersTab::handle_addnode_input(const Event& event) {
         }
         if (event == Event::ArrowLeft || event == Event::ArrowRight) {
             {
-                StdLockGuard lock(addnode_mtx_);
+                STDLOCK(addnode_mtx_);
                 addnode_state_.cmd_idx = (addnode_state_.cmd_idx + 1) % 2;
             }
             screen_.PostEvent(Event::Custom);
@@ -413,7 +413,7 @@ bool PeersTab::handle_ban_input(const Event& event) {
         ban_input_active = false;
         ban_str_.clear();
         {
-            StdLockGuard lock(ban_mtx_);
+            STDLOCK(ban_mtx_);
             ban_state_ = BanNodeState{};
         }
         screen_.PostEvent(Event::Custom);
@@ -421,7 +421,7 @@ bool PeersTab::handle_ban_input(const Event& event) {
     }
     bool ban_done;
     {
-        StdLockGuard lock(ban_mtx_);
+        STDLOCK(ban_mtx_);
         ban_done = ban_state_.pending || ban_state_.has_result;
     }
     if (!ban_done) {
@@ -430,7 +430,7 @@ bool PeersTab::handle_ban_input(const Event& event) {
             if (!addr.empty()) {
                 bool remove;
                 {
-                    StdLockGuard lock(ban_mtx_);
+                    STDLOCK(ban_mtx_);
                     remove = ban_state_.is_remove;
                 }
                 trigger_setban(addr, remove);
@@ -446,7 +446,7 @@ bool PeersTab::handle_ban_input(const Event& event) {
         }
         if (event == Event::ArrowLeft || event == Event::ArrowRight) {
             {
-                StdLockGuard lock(ban_mtx_);
+                STDLOCK(ban_mtx_);
                 ban_state_.is_remove = !ban_state_.is_remove;
             }
             screen_.PostEvent(Event::Custom);
@@ -469,7 +469,7 @@ bool PeersTab::handle_tab_events(const Event& event) {
         if (event == Event::Escape && !peer_action_in_flight.load()) {
             peer_disconnect_overlay = false;
             {
-                StdLockGuard lock(peer_action_mtx_);
+                STDLOCK(peer_action_mtx_);
                 peer_action_ = PeerActionResult{};
             }
             screen_.PostEvent(Event::Custom);
@@ -487,7 +487,7 @@ bool PeersTab::handle_tab_events(const Event& event) {
         if (event == Event::Escape) {
             peer_detail_open = false;
             {
-                StdLockGuard lock(peer_action_mtx_);
+                STDLOCK(peer_action_mtx_);
                 peer_action_ = PeerActionResult{};
             }
             screen_.PostEvent(Event::Custom);
@@ -534,8 +534,8 @@ bool PeersTab::handle_tab_events(const Event& event) {
             return true;
         }
         if (event == Event::ArrowDown || event == Event::ArrowUp) {
-            StdLockGuard lock(added_nodes_mtx_);
-            int             n = static_cast<int>(added_nodes_.size());
+            STDLOCK(added_nodes_mtx_);
+            int n = static_cast<int>(added_nodes_.size());
             if (n > 0) {
                 if (addednodes_sel_ < 0)
                     addednodes_sel_ = 0;
@@ -550,7 +550,7 @@ bool PeersTab::handle_tab_events(const Event& event) {
         if (event == Event::Return && addednodes_sel_ >= 0) {
             std::string addr;
             {
-                StdLockGuard lock(added_nodes_mtx_);
+                STDLOCK(added_nodes_mtx_);
                 if (addednodes_sel_ < static_cast<int>(added_nodes_.size()))
                     addr = added_nodes_[addednodes_sel_].addednode;
             }
@@ -581,8 +581,8 @@ bool PeersTab::handle_tab_events(const Event& event) {
             return true;
         }
         if (event == Event::ArrowDown || event == Event::ArrowUp) {
-            StdLockGuard lock(banned_list_mtx_);
-            int             n = static_cast<int>(banned_list_.size());
+            STDLOCK(banned_list_mtx_);
+            int n = static_cast<int>(banned_list_.size());
             if (n > 0) {
                 if (banlist_sel_ < 0)
                     banlist_sel_ = 0;
@@ -597,7 +597,7 @@ bool PeersTab::handle_tab_events(const Event& event) {
         if (event == Event::Return && banlist_sel_ >= 0) {
             std::string addr;
             {
-                StdLockGuard lock(banned_list_mtx_);
+                STDLOCK(banned_list_mtx_);
                 if (banlist_sel_ < static_cast<int>(banned_list_.size()))
                     addr = banned_list_[banlist_sel_].address;
             }
@@ -634,7 +634,7 @@ bool PeersTab::handle_tab_events(const Event& event) {
         peer_detail_open = true;
         peer_detail_sel_ = 0;
         {
-            StdLockGuard lock(peer_action_mtx_);
+            STDLOCK(peer_action_mtx_);
             peer_action_ = PeerActionResult{};
         }
         screen_.PostEvent(Event::Custom);
