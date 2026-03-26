@@ -55,12 +55,9 @@ void NetworkTab::fetch() {
         }
         if (!running_.load())
             return;
-        {
-            STDLOCK(mtx_);
-            softforks_ = std::move(result);
-        }
-        loading_ = false;
-        loaded_  = true;
+        softforks_ = std::move(result);
+        loading_   = false;
+        loaded_    = true;
         screen_.PostEvent(Event::Custom);
     });
 }
@@ -69,10 +66,7 @@ Element NetworkTab::render(const AppState& snap) {
     if (!loaded_.load() && !loading_.load())
         fetch();
     std::vector<SoftFork> forks_snap;
-    {
-        STDLOCK(mtx_);
-        forks_snap = softforks_;
-    }
+    forks_snap = softforks_.get();
     return render_network(snap, forks_snap, loading_.load());
 }
 

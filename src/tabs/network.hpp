@@ -25,9 +25,8 @@ class NetworkTab : public Tab {
   private:
     void fetch();
 
-    StdMutex                         mtx_;
-    std::vector<SoftFork> softforks_ GUARDED_BY(mtx_);
-    std::atomic<bool>                loaded_{false};
-    std::atomic<bool>                loading_{false};
-    std::thread                      thread_;
+    Guarded<std::vector<SoftFork>> softforks_;
+    std::atomic<bool>              loaded_{false};
+    std::atomic<bool>              loading_{false};
+    std::thread                    thread_;
 };
