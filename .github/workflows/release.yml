@@ -1,0 +1,42 @@
+name: "Build and release binary packages"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install-nix
+        uses: cachix/install-nix-action@v26
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}    
+
+      - name: build-debian-x86_64
+        run: nix build .#bitcoin-tui-debian
+
+      - name: copy-debian-x86_64
+        run: cp ./result/* ./
+
+      - name: build-fedora-x86_64
+        run: nix build .#bitcoin-tui-fedora
+
+      - name: copy-fedora-x86_64
+        run: cp ./result/* ./
+
+      - name: release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: true
+          files: |
+            *.deb
+            *.rpm
