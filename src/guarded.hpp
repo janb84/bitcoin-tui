@@ -23,6 +23,23 @@ template <typename T> class Guarded {
 
     operator T() const { return get(); }
 
+    Guarded& operator=(const T& value) {
+        STDLOCK(mtx_);
+        value_ = value;
+        return *this;
+    }
+
+    Guarded& operator=(T&& value) {
+        STDLOCK(mtx_);
+        value_ = std::move(value);
+        return *this;
+    }
+
+    template <typename Fn> auto access(Fn&& fn) const {
+        STDLOCK(mtx_);
+        return fn(value_);
+    }
+
     template <typename Fn> auto update(Fn&& fn) {
         STDLOCK(mtx_);
         return fn(value_);
