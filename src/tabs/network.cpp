@@ -7,8 +7,8 @@
 using namespace ftxui;
 
 NetworkTab::NetworkTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                       std::atomic<bool>& running)
-    : cfg_(std::move(cfg)), auth_(auth), screen_(screen), running_(running) {}
+                       std::atomic<bool>& running, AppState& state, std::mutex& state_mtx)
+    : Tab(std::move(cfg), auth, screen, running, state, state_mtx) {}
 
 void NetworkTab::fetch() {
     if (loading_.load())

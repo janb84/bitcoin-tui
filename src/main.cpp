@@ -216,11 +216,11 @@ static int run(int argc, char* argv[]) {
 
     // Tab objects (mempool first — tools captures a reference to it via lambda)
     MempoolTab mempool_tab(cfg, auth, screen, running, state, state_mtx);
-    NetworkTab network_tab(cfg, auth, screen, running);
+    NetworkTab network_tab(cfg, auth, screen, running, state, state_mtx);
     PeersTab   peers_tab(cfg, auth, screen, running, state, state_mtx);
-    ToolsTab   tools_tab(cfg, auth, screen, running, [&](const std::string& q, bool sw) {
-        mempool_tab.trigger_search(q, sw, tab_index);
-    });
+    ToolsTab   tools_tab(
+        cfg, auth, screen, running, state, state_mtx,
+        [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
 
     auto layout = Container::Vertical({tab_toggle});
 

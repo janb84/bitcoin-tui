@@ -13,21 +13,22 @@
 #include "guarded.hpp"
 #include "rpc_client.hpp"
 #include "state.hpp"
+#include "tabs/tab.hpp"
 
-class PeersTab {
+class PeersTab : public Tab {
   public:
     PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
              std::atomic<bool>& running, AppState& state, std::mutex& state_mtx);
-    ~PeersTab() = default;
+    ~PeersTab() override = default;
 
-    ftxui::Element render(const AppState& snap);
+    ftxui::Element render(const AppState& snap) override;
     // Handles addnode input mode; call unconditionally (before tab navigation)
     bool handle_addnode_input(const ftxui::Event& event);
     // Handles ban input mode; call unconditionally (before tab navigation)
     bool handle_ban_input(const ftxui::Event& event);
     // Handles all peers tab events; call only when tab_index == 3
     bool handle_tab_events(const ftxui::Event& event);
-    void join();
+    void join() override;
 
     // Public state read by main.cpp status bar and renderer
     int               peer_selected           = -1;
@@ -47,39 +48,32 @@ class PeersTab {
     void do_remove_added_node(const std::string& addr);
     void do_unban(const std::string& addr);
 
-    RpcConfig                 cfg_;
-    Guarded<RpcAuth>&         auth_;
-    ftxui::ScreenInteractive& screen_;
-    std::atomic<bool>&        running_;
-    AppState&                 state_;
-    std::mutex&               state_mtx_;
-
     int              peer_detail_sel_ = 0;
-    StdMutex            peer_action_mtx_;
+    StdMutex         peer_action_mtx_;
     PeerActionResult peer_action_ GUARDED_BY(peer_action_mtx_);
     std::thread      peer_action_thread_;
 
     int                        addednodes_sel_ = -1;
-    StdMutex                      added_nodes_mtx_;
+    StdMutex                   added_nodes_mtx_;
     std::vector<AddedNodeInfo> added_nodes_ GUARDED_BY(added_nodes_mtx_);
     std::atomic<bool>          added_nodes_loaded_{false};
     std::atomic<bool>          added_nodes_loading_{false};
     std::thread                added_nodes_thread_;
     std::string                addnode_str_;
-    StdMutex                      addnode_mtx_;
+    StdMutex                   addnode_mtx_;
     AddNodeState               addnode_state_ GUARDED_BY(addnode_mtx_);
     std::atomic<bool>          addnode_in_flight_{false};
     std::thread                addnode_thread_;
     std::thread                remove_addednode_thread_;
 
     int                      banlist_sel_ = -1;
-    StdMutex                    banned_list_mtx_;
+    StdMutex                 banned_list_mtx_;
     std::vector<BannedEntry> banned_list_ GUARDED_BY(banned_list_mtx_);
     std::atomic<bool>        banned_list_loaded_{false};
     std::atomic<bool>        banned_list_loading_{false};
     std::thread              banned_list_thread_;
     std::string              ban_str_;
-    StdMutex                    ban_mtx_;
+    StdMutex                 ban_mtx_;
     BanNodeState             ban_state_ GUARDED_BY(ban_mtx_);
     std::atomic<bool>        ban_in_flight_{false};
     std::thread              ban_thread_;

@@ -6,9 +6,9 @@
 using namespace ftxui;
 
 ToolsTab::ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                   std::atomic<bool>&                            running,
+                   std::atomic<bool>& running, AppState& state, std::mutex& state_mtx,
                    std::function<void(const std::string&, bool)> trigger_search)
-    : cfg_(std::move(cfg)), auth_(auth), screen_(screen), running_(running),
+    : Tab(std::move(cfg), auth, screen, running, state, state_mtx),
       trigger_search_(std::move(trigger_search)) {}
 
 void ToolsTab::open_broadcast_dialog() {

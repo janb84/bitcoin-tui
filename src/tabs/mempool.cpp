@@ -13,8 +13,7 @@ using namespace ftxui;
 
 MempoolTab::MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
                        std::atomic<bool>& running, AppState& state, std::mutex& state_mtx)
-    : cfg_(std::move(cfg)), auth_(auth), screen_(screen), running_(running), state_(state),
-      state_mtx_(state_mtx) {}
+    : Tab(std::move(cfg), auth, screen, running, state, state_mtx) {}
 
 void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& tab_index_out) {
     if (search_in_flight_.load())
