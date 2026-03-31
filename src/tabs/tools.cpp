@@ -1,5 +1,6 @@
 #include "tools.hpp"
 
+#include <algorithm>
 #include <sstream>
 
 #include "format.hpp"
@@ -7,8 +8,40 @@
 
 using namespace ftxui;
 
-static Element render_tools(const AppState& snap, const BroadcastState& bs, bool input_active,
-                            const std::string& hex_str, int tools_sel) {
+static Element render_broadcast_input_overlay(const std::string& hex_str) {
+    Elements rows;
+    rows.push_back(text("  Paste raw transaction hex") | color(Color::GrayDark));
+    rows.push_back(separator());
+
+    constexpr int            kHexCols = 70;
+    const auto&              h        = hex_str;
+    int                      total    = static_cast<int>(h.size());
+    std::vector<std::string> chunks;
+    for (int off = 0; off < std::max(total, 1); off += kHexCols)
+        chunks.push_back(h.substr(off, std::min(kHexCols, total - off)));
+    if (chunks.empty())
+        chunks.push_back("");
+
+    for (int i = 0; i < static_cast<int>(chunks.size()); ++i) {
+        bool is_last = i == static_cast<int>(chunks.size()) - 1;
+        auto prefix  = i == 0 ? text("  Hex  : ") | color(Color::GrayDark)
+                              : text("         ") | color(Color::GrayDark);
+        rows.push_back(hbox({
+            prefix,
+            text(chunks[i]) | color(Color::White),
+            is_last ? text("│") | color(Color::White) : text(""),
+            filler(),
+        }));
+    }
+
+    rows.push_back(separator());
+    rows.push_back(text("  [Enter] submit  [Esc] cancel") | color(Color::GrayDark));
+
+    auto panel = build_titled_panel(" Broadcast Transaction ", "", std::move(rows), 84);
+    return center_overlay(std::move(panel));
+}
+
+static Element render_tools(const AppState& snap, const BroadcastState& bs, int tools_sel) {
     // sel==1 is the result txid row (when success).
     bool has_result_row = bs.has_result && bs.success;
 
@@ -22,9 +55,9 @@ static Element render_tools(const AppState& snap, const BroadcastState& bs, bool
 
     Elements bcast_rows;
     bcast_rows.push_back(text(""));
-    bcast_rows.push_back(menu_row("Broadcast", "[b]", tools_sel == 0 && !input_active));
+    bcast_rows.push_back(menu_row("Broadcast", "[b]", tools_sel == 0));
 
-    if (!input_active && !bs.submitting) {
+    if (!bs.submitting) {
         bcast_rows.push_back(text(""));
         bcast_rows.push_back(
             text("  Submits to your node, which relays the transaction to all connected") |
@@ -32,32 +65,7 @@ static Element render_tools(const AppState& snap, const BroadcastState& bs, bool
         bcast_rows.push_back(text("  peers over the P2P network.") | color(Color::GrayDark));
     }
 
-    if (input_active) {
-        bcast_rows.push_back(separator());
-        // Wrap hex across rows of 70 chars; all rows shown.
-        constexpr int            kHexCols = 70;
-        const auto&              h        = hex_str;
-        int                      total    = (int)h.size();
-        std::vector<std::string> chunks;
-        for (int off = 0; off < std::max(total, 1); off += kHexCols)
-            chunks.push_back(h.substr(off, std::min(kHexCols, total - off)));
-        if (chunks.empty())
-            chunks.push_back("");
-        for (int i = 0; i < (int)chunks.size(); ++i) {
-            bool is_last = i == (int)chunks.size() - 1;
-            auto prefix  = i == 0 && chunks.size() == 1
-                               ? text("  Hex  : ") | color(Color::GrayDark)
-                               : (i == 0 ? text("  Hex  : ") | color(Color::GrayDark)
-                                         : text("         ") | color(Color::GrayDark));
-            bcast_rows.push_back(hbox({
-                prefix,
-                text(chunks[i]) | color(Color::White),
-                is_last ? text("│") | color(Color::White) : text(""),
-                filler(),
-            }));
-        }
-        bcast_rows.push_back(text("  [Enter] submit  [Esc] cancel") | color(Color::GrayDark));
-    } else if (bs.submitting) {
+    if (bs.submitting) {
         bcast_rows.push_back(separator());
         bcast_rows.push_back(text("  Broadcasting…") | color(Color::Yellow));
     } else if (bs.has_result) {
@@ -101,10 +109,10 @@ static Element render_tools(const AppState& snap, const BroadcastState& bs, bool
 
     if (!snap.privbcast_txids.empty()) {
         Elements queue_rows;
-        for (int i = 0; i < (int)snap.privbcast_txids.size(); ++i) {
+        for (const auto & privbcast_txid : snap.privbcast_txids) {
             queue_rows.push_back(hbox({
                 text("  ") | color(Color::GrayDark),
-                text(snap.privbcast_txids[i]) | color(Color::White),
+                text(privbcast_txid) | color(Color::White),
                 filler(),
             }));
         }
@@ -132,10 +140,16 @@ ToolsTab::ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& scr
       trigger_search_(std::move(trigger_search)) {}
 
 Element ToolsTab::key_hints(const AppState& /*snap*/) const {
+    auto yellow_hint = [](const char* hint) {
+        return hbox({text(hint) | color(Color::Yellow)});
+    };
+    auto gray_hint = [](const char* hint) {
+        return hbox({text(hint) | color(Color::GrayDark)});
+    };
+
     if (tools_input_active)
-        return hbox({text("  [\u23ce] submit  [Esc] cancel ") | color(Color::Yellow)});
-    return hbox({text("  [\u2191/\u2193] navigate  [\u23ce] select  [q] quit ") |
-                 color(Color::GrayDark)});
+        return yellow_hint("  [\u23ce] submit  [Esc] cancel ");
+    return gray_hint("  [\u2191/\u2193] navigate  [\u23ce] select  [q] quit ");
 }
 
 void ToolsTab::open_broadcast_dialog() {
@@ -186,7 +200,9 @@ void ToolsTab::do_shutdown() {
 
 Element ToolsTab::render(const AppState& snap) {
     BroadcastState bs = broadcast_state_.get();
-    return render_tools(snap, bs, tools_input_active, tools_hex_str_, tools_sel);
+    if (tools_input_active)
+        return render_broadcast_input_overlay(tools_hex_str_);
+    return render_tools(snap, bs, tools_sel);
 }
 
 bool ToolsTab::handle_tools_input(const Event& event) {
@@ -225,7 +241,7 @@ bool ToolsTab::handle_tools_input(const Event& event) {
 }
 
 bool ToolsTab::handle_keys(const Event& event) {
-    bool has_result_row;
+    bool has_result_row{false};
     broadcast_state_.access([&](const auto& bs) { has_result_row = bs.has_result && bs.success; });
     int shutdown_idx = 1 + (has_result_row ? 1 : 0);
     if (event == Event::Character('b')) {

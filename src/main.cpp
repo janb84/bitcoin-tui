@@ -17,6 +17,7 @@
 #include "format.hpp"
 #include "guarded.hpp"
 #include "poll.hpp"
+#include "render.hpp"
 #include "rpc_client.hpp"
 #include "state.hpp"
 #include "tabs/dashboard.hpp"
@@ -285,77 +286,61 @@ int Application::run() const {
                 : tabs[tab_index]->key_hints(snap);
 
         // Connection overlay (shown when disconnected)
-        auto content =
-            snap.connected
-                ? tab_content | flex
-                : vbox({
-                      filler(),
-                      hbox({filler(),
-                            vbox({
-                                hbox({text(" Connection Failed - Reconnecting ") | bold |
-                                          color(Color::Red),
-                                      filler()}),
-                                separator(),
-                                hbox({text(" Network : ") | color(Color::GrayDark),
-                                      text(network) | color(Color::White)}),
-                                hbox({text(" RPC port: ") | color(Color::GrayDark),
-                                      text(cfg.host + ":" + std::to_string(cfg.port)) |
-                                          color(Color::White)}),
-                                hbox({text(" Datadir : ") | color(Color::GrayDark),
-                                      text(datadir) | color(Color::White)}),
-                                hbox({text(" Auth    : ") | color(Color::GrayDark),
-                                      text(explicit_creds
-                                               ? auth.get().user + ":<hidden>"
-                                               : "cookie (" + cookie_path(network, datadir) + ")") |
-                                          color(Color::White)}),
-                                [&]() -> Element {
-                                    if (launch_in_flight.load() || launch_done.load()) {
-                                        Elements rows;
-                                        rows.push_back(text(launch_in_flight.load()
-                                                                ? "  Launching bitcoind\u2026"
-                                                            : launch_exit_code == 0
-                                                                ? "  \u2713 bitcoind started"
+        auto content = snap.connected ? tab_content | flex : [&]() -> Element {
+            Elements conn_rows;
+            conn_rows.push_back(hbox({text(" Network : ") | color(Color::GrayDark),
+                                      text(network) | color(Color::White)}));
+            conn_rows.push_back(
+                hbox({text(" RPC port: ") | color(Color::GrayDark),
+                      text(cfg.host + ":" + std::to_string(cfg.port)) | color(Color::White)}));
+            conn_rows.push_back(hbox({text(" Datadir : ") | color(Color::GrayDark),
+                                      text(datadir) | color(Color::White)}));
+            conn_rows.push_back(
+                hbox({text(" Auth    : ") | color(Color::GrayDark),
+                      text(explicit_creds ? auth.get().user + ":<hidden>"
+                                          : "cookie (" + cookie_path(network, datadir) + ")") |
+                          color(Color::White)}));
+            conn_rows.push_back([&]() -> Element {
+                if (launch_in_flight.load() || launch_done.load()) {
+                    Elements rows;
+                    rows.push_back(text(launch_in_flight.load() ? "  Launching bitcoind\u2026"
+                                        : launch_exit_code == 0 ? "  \u2713 bitcoind started"
                                                                 : "  \u2717 bitcoind failed") |
-                                                       color(launch_in_flight.load() ? Color::Yellow
-                                                             : launch_exit_code == 0 ? Color::Green
-                                                                                     : Color::Red) |
-                                                       bold);
-                                        launch_output.access([&](const auto& lines) {
-                                            for (const auto& line : lines)
-                                                rows.push_back(paragraph("  " + line) |
-                                                               color(Color::White));
-                                        });
-                                        return vbox(std::move(rows));
-                                    }
-                                    return hbox({text(" Error   : ") | color(Color::GrayDark),
-                                                 paragraph(snap.error_message.empty()
-                                                               ? std::string("connecting\u2026")
-                                                               : snap.error_message) |
-                                                     color(Color::Yellow)});
-                                }(),
-                                separator(),
-                                hbox({
-                                    text("  "),
-                                    can_launch
-                                        ? text(" Launch bitcoind ") |
-                                              (!launch_in_flight.load() && !launch_done.load() &&
-                                                       conn_overlay_sel == 0
-                                                   ? inverted
-                                                   : dim)
-                                        : text(""),
-                                    filler(),
-                                    text(" Quit ") |
-                                        (!launch_in_flight.load() &&
-                                                 conn_overlay_sel == (can_launch ? 1 : 0)
-                                             ? inverted
-                                             : dim),
-                                    text("  "),
-                                }),
-                            }) | border |
-                                size(WIDTH, EQUAL, 80),
-                            filler()}),
-                      filler(),
-                  }) | flex;
+                                   color(launch_in_flight.load() ? Color::Yellow
+                                         : launch_exit_code == 0 ? Color::Green
+                                                                 : Color::Red) |
+                                   bold);
+                    launch_output.access([&](const auto& lines) {
+                        for (const auto& line : lines)
+                            rows.push_back(paragraph("  " + line) | color(Color::White));
+                    });
+                    return vbox(std::move(rows));
+                }
+                return hbox({text(" Error   : ") | color(Color::GrayDark),
+                             paragraph(snap.error_message.empty() ? std::string("connecting\u2026")
+                                                                  : snap.error_message) |
+                                 color(Color::Yellow)});
+            }());
+            conn_rows.push_back(separator());
+            conn_rows.push_back(hbox({
+                text("  "),
+                can_launch
+                    ? text(" Launch bitcoind ") |
+                          (!launch_in_flight.load() && !launch_done.load() && conn_overlay_sel == 0
+                               ? inverted
+                               : dim)
+                    : text(""),
+                filler(),
+                text(" Quit ") |
+                    (!launch_in_flight.load() && conn_overlay_sel == (can_launch ? 1 : 0) ? inverted
+                                                                                          : dim),
+                text("  "),
+            }));
+
+            auto panel = build_titled_panel(" Connection Failed - Reconnecting ", "",
+                                            std::move(conn_rows), 80, Color::Red);
+            return center_overlay(std::move(panel));
+        }();
 
         return vbox({
             // Title bar

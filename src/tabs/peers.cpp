@@ -324,28 +324,38 @@ PeersTab::PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& scr
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 
 Element PeersTab::key_hints(const AppState& snap) const {
+    auto yellow_hint = [](const char* hint) {
+        return hbox({text(hint) | color(Color::Yellow)});
+    };
+    auto gray_hint = [](const char* hint) {
+        return hbox({text(hint) | color(Color::GrayDark)});
+    };
+
+    struct HintCase {
+        bool        enabled;
+        bool        yellow;
+        const char* hint;
+    };
+    const HintCase overlay_hints[] = {
+        {addnode_input_active, true, "  [\u23ce] submit  [\u2190/\u2192] change  [Esc] cancel "},
+        {ban_input_active, true, "  [\u23ce] submit  [\u2190/\u2192] ban\u2215unban  [Esc] cancel "},
+        {peer_disconnect_overlay && !peer_action_in_flight.load(), true,
+         "  [Esc] dismiss  [q] quit "},
+        {peer_disconnect_overlay, false, "  [q] quit "},
+        {peers_panel == 1, true,
+         "  [\u2191/\u2193] navigate  [\u23ce] remove  [a] add node  [Esc] close  [q] quit "},
+        {peers_panel == 2, true,
+         "  [\u2191/\u2193] navigate  [\u23ce] unban  [Esc] close  [q] quit "},
+        {peer_detail_open, true,
+         "  [\u2190/\u2192] select action  [\u23ce] confirm  [Esc] back  [q] quit "},
+    };
+
+    for (const auto& item : overlay_hints) {
+        if (item.enabled)
+            return item.yellow ? yellow_hint(item.hint) : gray_hint(item.hint);
+    }
+
     auto ri = refresh_indicator(snap);
-    if (addnode_input_active)
-        return hbox({text("  [\u23ce] submit  [\u2190/\u2192] change  [Esc] cancel ") |
-                     color(Color::Yellow)});
-    if (ban_input_active)
-        return hbox({text("  [\u23ce] submit  [\u2190/\u2192] ban\u2215unban  [Esc] cancel ") |
-                     color(Color::Yellow)});
-    if (peer_disconnect_overlay && !peer_action_in_flight.load())
-        return hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)});
-    if (peer_disconnect_overlay)
-        return hbox({text("  [q] quit ") | color(Color::GrayDark)});
-    if (peers_panel == 1)
-        return hbox({text("  [\u2191/\u2193] navigate  [\u23ce] remove  [a] add node  "
-                          "[Esc] close  [q] quit ") |
-                     color(Color::Yellow)});
-    if (peers_panel == 2)
-        return hbox({text("  [\u2191/\u2193] navigate  [\u23ce] unban  [Esc] close  [q] quit ") |
-                     color(Color::Yellow)});
-    if (peer_detail_open)
-        return hbox({text("  [\u2190/\u2192] select action  [\u23ce] confirm  [Esc] back  "
-                          "[q] quit ") |
-                     color(Color::Yellow)});
     if (peer_selected >= 0)
         return hbox({ri,
                      text("  [\u2191/\u2193] navigate  [\u23ce] details  [a] added nodes  "
@@ -585,60 +595,40 @@ Element PeersTab::render(const AppState& snap) {
                 text("  [Esc] to dismiss  ") | color(Color::GrayDark),
             });
         }
-        return vbox({filler(), hbox({filler(), msg | border, filler()}), filler()}) | flex;
+        return center_overlay(msg | border);
     }
 
     if (peer_detail_open && peer_selected >= 0 &&
         peer_selected < static_cast<int>(snap.peers.size())) {
         PeerActionResult action_snap = peer_action_.get();
-        return vbox({filler(),
-                     hbox({filler(),
-                           render_peer_detail(snap.peers[peer_selected], action_snap,
-                                              peer_detail_sel_),
-                           filler()}),
-                     filler()}) |
-               flex;
+        return center_overlay(
+            render_peer_detail(snap.peers[peer_selected], action_snap, peer_detail_sel_));
     }
 
     if (addnode_input_active) {
         AddNodeState addnode_snap = addnode_state_.get();
-        return vbox({filler(),
-                     hbox({filler(), render_addnode_overlay(addnode_snap, addnode_str_), filler()}),
-                     filler()}) |
-               flex;
+        return center_overlay(render_addnode_overlay(addnode_snap, addnode_str_));
     }
 
     if (ban_input_active) {
         BanNodeState ban_snap = ban_state_.get();
-        return vbox({filler(), hbox({filler(), render_ban_overlay(ban_snap, ban_str_), filler()}),
-                     filler()}) |
-               flex;
+        return center_overlay(render_ban_overlay(ban_snap, ban_str_));
     }
 
     if (peers_panel == 1) {
         if (!added_nodes_loaded_.load() && !added_nodes_loading_.load())
             fetch_added_nodes();
         std::vector<AddedNodeInfo> an_snap = added_nodes_.get();
-        return vbox({filler(),
-                     hbox({filler(),
-                           render_added_nodes_panel(an_snap, added_nodes_loading_.load(),
-                                                    addednodes_sel_),
-                           filler()}),
-                     filler()}) |
-               flex;
+        return center_overlay(
+            render_added_nodes_panel(an_snap, added_nodes_loading_.load(), addednodes_sel_));
     }
 
     if (peers_panel == 2) {
         if (!banned_list_loaded_.load() && !banned_list_loading_.load())
             fetch_ban_list();
         std::vector<BannedEntry> bl_snap = banned_list_.get();
-        return vbox(
-                   {filler(),
-                    hbox({filler(),
-                          render_ban_list_panel(bl_snap, banned_list_loading_.load(), banlist_sel_),
-                          filler()}),
-                    filler()}) |
-               flex;
+        return center_overlay(
+            render_ban_list_panel(bl_snap, banned_list_loading_.load(), banlist_sel_));
     }
 
     return render_peers(snap, peer_selected) | flex;
