@@ -126,10 +126,17 @@ static Element render_tools(const AppState& snap, const BroadcastState& bs, bool
 }
 
 ToolsTab::ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                   std::atomic<bool>& running, Guarded<AppState>& state,
+                   std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
                    std::function<void(const std::string&, bool)> trigger_search)
-    : Tab(std::move(cfg), auth, screen, running, state),
+    : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
       trigger_search_(std::move(trigger_search)) {}
+
+Element ToolsTab::key_hints(const AppState& /*snap*/) const {
+    if (tools_input_active)
+        return hbox({text("  [\u23ce] submit  [Esc] cancel ") | color(Color::Yellow)});
+    return hbox({text("  [\u2191/\u2193] navigate  [\u23ce] select  [q] quit ") |
+                 color(Color::GrayDark)});
+}
 
 void ToolsTab::open_broadcast_dialog() {
     tools_input_active = true;

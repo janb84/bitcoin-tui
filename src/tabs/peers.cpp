@@ -320,8 +320,41 @@ static Element render_ban_list_panel(const std::vector<BannedEntry>& entries, bo
 }
 
 PeersTab::PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                   std::atomic<bool>& running, Guarded<AppState>& state)
-    : Tab(std::move(cfg), auth, screen, running, state) {}
+                   std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
+    : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
+
+Element PeersTab::key_hints(const AppState& snap) const {
+    auto ri = refresh_indicator(snap);
+    if (addnode_input_active)
+        return hbox({text("  [\u23ce] submit  [\u2190/\u2192] change  [Esc] cancel ") |
+                     color(Color::Yellow)});
+    if (ban_input_active)
+        return hbox({text("  [\u23ce] submit  [\u2190/\u2192] ban\u2215unban  [Esc] cancel ") |
+                     color(Color::Yellow)});
+    if (peer_disconnect_overlay && !peer_action_in_flight.load())
+        return hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)});
+    if (peer_disconnect_overlay)
+        return hbox({text("  [q] quit ") | color(Color::GrayDark)});
+    if (peers_panel == 1)
+        return hbox({text("  [\u2191/\u2193] navigate  [\u23ce] remove  [a] add node  "
+                          "[Esc] close  [q] quit ") |
+                     color(Color::Yellow)});
+    if (peers_panel == 2)
+        return hbox({text("  [\u2191/\u2193] navigate  [\u23ce] unban  [Esc] close  [q] quit ") |
+                     color(Color::Yellow)});
+    if (peer_detail_open)
+        return hbox({text("  [\u2190/\u2192] select action  [\u23ce] confirm  [Esc] back  "
+                          "[q] quit ") |
+                     color(Color::Yellow)});
+    if (peer_selected >= 0)
+        return hbox({ri,
+                     text("  [\u2191/\u2193] navigate  [\u23ce] details  [a] added nodes  "
+                          "[b] ban list  [q] quit ") |
+                         color(Color::GrayDark)});
+    return hbox({ri, text("  [\u2191/\u2193] navigate  [a] added nodes  [b] ban list  "
+                          "[q] quit ") |
+                         color(Color::GrayDark)});
+}
 
 // ============================================================================
 // Async actions

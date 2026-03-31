@@ -15,10 +15,11 @@
 class PeersTab : public Tab {
   public:
     PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-             std::atomic<bool>& running, Guarded<AppState>& state);
+             std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs);
     ~PeersTab() override = default;
 
     ftxui::Element render(const AppState& snap) override;
+    ftxui::Element key_hints(const AppState& snap) const override;
     // Handles addnode input mode; call unconditionally (before tab navigation)
     bool handle_addnode_input(const ftxui::Event& event);
     // Handles ban input mode; call unconditionally (before tab navigation)
@@ -26,15 +27,6 @@ class PeersTab : public Tab {
     // Handles all peers tab events; call only when tab_index == 3
     bool handle_tab_events(const ftxui::Event& event);
     void join() override;
-
-    // Public state read by main.cpp status bar and renderer
-    int               peer_selected           = -1;
-    bool              peer_detail_open        = false;
-    bool              peer_disconnect_overlay = false;
-    bool              addnode_input_active    = false;
-    bool              ban_input_active        = false;
-    int               peers_panel             = 0;
-    std::atomic<bool> peer_action_in_flight{false};
 
   private:
     void trigger_peer_action(const std::string& addr, bool is_ban);
@@ -45,7 +37,15 @@ class PeersTab : public Tab {
     void do_remove_added_node(const std::string& addr);
     void do_unban(const std::string& addr);
 
-    int                       peer_detail_sel_ = 0;
+    int               peer_selected           = -1;
+    bool              peer_detail_open        = false;
+    bool              peer_disconnect_overlay = false;
+    bool              addnode_input_active    = false;
+    bool              ban_input_active        = false;
+    int               peers_panel             = 0;
+    std::atomic<bool> peer_action_in_flight{false};
+
+    int               peer_detail_sel_ = 0;
     Guarded<PeerActionResult> peer_action_;
     std::thread               peer_action_thread_;
 

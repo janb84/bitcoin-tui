@@ -15,19 +15,17 @@
 class ToolsTab : public Tab {
   public:
     ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-             std::atomic<bool>& running, Guarded<AppState>& state,
+             std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
              std::function<void(const std::string&, bool)> trigger_search);
     ~ToolsTab() override = default;
 
     ftxui::Element render(const AppState& snap) override;
+    ftxui::Element key_hints(const AppState& snap) const override;
     // Handles tools_input_active mode; call unconditionally (before tab navigation)
     bool handle_tools_input(const ftxui::Event& event);
     // Handles tab 4 key navigation; call only when tab_index == 4
     bool handle_keys(const ftxui::Event& event);
     void join() override;
-
-    bool tools_input_active = false;
-    int  tools_sel          = 0;
 
   private:
     void open_broadcast_dialog();
@@ -35,6 +33,9 @@ class ToolsTab : public Tab {
     void do_shutdown();
 
     std::function<void(const std::string&, bool)> trigger_search_;
+
+    bool tools_input_active = false;
+    int  tools_sel          = 0;
 
     Guarded<BroadcastState> broadcast_state_;
     std::atomic<bool>       broadcast_in_flight_{false};

@@ -95,8 +95,8 @@ static Element render_mempool(const AppState& s, int mempool_sel) {
 }
 
 MempoolTab::MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                       std::atomic<bool>& running, Guarded<AppState>& state)
-    : Tab(std::move(cfg), auth, screen, running, state) {}
+                       std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
+    : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 
 void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& tab_index_out) {
     if (search_in_flight_.load())
@@ -136,9 +136,9 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
     });
 }
 
-MempoolOverlayInfo MempoolTab::overlay_info() const {
+MempoolTab::OverlayInfo MempoolTab::overlay_info() const {
     return search_data_.access([](const auto& sd) {
-        MempoolOverlayInfo oi;
+        OverlayInfo oi;
         oi.visible = !sd.state.txid.empty();
         oi.is_confirmed_tx =
             oi.visible && sd.state.found && sd.state.confirmed && !sd.state.is_block;
@@ -152,6 +152,40 @@ MempoolOverlayInfo MempoolTab::overlay_info() const {
         oi.outputs_open    = oi.is_confirmed_tx && sd.state.outputs_overlay_open;
         return oi;
     });
+}
+
+Element MempoolTab::key_hints(const AppState& snap) const {
+    auto oi = overlay_info();
+    if (oi.outputs_open)
+        return hbox({text("  [\u2191/\u2193] navigate  [Esc] back  [q] quit ") |
+                     color(Color::Yellow)});
+    if (oi.inputs_open)
+        return hbox({text("  [\u2191/\u2193] navigate  [\u23ce] lookup  [Esc] back  [q] quit ") |
+                     color(Color::Yellow)});
+    if (oi.outputs_row_sel)
+        return hbox({text("  [\u23ce] show outputs  [\u2191/\u2193] navigate  [Esc] dismiss  "
+                          "[q] quit ") |
+                     color(Color::Yellow)});
+    if (oi.inputs_row_sel)
+        return hbox({text("  [\u23ce] show inputs  [\u2191/\u2193] navigate  [Esc] dismiss  "
+                          "[q] quit ") |
+                     color(Color::Yellow)});
+    if (oi.block_row_sel)
+        return hbox({text("  [\u23ce] view block  [\u2191/\u2193] navigate  [Esc] dismiss  "
+                          "[q] quit ") |
+                     color(Color::Yellow)});
+    if (oi.is_confirmed_tx)
+        return hbox(
+            {text("  [\u2191/\u2193] navigate  [Esc] dismiss  [q] quit ") | color(Color::Yellow)});
+    if (oi.visible)
+        return hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)});
+    if (mempool_sel >= 0)
+        return hbox({text("  [\u23ce] view block  [\u2190/\u2192] navigate  [Esc] deselect  "
+                          "[q] quit ") |
+                     color(Color::Yellow)});
+    return hbox({refresh_indicator(snap),
+                 text("  [\u2193] select  [Tab/\u2190/\u2192] switch  [/] search  [q] quit ") |
+                     color(Color::GrayDark)});
 }
 
 Element MempoolTab::render(const AppState& snap) {

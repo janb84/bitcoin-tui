@@ -13,27 +13,17 @@
 #include "state.hpp"
 #include "tabs/tab.hpp"
 
-struct MempoolOverlayInfo {
-    bool visible         = false;
-    bool is_confirmed_tx = false;
-    bool block_row_sel   = false;
-    bool inputs_row_sel  = false;
-    bool outputs_row_sel = false;
-    bool inputs_open     = false;
-    bool outputs_open    = false;
-};
-
 class MempoolTab : public Tab {
   public:
     MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-               std::atomic<bool>& running, Guarded<AppState>& state);
+               std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs);
     ~MempoolTab() override = default;
 
     // switch_tab=true sets tab_index_out=1 before launching the search thread
     void trigger_search(const std::string& query, bool switch_tab, int& tab_index_out);
 
-    MempoolOverlayInfo overlay_info() const;
-    ftxui::Element     render(const AppState& snap) override;
+    ftxui::Element      render(const AppState& snap) override;
+    ftxui::Element      key_hints(const AppState& snap) const override;
     // Handles outputs/inputs sub-overlays; nullopt = not in overlay mode
     std::optional<bool> handle_tx_overlay(const ftxui::Event& event);
     // Handles mempool block navigation; call only when tab_index == 1
@@ -46,9 +36,19 @@ class MempoolTab : public Tab {
     bool handle_escape(const ftxui::Event& event);
     void join() override;
 
-    int mempool_sel = -1;
-
   private:
+    struct OverlayInfo {
+        bool visible         = false;
+        bool is_confirmed_tx = false;
+        bool block_row_sel   = false;
+        bool inputs_row_sel  = false;
+        bool outputs_row_sel = false;
+        bool inputs_open     = false;
+        bool outputs_open    = false;
+    };
+
+    OverlayInfo overlay_info() const;
+    int         mempool_sel = -1;
     struct SearchData {
         TxSearchState              state;
         std::vector<TxSearchState> history;

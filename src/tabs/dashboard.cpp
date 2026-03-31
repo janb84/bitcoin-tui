@@ -6,8 +6,14 @@
 using namespace ftxui;
 
 DashboardTab::DashboardTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                           std::atomic<bool>& running, Guarded<AppState>& state)
-    : Tab(std::move(cfg), auth, screen, running, state) {}
+                           std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
+    : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
+
+Element DashboardTab::key_hints(const AppState& snap) const {
+    return hbox({refresh_indicator(snap),
+                 text("  [Tab/\u2190/\u2192] switch  [/] search  [q] quit ") |
+                     color(Color::GrayDark)});
+}
 
 Element DashboardTab::render(const AppState& s) {
     // Chain section

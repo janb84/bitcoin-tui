@@ -243,13 +243,13 @@ int Application::run() const {
     auto                     tab_toggle = Toggle(&tab_labels, &tab_index);
 
     // Tab objects (mempool first — tools captures a reference to it via lambda)
-    DashboardTab dashboard_tab(cfg, auth, screen, running, state);
-    MempoolTab   mempool_tab(cfg, auth, screen, running, state);
-    NetworkTab   network_tab(cfg, auth, screen, running, state);
-    PeersTab     peers_tab(cfg, auth, screen, running, state);
-    ToolsTab     tools_tab(cfg, auth, screen, running, state, [&](const std::string& q, bool sw) {
-        mempool_tab.trigger_search(q, sw, tab_index);
-    });
+    DashboardTab dashboard_tab(cfg, auth, screen, running, state, refresh_secs);
+    MempoolTab   mempool_tab(cfg, auth, screen, running, state, refresh_secs);
+    NetworkTab   network_tab(cfg, auth, screen, running, state, refresh_secs);
+    PeersTab     peers_tab(cfg, auth, screen, running, state, refresh_secs);
+    ToolsTab     tools_tab(
+        cfg, auth, screen, running, state, refresh_secs,
+        [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
 
     std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
 
@@ -257,8 +257,6 @@ int Application::run() const {
 
     auto renderer = Renderer(layout, [&]() -> Element {
         AppState snap = state.get();
-
-        auto oi = mempool_tab.overlay_info();
 
         Element tab_content = (tab_index < 0 || tab_index >= tabs.size())
                                   ? text("Unknown tab")
@@ -281,85 +279,10 @@ int Application::run() const {
         }
 
         // Status bar — right side (context-sensitive hints)
-        auto refresh_indicator = snap.refreshing
-                                     ? text(" \u21bb refreshing") | color(Color::Yellow)
-                                     : text(" \u21bb every " + std::to_string(refresh_secs) + "s") |
-                                           color(Color::GrayDark);
-
         Element status_right =
             global_search_active
                 ? hbox({text("  [Enter] search  [Esc] cancel ") | color(Color::Yellow)})
-            : (tab_index == 4 && tools_tab.tools_input_active)
-                ? hbox({text("  [Enter] submit  [Esc] cancel ") | color(Color::Yellow)})
-            : (tab_index == 3 && peers_tab.addnode_input_active)
-                ? hbox({text("  [Enter] submit  [\u2190/\u2192] change  [Esc] cancel ") |
-                        color(Color::Yellow)})
-            : (tab_index == 3 && peers_tab.ban_input_active)
-                ? hbox({text("  [Enter] submit  [\u2190/\u2192] ban\u2215unban  [Esc] cancel ") |
-                        color(Color::Yellow)})
-            : (tab_index == 3 && peers_tab.peer_disconnect_overlay &&
-               !peers_tab.peer_action_in_flight.load())
-                ? hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
-            : (tab_index == 3 && peers_tab.peer_disconnect_overlay)
-                ? hbox({text("  [q] quit ") | color(Color::GrayDark)})
-            : (tab_index == 3 && peers_tab.peers_panel == 1)
-                ? hbox({text("  [\u2191/\u2193] navigate  [\u23ce] remove  [a] add node  "
-                             "[Esc] close  [q] quit ") |
-                        color(Color::Yellow)})
-            : (tab_index == 3 && peers_tab.peers_panel == 2)
-                ? hbox({text("  [\u2191/\u2193] navigate  [\u23ce] unban  [Esc] close  [q] "
-                             "quit ") |
-                        color(Color::Yellow)})
-            : (tab_index == 3 && peers_tab.peer_detail_open)
-                ? hbox({text("  [\u2190/\u2192] select action  [\u23ce] confirm  [Esc] back  "
-                             "[q] quit ") |
-                        color(Color::Yellow)})
-            : (tab_index == 4)
-                ? hbox({text("  [\u2191/\u2193] navigate  [\u23ce] select  [q] quit ") |
-                        color(Color::GrayDark)})
-            : oi.outputs_open ? hbox({text("  [\u2191/\u2193] navigate  [Esc] back  [q] quit ") |
-                                      color(Color::Yellow)})
-            : oi.inputs_open  ? hbox({text("  [\u2191/\u2193] navigate  [\u23ce] lookup  [Esc] "
-                                            "back  [q] quit ") |
-                                      color(Color::Yellow)})
-            : oi.outputs_row_sel
-                ? hbox({text("  [\u23ce] show outputs  [\u2191/\u2193] navigate  [Esc] dismiss  "
-                             "[q] quit ") |
-                        color(Color::Yellow)})
-            : oi.inputs_row_sel
-                ? hbox({text("  [\u23ce] show inputs  [\u2191/\u2193] navigate  [Esc] dismiss  "
-                             "[q] quit ") |
-                        color(Color::Yellow)})
-            : oi.block_row_sel
-                ? hbox({text("  [\u23ce] view block  [\u2191/\u2193] navigate  [Esc] dismiss  "
-                             "[q] quit ") |
-                        color(Color::Yellow)})
-            : oi.is_confirmed_tx
-                ? hbox({text("  [\u2191/\u2193] navigate  [Esc] dismiss  [q] quit ") |
-                        color(Color::Yellow)})
-            : oi.visible ? hbox({text("  [Esc] dismiss  [q] quit ") | color(Color::Yellow)})
-            : (tab_index == 1 && mempool_tab.mempool_sel >= 0)
-                ? hbox({text("  [\u23ce] view block  [\u2190/\u2192] navigate  [Esc] deselect  "
-                             "[q] quit ") |
-                        color(Color::Yellow)})
-            : (tab_index == 1)
-                ? hbox({refresh_indicator,
-                        text("  [\u2193] select  [Tab/\u2190/\u2192] switch  [/] search  "
-                             "[q] quit ") |
-                            color(Color::GrayDark)})
-            : (tab_index == 3 && peers_tab.peer_selected >= 0)
-                ? hbox({refresh_indicator,
-                        text("  [\u2191/\u2193] navigate  [\u23ce] details  [a] added nodes  "
-                             "[b] ban list  [q] quit ") |
-                            color(Color::GrayDark)})
-            : (tab_index == 3)
-                ? hbox({refresh_indicator,
-                        text("  [\u2191/\u2193] navigate  [a] added nodes  [b] ban list  "
-                             "[q] quit ") |
-                            color(Color::GrayDark)})
-                : hbox({refresh_indicator,
-                        text("  [Tab/\u2190/\u2192] switch  [/] search  [q] quit ") |
-                            color(Color::GrayDark)});
+                : tabs[tab_index]->key_hints(snap);
 
         // Connection overlay (shown when disconnected)
         auto content =
