@@ -39,10 +39,18 @@ template <typename T> class Guarded {
         return *this;
     }
 
+    template <typename Fn>
+        requires(std::is_reference_v<std::invoke_result_t<Fn, const T&>>)
+    auto access(Fn&& fn) const = delete;
+
     template <typename Fn> auto access(Fn&& fn) const EXCLUSIVE_LOCKS_REQUIRED(!mtx_) {
         STDLOCK(mtx_);
         return fn(value_);
     }
+
+    template <typename Fn>
+        requires(std::is_reference_v<std::invoke_result_t<Fn, T&>>)
+    auto update(Fn&& fn) = delete;
 
     template <typename Fn> auto update(Fn&& fn) EXCLUSIVE_LOCKS_REQUIRED(!mtx_) {
         STDLOCK(mtx_);
