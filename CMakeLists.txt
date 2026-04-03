@@ -19,6 +19,25 @@ set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(FTXUI_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(ftxui)
 
+# Abseil (required by RE2)
+FetchContent_Declare(
+  abseil-cpp
+  GIT_REPOSITORY https://github.com/abseil/abseil-cpp
+  GIT_TAG        20240722.0
+)
+set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(abseil-cpp)
+
+# RE2
+FetchContent_Declare(
+  re2
+  GIT_REPOSITORY https://github.com/google/re2
+  GIT_TAG        2025-11-05
+)
+set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(re2)
+
 add_executable(bitcoin-tui
   src/main.cpp
   src/render.cpp
@@ -32,6 +51,7 @@ add_executable(bitcoin-tui
   src/tabs/peers.cpp
   src/tabs/tools.cpp
   src/tabs/slowblocks.cpp
+  src/logwatcher.cpp
 )
 
 # src/ is on the include path so rpc_client.hpp can find json.hpp
@@ -45,6 +65,7 @@ target_link_libraries(bitcoin-tui PRIVATE
   ftxui::screen
   ftxui::dom
   ftxui::component
+  re2::re2
 )
 
 if(WIN32)
@@ -84,6 +105,11 @@ add_executable(test_format tests/test_format.cpp)
 target_include_directories(test_format PRIVATE src/)
 target_link_libraries(test_format PRIVATE Catch2::Catch2WithMain)
 add_test(NAME test_format COMMAND test_format)
+
+add_executable(test_logwatcher tests/test_logwatcher.cpp src/logwatcher.cpp)
+target_include_directories(test_logwatcher PRIVATE src/)
+target_link_libraries(test_logwatcher PRIVATE Catch2::Catch2WithMain re2::re2)
+add_test(NAME test_logwatcher COMMAND test_logwatcher)
 
 add_executable(test_state tests/test_state.cpp)
 target_include_directories(test_state PRIVATE src/)

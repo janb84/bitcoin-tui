@@ -96,6 +96,7 @@ class Application {
     std::string              bitcoind_cmd;
     bool                     explicit_host = false;
     bool                     can_launch    = false;
+    std::string              debug_log_file;
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -159,6 +160,8 @@ int Application::configure(int argc, char* argv[]) {
         } else if (arg == "--signet") {
             cfg.port = 38332;
             network  = "signet";
+        } else if (arg == "--debuglog") {
+            debug_log_file = next();
         } else if (arg == "--bitcoind") {
             bitcoind_cmd = next();
         } else if (arg == "--version" || arg == "-v") {
@@ -183,6 +186,7 @@ int Application::configure(int argc, char* argv[]) {
                 "\n"
                 "Node:\n"
                 "      --bitcoind <path>  Path to bitcoind binary   (default: bitcoind from PATH)\n"
+                "      --debuglog <path>  Path to debug.log         (default: <datadir>/debug.log)\n"
                 "\n"
                 "Network:\n"
                 "      --testnet          Use testnet3 port (18332) and cookie subdir\n"
@@ -253,7 +257,10 @@ int Application::run() const {
         cfg, auth, screen, running, state, refresh_secs,
         [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
 
-    SlowBlocksTab slowblocks_tab(cfg, auth, screen, running, state, refresh_secs);
+    std::string debug_log = debug_log_file.empty()
+                               ? datadir + "/" + network_subdir(network) + "debug.log"
+                               : debug_log_file;
+    SlowBlocksTab slowblocks_tab(cfg, auth, screen, running, state, refresh_secs, debug_log);
 
     std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab, &slowblocks_tab};
 

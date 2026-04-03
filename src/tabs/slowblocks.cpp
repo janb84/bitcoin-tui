@@ -1,10 +1,14 @@
 #include "slowblocks.hpp"
 
 #include <chrono>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include <ftxui/component/event.hpp>
+
+#include "logwatcher.hpp"
 #include "render.hpp"
 
 using namespace ftxui;
@@ -156,11 +160,105 @@ std::vector<ChainTip> fake_tips() {
     };
 }
 
+void watch_log(const std::string& path,
+               Guarded<SlowBlocksState>& sb_state,
+               std::atomic<bool>& running,
+               const std::function<void()>& wake_ui)
+{
+    constexpr int64_t TAIL_BYTES = 100 * 1024 * 1024; // 100 MB
+    constexpr size_t  MAX_LOG_LINES = 5;
+
+    auto push_line = [&](const std::string& l) {
+        sb_state.update([&](auto& s) {
+            s.recent_log_lines.push_back(l);
+            while (s.recent_log_lines.size() > MAX_LOG_LINES)
+                s.recent_log_lines.pop_front();
+        });
+    };
+
+    sb_state.update([](auto& s) { s.status = "opening..."; });
+
+    std::ifstream f(path);
+    if (!f) {
+        sb_state.update([&](auto& s) {
+            s.status = "error: cannot open " + path;
+        });
+        wake_ui();
+        return;
+    }
+
+    // Seek to near the end
+    f.seekg(0, std::ios::end);
+    auto file_size = f.tellg();
+    if (file_size > TAIL_BYTES) {
+        f.seekg(file_size - TAIL_BYTES);
+        // Skip partial first line
+        std::string discard;
+        std::getline(f, discard);
+    } else {
+        f.seekg(0);
+    }
+
+    sb_state.update([](auto& s) { s.status = "reading..."; });
+    wake_ui();
+
+    BlockTracker tracker;
+    std::string line;
+    int64_t count = 0;
+
+    // Phase 1: read existing content
+    while (std::getline(f, line)) {
+        if (!running) return;
+        auto ev = parse_log_line(line);
+        if (ev) tracker.process(*ev);
+        push_line(line);
+        ++count;
+        if ((count % 100000) == 0) {
+            sb_state.update([&](auto& s) {
+                s.lines_parsed = count;
+                s.status = "reading...";
+            });
+            wake_ui();
+        }
+    }
+
+    // Commit initial state
+    sb_state.update([&](auto& s) {
+        s.lines_parsed = count;
+        s.status = "tailing";
+    });
+    wake_ui();
+
+    // Phase 2: tail for new lines
+    f.clear();
+    while (running) {
+        if (std::getline(f, line)) {
+            auto ev = parse_log_line(line);
+            if (ev) tracker.process(*ev);
+            push_line(line);
+            sb_state.update([&](auto& s) {
+                s.lines_parsed = ++count;
+            });
+            wake_ui();
+        } else {
+            f.clear();
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
+}
+
 } // namespace
 
 SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                             std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
-    : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
+                             std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
+                             std::string debug_log_path)
+    : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
+      debug_log_path_(std::move(debug_log_path))
+{
+    watcher_thread_ = std::thread(watch_log,
+        std::cref(debug_log_path_), std::ref(sb_state_), std::ref(running_),
+        [&screen] { screen.PostEvent(ftxui::Event::Custom); });
+}
 
 Element SlowBlocksTab::key_hints(const AppState& snap) const {
     return hbox({refresh_indicator(snap),
@@ -168,6 +266,7 @@ Element SlowBlocksTab::key_hints(const AppState& snap) const {
 }
 
 Element SlowBlocksTab::render(const AppState& /*snap*/) {
+    auto sb = sb_state_.get();
     auto blocks = fake_blocks();
     auto tips   = fake_tips();
 
@@ -252,11 +351,26 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
 
     auto tips_panel = section_box("Chain Tips", tip_rows);
 
+    // Log watcher status + recent lines
+    Elements log_rows;
+    log_rows.push_back(hbox({
+        text(" Log Watcher ") | bold | color(Color::Gold1),
+        text(" " + debug_log_path_) | color(Color::GrayDark),
+        text("  [" + sb.status + ", " + std::to_string(sb.lines_parsed) + " lines]") | color(Color::GrayDark),
+    }));
+    for (const auto& l : sb.recent_log_lines) {
+        log_rows.push_back(text("  " + l));
+    }
+    auto log_panel = vbox(log_rows) | border;
+
     return vbox({
                block_table,
                tips_panel,
+               log_panel,
            }) |
            flex;
 }
 
-void SlowBlocksTab::join() {}
+void SlowBlocksTab::join() {
+    if (watcher_thread_.joinable()) watcher_thread_.join();
+}
