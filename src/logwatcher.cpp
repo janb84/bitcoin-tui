@@ -1,5 +1,7 @@
 #include "logwatcher.hpp"
 
+#include <set>
+
 #include <re2/re2.h>
 
 namespace {
@@ -129,6 +131,28 @@ std::optional<LogEvent> parse_log_line(const std::string& line) {
 // BlockTracker
 // ============================================================================
 
+void BlockTracker::trim(int keep_depth) {
+    if (current_tip_height_ == 0) return;
+    int min_height = current_tip_height_ - keep_depth;
+    // Build set of surviving hashes
+    std::set<std::string> surviving;
+    std::erase_if(blocks_, [&](const BlockInfo& b) {
+        if (b.height < min_height) return true;
+        surviving.insert(b.hash);
+        return false;
+    });
+    // Remove stale entries from new_hashes_
+    std::erase_if(new_hashes_, [&](const std::string& h) {
+        return surviving.find(h) == surviving.end();
+    });
+}
+
+std::vector<std::string> BlockTracker::take_new_hashes() {
+    std::vector<std::string> result;
+    result.swap(new_hashes_);
+    return result;
+}
+
 BlockInfo* BlockTracker::find(const std::string& hash) {
     for (auto& b : blocks_) {
         if (b.hash == hash) return &b;
@@ -147,6 +171,7 @@ void BlockTracker::process(const LogEvent& ev) {
             bi.time_header = ev.timestamp;
             bi.via_compact = ev.via_compact;
             blocks_.push_back(std::move(bi));
+            new_hashes_.push_back(ev.hash);
         }
         break;
     }
@@ -171,6 +196,7 @@ void BlockTracker::process(const LogEvent& ev) {
 
     case LogEvent::CONNECT_BLOCK: {
         pending_connect_ms_ = ev.elapsed_ms;
+        pending_connect_ts_ = ev.timestamp;
         break;
     }
 
@@ -198,10 +224,22 @@ void BlockTracker::process(const LogEvent& ev) {
             if (pending_connect_ms_ >= 0) {
                 bi->validation_ms = pending_connect_ms_;
             }
+            // Fill in time_block from the earliest available source:
+            // BLOCK_RECEIVED/BLOCK_RECONSTRUCTED (already set), or
+            // CONNECT_BLOCK timestamp, or UpdateTip timestamp
+            if (!bi->time_block) {
+                if (pending_connect_ts_ != TimePoint{}) {
+                    bi->time_block = pending_connect_ts_;
+                } else {
+                    bi->time_block = ev.timestamp;
+                }
+            }
         }
         pending_connect_ms_ = -1;
+        pending_connect_ts_ = {};
         current_tip_hash_ = ev.hash;
         current_tip_height_ = ev.height;
+        trim();
         break;
     }
 

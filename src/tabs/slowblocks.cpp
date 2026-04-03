@@ -3,6 +3,7 @@
 #include <chrono>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -17,26 +18,6 @@ using TimePoint = Clock::time_point;
 using namespace std::chrono_literals;
 
 namespace {
-
-struct BlockEntry {
-    int                      height;
-    std::string              hash;
-    TimePoint                time_header;    // when we first saw the header
-    std::optional<TimePoint> time_block;     // when we got the full block
-    bool                     compact;
-    int                      txns_requested;
-    double                   validation_ms;  // -1 if not yet validated
-    int                      size_bytes;
-    int                      tx_count;
-    std::string              tips;           // which chain tips this block is an ancestor of (e.g. "Ab")
-};
-
-struct ChainTip {
-    char        label;  // 'A' for active, 'b','c','d'... for forks
-    int         height;
-    std::string hash;
-    std::string status; // "active", "valid-fork", "valid-headers", "headers-only", "invalid"
-};
 
 double to_seconds(Clock::duration d) {
     return std::chrono::duration<double>(d).count();
@@ -95,9 +76,9 @@ std::string fmt_delta(double seconds) {
     return buf;
 }
 
-std::string fmt_compact(const BlockEntry& b) {
+std::string fmt_compact(const BlockEvent& b) {
     if (!b.time_block) return "";
-    if (!b.compact) return "no";
+    if (!b.via_compact) return "no";
     if (b.txns_requested > 0) {
         char buf[32];
         snprintf(buf, sizeof(buf), "yes (%d requested)", b.txns_requested);
@@ -111,59 +92,130 @@ std::string abbrev_hash(const std::string& hash, size_t prefix = 12, size_t suff
     return hash.substr(0, prefix) + "..." + hash.substr(hash.size() - suffix);
 }
 
-// Helper: build a TimePoint from h:m:s.us on a fixed fake date
-TimePoint make_time(int h, int m, int s, int us = 0) {
-    // Use a fixed date: 2026-04-10
-    std::tm tm{};
-    tm.tm_year = 126; // 2026
-    tm.tm_mon  = 3;   // April
-    tm.tm_mday = 10;
-    tm.tm_hour = h;
-    tm.tm_min  = m;
-    tm.tm_sec  = s;
-    auto tp = Clock::from_time_t(timegm(&tm));
-    return tp + std::chrono::microseconds(us);
+// Fetch chain tips, keeping only active + those whose tip hash appears in our blocks
+std::vector<ChainTipInfo> fetch_tips(RpcClient& rpc, const BlockTracker& tracker) {
+    std::vector<ChainTipInfo> tips;
+    // Build set of known block hashes
+    std::set<std::string> known;
+    for (const auto& b : tracker.blocks()) {
+        known.insert(b.hash);
+    }
+    try {
+        auto result = rpc.call("getchaintips")["result"];
+        char next_label = 'b';
+        for (const auto& t : result) {
+            std::string status = t.value("status", "");
+            std::string hash = t.value("hash", "");
+            if (status != "active" && known.find(hash) == known.end()) continue;
+            ChainTipInfo ti;
+            ti.height = t.value("height", 0);
+            ti.hash = std::move(hash);
+            ti.status = std::move(status);
+            if (ti.status == "active") {
+                ti.label = 'A';
+            } else {
+                ti.label = next_label++;
+            }
+            tips.push_back(std::move(ti));
+        }
+    } catch (...) {
+    }
+    return tips;
 }
 
-// Fake data telling the slow-block reorg story:
-//   420000-420004: normal blocks on both chains (tips "Ab")
-//   420005-420008: slow chain only (tips "b")
-//   420005'-420008': reorg chain, headers seen early, blocks fetched late (tips "A")
-//   420009': only on active chain, triggers the reorg (tips "A")
-std::vector<BlockEntry> fake_blocks() {
-    return {
-        //                                                                                    header time                 block time                  cmpct  req   valid     size     txs  tips
-        // Common ancestors
-        {420000, "00000000000000000125cf0e2cd3a8b9f4e6d7c1a2b3e4f5a6b7c8d9e0f1a2b3", make_time(14,20, 1,123456), make_time(14,20, 1,234567), true,  0,    18.3,  998213, 1843, "Ab"},
-        {420001, "00000000000000000a3f718bc4e5d6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3", make_time(14,30,15,654321), make_time(14,30,15,789012), true,  0,    22.1, 1123456, 2106, "Ab"},
-        {420002, "000000000000000003c82a649e1f2d3c4b5a6e7f8d9c0b1a2e3f4d5c6b7a8e9f", make_time(14,40, 8,111222), make_time(14,40, 8,333444), true,  3,    19.7, 1045678, 1957, "Ab"},
-        {420003, "00000000000000000f19d3a85b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c", make_time(14,50,22,555666), make_time(14,50,22,777888), true,  0,    20.5, 1087234, 2002, "Ab"},
-        {420004, "0000000000000000071b3e5c8a9d0e1f2c3b4a5d6e7f8c9b0a1d2e3f4c5b6a7d", make_time(15, 0,30,100200), make_time(15, 0,30,300400), true,  0,    17.8,  956789, 1790, "Ab"},
-        // Slow blocks (fork b only)
-        {420005, "00000000000000000e4a27f1d63b5c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b", make_time(15,10,45,500000), make_time(15,10,45,612345), true, 12,  5230.0,  876543, 1205, " b"},
-        {420006, "00000000000000000b8c93e2a71d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d", make_time(15,21, 2,300000), make_time(15,21, 2,423456), true,  8, 32100.0,  745123,  988, " b"},
-        {420007, "0000000000000000042d1fa7b58e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e", make_time(15,31,18,700000), make_time(15,31,18,812345), true,  5, 91200.0,  812345, 1103, " b"},
-        {420008, "00000000000000000c5e84d3f92a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a", make_time(15,41,35,200000), make_time(15,41,35,345678), true,  2, 47800.0,  923456, 1544, " b"},
-        // Reorg chain (active A): headers arrived earlier, blocks fetched when 420009 tips the balance
-        {420005, "00000000000000000d7f36a2e84c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c", make_time(15,43, 0,100000), make_time(15,55, 1,200000), false, 0,    21.2, 1198765, 2235, "A "},
-        {420006, "00000000000000000a1b82c4f96d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d", make_time(15,45, 0,200000), make_time(15,55, 2,300000), false, 0,    19.8, 1134567, 2088, "A "},
-        {420007, "00000000000000000f3d95b7a12e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e", make_time(15,49, 0,300000), make_time(15,55, 3,400000), false, 0,    18.5, 1056789, 1946, "A "},
-        {420008, "00000000000000000e6c41d8b35f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f", make_time(15,52, 0,400000), make_time(15,55, 4,500000), false, 0,    23.4, 1178901, 2157, "A "},
-        {420009, "00000000000000000b2a73c5d81e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e", make_time(15,55, 0,500000), make_time(15,55, 0,612345), true,  0,    20.1, 1201234, 2301, "A "},
-    };
+// Copy tracker state into the shared SlowBlocksState for rendering,
+// computing tip labels by walking prev_map backwards from each tip.
+void sync_state(const BlockTracker& tracker, const std::vector<ChainTipInfo>& tips,
+                Guarded<SlowBlocksState>& sb_state) {
+    const auto& blocks = tracker.blocks();
+    const auto& prev_map = tracker.prev_map();
+
+    // Build hash→index lookup
+    std::map<std::string, size_t> hash_to_idx;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        hash_to_idx[blocks[i].hash] = i;
+    }
+
+    // Compute tip membership strings
+    size_t n_tips = tips.size();
+    std::vector<std::string> tip_strings(blocks.size(), std::string(n_tips, ' '));
+    for (size_t ti = 0; ti < tips.size(); ++ti) {
+        std::string cur = tips[ti].hash;
+        while (!cur.empty()) {
+            auto it = hash_to_idx.find(cur);
+            if (it != hash_to_idx.end()) {
+                tip_strings[it->second][ti] = tips[ti].label;
+            }
+            auto pit = prev_map.find(cur);
+            if (pit != prev_map.end()) {
+                cur = pit->second;
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Convert BlockInfo to BlockEvent
+    std::vector<BlockEvent> events;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        const auto& bi = blocks[i];
+        BlockEvent ev;
+        ev.height = bi.height;
+        ev.hash = bi.hash;
+        ev.time_header = bi.time_header;
+        ev.via_compact = bi.via_compact;
+        ev.time_block = bi.time_block;
+        ev.txns_requested = bi.txns_requested;
+        ev.validation_ms = bi.validation_ms;
+        ev.tips = tip_strings[i];
+        ev.size_bytes = bi.size_bytes;
+        ev.tx_count = bi.tx_count;
+        events.push_back(std::move(ev));
+    }
+
+    sb_state.update([&](auto& s) {
+        s.blocks = std::move(events);
+        s.tips = tips;
+    });
 }
 
-std::vector<ChainTip> fake_tips() {
-    return {
-        {'A', 420009, "00000000000000000b2a73c5d81e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e", "active"},
-        {'b', 420008, "00000000000000000c5e84d3f92a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a", "valid-fork"},
-    };
+// Enrich new blocks with RPC data, then sync display once.
+void enrich_blocks(BlockTracker& tracker, RpcClient& rpc,
+                   Guarded<SlowBlocksState>& sb_state,
+                   const std::function<void()>& wake_ui) {
+    auto new_hashes = tracker.take_new_hashes();
+    if (new_hashes.empty()) return;
+
+    for (const auto& hash : new_hashes) {
+        try {
+            auto hdr = rpc.call("getblockheader", {hash})["result"];
+            std::string prev = hdr.value("previousblockhash", "");
+            tracker.set_prev(hash, prev);
+
+            auto blk = rpc.call("getblock", {hash, 1})["result"];
+            BlockInfo* bi = nullptr;
+            for (auto& b : tracker.blocks()) {
+                if (b.hash == hash) { bi = &b; break; }
+            }
+            if (bi) {
+                bi->prev_hash = prev;
+                bi->size_bytes = blk.value("size", 0);
+                bi->tx_count = blk.value("nTx", 0);
+            }
+        } catch (...) {
+        }
+    }
+
+    auto tips = fetch_tips(rpc, tracker);
+    sync_state(tracker, tips, sb_state);
+    wake_ui();
 }
 
 void watch_log(const std::string& path,
                Guarded<SlowBlocksState>& sb_state,
                std::atomic<bool>& running,
-               const std::function<void()>& wake_ui)
+               const std::function<void()>& wake_ui,
+               RpcClient& rpc)
 {
     constexpr int64_t TAIL_BYTES = 100 * 1024 * 1024; // 100 MB
     constexpr size_t  MAX_LOG_LINES = 5;
@@ -222,9 +274,17 @@ void watch_log(const std::string& path,
         }
     }
 
-    // Commit initial state
+    // Show log-only data immediately, then enrich with RPC
+    std::vector<ChainTipInfo> tips;
+    sync_state(tracker, tips, sb_state);
     sb_state.update([&](auto& s) {
         s.lines_parsed = count;
+        s.status = "enriching...";
+    });
+    wake_ui();
+
+    enrich_blocks(tracker, rpc, sb_state, wake_ui);
+    sb_state.update([&](auto& s) {
         s.status = "tailing";
     });
     wake_ui();
@@ -234,7 +294,10 @@ void watch_log(const std::string& path,
     while (running) {
         if (std::getline(f, line)) {
             auto ev = parse_log_line(line);
-            if (ev) tracker.process(*ev);
+            if (ev) {
+                tracker.process(*ev);
+                enrich_blocks(tracker, rpc, sb_state, wake_ui);
+            }
             push_line(line);
             sb_state.update([&](auto& s) {
                 s.lines_parsed = ++count;
@@ -255,9 +318,14 @@ SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenIntera
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
       debug_log_path_(std::move(debug_log_path))
 {
-    watcher_thread_ = std::thread(watch_log,
-        std::cref(debug_log_path_), std::ref(sb_state_), std::ref(running_),
-        [&screen] { screen.PostEvent(ftxui::Event::Custom); });
+    auto wake_ui = [&screen] { screen.PostEvent(ftxui::Event::Custom); };
+    RpcConfig cfg_copy = cfg_;
+    watcher_thread_ = std::thread(
+        [path = debug_log_path_, &sb_state = sb_state_, &running = running_,
+         &auth = auth_, wake = std::move(wake_ui), cfg = std::move(cfg_copy)] {
+            RpcClient rpc(cfg, auth);
+            watch_log(path, sb_state, running, wake, rpc);
+        });
 }
 
 Element SlowBlocksTab::key_hints(const AppState& snap) const {
@@ -266,9 +334,19 @@ Element SlowBlocksTab::key_hints(const AppState& snap) const {
 }
 
 Element SlowBlocksTab::render(const AppState& /*snap*/) {
-    auto sb = sb_state_.get();
-    auto blocks = fake_blocks();
-    auto tips   = fake_tips();
+    // Copy data out under the lock, then release
+    std::vector<BlockEvent> blocks;
+    std::vector<ChainTipInfo> tips;
+    std::string log_status;
+    int64_t lines_parsed = 0;
+    std::vector<std::string> log_lines;
+    sb_state_.access([&](const auto& s) {
+        blocks = s.blocks;
+        tips = s.tips;
+        log_status = s.status;
+        lines_parsed = s.lines_parsed;
+        log_lines.assign(s.recent_log_lines.begin(), s.recent_log_lines.end());
+    });
 
     // Column widths
     constexpr int W_HEIGHT = 10;
@@ -349,16 +427,16 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
         }));
     }
 
-    auto tips_panel = section_box("Chain Tips", tip_rows);
+    auto tips_panel = section_box("Recent Chain Tips", tip_rows);
 
     // Log watcher status + recent lines
     Elements log_rows;
     log_rows.push_back(hbox({
         text(" Log Watcher ") | bold | color(Color::Gold1),
         text(" " + debug_log_path_) | color(Color::GrayDark),
-        text("  [" + sb.status + ", " + std::to_string(sb.lines_parsed) + " lines]") | color(Color::GrayDark),
+        text("  [" + log_status + ", " + std::to_string(lines_parsed) + " lines]") | color(Color::GrayDark),
     }));
-    for (const auto& l : sb.recent_log_lines) {
+    for (const auto& l : log_lines) {
         log_rows.push_back(text("  " + l));
     }
     auto log_panel = vbox(log_rows) | border;

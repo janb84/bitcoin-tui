@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -52,11 +53,14 @@ std::optional<TimePoint> parse_timestamp(const std::string& line);
 struct BlockInfo {
     int                      height = 0;
     std::string              hash;
+    std::string              prev_hash;       // filled by RPC (getblockheader)
     TimePoint                time_header;
     bool                     via_compact = false;
     std::optional<TimePoint> time_block;
     int                      txns_requested = 0;
     double                   validation_ms = -1;
+    int                      size_bytes = 0;  // filled by RPC (getblock)
+    int                      tx_count = 0;    // filled by RPC (getblock)
     bool                     was_tip = false;       // was this ever the active tip?
     bool                     disconnected = false;   // has this been disconnected?
 };
@@ -68,13 +72,27 @@ class BlockTracker {
     void process(const LogEvent& ev);
 
     const std::vector<BlockInfo>& blocks() const { return blocks_; }
+    std::vector<BlockInfo>& blocks() { return blocks_; }
+
+    // Returns hashes of blocks that haven't been enriched with RPC data yet,
+    // then clears the pending list.
+    std::vector<std::string> take_new_hashes();
+
+    // Drop blocks more than keep_depth below the current tip height.
+    void trim(int keep_depth = 10);
+
+    // Map of hash → prev_hash for tip-tracing
+    const std::map<std::string, std::string>& prev_map() const { return prev_map_; }
+    void set_prev(const std::string& hash, const std::string& prev) { prev_map_[hash] = prev; }
 
   private:
-    // Find block by hash, or return nullptr
     BlockInfo* find(const std::string& hash);
 
     std::vector<BlockInfo> blocks_;
-    double pending_connect_ms_ = -1;        // from "Connect block", awaiting UpdateTip
+    std::vector<std::string> new_hashes_;     // blocks needing RPC enrichment
+    std::map<std::string, std::string> prev_map_;  // hash → prev_hash
+    double pending_connect_ms_ = -1;
+    TimePoint pending_connect_ts_{};
     std::string current_tip_hash_;
     int         current_tip_height_ = 0;
 };
