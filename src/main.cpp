@@ -24,6 +24,7 @@
 #include "tabs/mempool.hpp"
 #include "tabs/network.hpp"
 #include "tabs/peers.hpp"
+#include "tabs/slowblocks.hpp"
 #include "tabs/tools.hpp"
 
 // ============================================================================
@@ -239,7 +240,7 @@ int Application::run() const {
     bool        global_search_active = false;
 
     // Tab toggle
-    std::vector<std::string> tab_labels = {"Dashboard", "Mempool", "Network", "Peers", "Tools"};
+    std::vector<std::string> tab_labels = {"Dashboard", "Mempool", "Network", "Peers", "Tools", "Slow Blocks"};
     int                      tab_index  = 0;
     auto                     tab_toggle = Toggle(&tab_labels, &tab_index);
 
@@ -252,7 +253,9 @@ int Application::run() const {
         cfg, auth, screen, running, state, refresh_secs,
         [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
 
-    std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
+    SlowBlocksTab slowblocks_tab(cfg, auth, screen, running, state, refresh_secs);
+
+    std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab, &slowblocks_tab};
 
     auto layout = Container::Vertical({tab_toggle});
 

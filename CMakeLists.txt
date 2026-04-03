@@ -31,6 +31,7 @@ add_executable(bitcoin-tui
   src/tabs/mempool.cpp
   src/tabs/peers.cpp
   src/tabs/tools.cpp
+  src/tabs/slowblocks.cpp
 )
 
 # src/ is on the include path so rpc_client.hpp can find json.hpp
