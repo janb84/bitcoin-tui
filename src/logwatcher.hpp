@@ -79,6 +79,9 @@ class BlockTracker {
     // then clears the pending list.
     std::vector<std::string> take_new_hashes();
 
+    // Check if there are pending hashes without consuming them.
+    bool has_new_hashes() const { return !new_hashes_.empty(); }
+
     // Drop blocks more than keep_depth below the current tip height.
     void trim(int keep_depth = 10);
 
