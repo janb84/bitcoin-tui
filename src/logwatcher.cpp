@@ -218,21 +218,25 @@ void BlockTracker::process(const LogEvent& ev) {
 
     case LogEvent::UPDATE_TIP: {
         auto* bi = find(ev.hash);
-        if (bi) {
-            bi->was_tip = true;
-            bi->disconnected = false;
-            if (pending_connect_ms_ >= 0) {
-                bi->validation_ms = pending_connect_ms_;
-            }
-            // Fill in time_block from the earliest available source:
-            // BLOCK_RECEIVED/BLOCK_RECONSTRUCTED (already set), or
-            // CONNECT_BLOCK timestamp, or UpdateTip timestamp
-            if (!bi->time_block) {
-                if (pending_connect_ts_ != TimePoint{}) {
-                    bi->time_block = pending_connect_ts_;
-                } else {
-                    bi->time_block = ev.timestamp;
-                }
+        if (!bi) {
+            BlockInfo newbi;
+            newbi.height = ev.height;
+            newbi.hash = ev.hash;
+            newbi.time_header = ev.timestamp;
+            blocks_.push_back(std::move(newbi));
+            new_hashes_.push_back(ev.hash);
+            bi = &blocks_.back();
+        }
+        bi->was_tip = true;
+        bi->disconnected = false;
+        if (pending_connect_ms_ >= 0) {
+            bi->validation_ms = pending_connect_ms_;
+        }
+        if (!bi->time_block) {
+            if (pending_connect_ts_ != TimePoint{}) {
+                bi->time_block = pending_connect_ts_;
+            } else {
+                bi->time_block = ev.timestamp;
             }
         }
         pending_connect_ms_ = -1;

@@ -180,6 +180,30 @@ void sync_state(const BlockTracker& tracker, const std::vector<ChainTipInfo>& ti
 }
 
 // Enrich new blocks with RPC data, then sync display once.
+// Enrich a single block by hash: fetch header+block data, fill in tracker.
+// Returns the previousblockhash, or empty on failure.
+std::string enrich_one(const std::string& hash, BlockTracker& tracker, RpcClient& rpc) {
+    try {
+        auto hdr = rpc.call("getblockheader", {hash})["result"];
+        std::string prev = hdr.value("previousblockhash", "");
+        tracker.set_prev(hash, prev);
+
+        auto blk = rpc.call("getblock", {hash, 1})["result"];
+        BlockInfo* bi = nullptr;
+        for (auto& b : tracker.blocks()) {
+            if (b.hash == hash) { bi = &b; break; }
+        }
+        if (bi) {
+            bi->prev_hash = prev;
+            bi->size_bytes = blk.value("size", 0);
+            bi->tx_count = blk.value("nTx", 0);
+        }
+        return prev;
+    } catch (...) {
+        return {};
+    }
+}
+
 void enrich_blocks(BlockTracker& tracker, RpcClient& rpc,
                    Guarded<SlowBlocksState>& sb_state,
                    const std::function<void()>& wake_ui) {
@@ -187,25 +211,51 @@ void enrich_blocks(BlockTracker& tracker, RpcClient& rpc,
     if (new_hashes.empty()) return;
 
     for (const auto& hash : new_hashes) {
-        try {
-            auto hdr = rpc.call("getblockheader", {hash})["result"];
-            std::string prev = hdr.value("previousblockhash", "");
-            tracker.set_prev(hash, prev);
+        std::string prev = enrich_one(hash, tracker, rpc);
 
-            auto blk = rpc.call("getblock", {hash, 1})["result"];
-            BlockInfo* bi = nullptr;
-            for (auto& b : tracker.blocks()) {
-                if (b.hash == hash) { bi = &b; break; }
+        // Walk backwards through parents, creating missing blocks.
+        // Use the child's header time as the parent's header time
+        // (we learned about the parent no later than the child).
+        BlockInfo* child = nullptr;
+        for (auto& b : tracker.blocks()) {
+            if (b.hash == hash) { child = &b; break; }
+        }
+        if (!child) continue;
+
+        std::string cur = prev;
+        for (int i = 0; i < 10 && !cur.empty(); ++i) {
+            // Already tracked?
+            bool found = false;
+            for (const auto& b : tracker.blocks()) {
+                if (b.hash == cur) { found = true; break; }
             }
-            if (bi) {
-                bi->prev_hash = prev;
-                bi->size_bytes = blk.value("size", 0);
-                bi->tx_count = blk.value("nTx", 0);
+            if (found) break;
+
+            // Fetch header to get height and prev
+            try {
+                auto hdr = rpc.call("getblockheader", {cur})["result"];
+                int height = hdr.value("height", 0);
+                std::string pp = hdr.value("previousblockhash", "");
+                tracker.set_prev(cur, pp);
+
+                BlockInfo bi;
+                bi.height = height;
+                bi.hash = cur;
+                bi.time_header = child->time_header;
+                bi.was_tip = true; // it was on the active chain
+                tracker.blocks().push_back(std::move(bi));
+
+                // Enrich with block data too
+                enrich_one(cur, tracker, rpc);
+
+                cur = pp;
+            } catch (...) {
+                break;
             }
-        } catch (...) {
         }
     }
 
+    tracker.trim();
     auto tips = fetch_tips(rpc, tracker);
     sync_state(tracker, tips, sb_state);
     wake_ui();
@@ -289,6 +339,9 @@ void watch_log(const std::string& path,
     });
     wake_ui();
 
+    // Cache tips for reuse between syncs
+    tips = fetch_tips(rpc, tracker);
+
     // Phase 2: tail for new lines
     f.clear();
     while (running) {
@@ -296,7 +349,12 @@ void watch_log(const std::string& path,
             auto ev = parse_log_line(line);
             if (ev) {
                 tracker.process(*ev);
+                // Enrich any newly seen blocks (may be a no-op)
                 enrich_blocks(tracker, rpc, sb_state, wake_ui);
+                // Always re-sync so updates to existing blocks are visible
+                tips = fetch_tips(rpc, tracker);
+                sync_state(tracker, tips, sb_state);
+                wake_ui();
             }
             push_line(line);
             sb_state.update([&](auto& s) {
