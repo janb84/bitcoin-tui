@@ -15,7 +15,7 @@ class RpcError : public std::runtime_error {
 struct RpcConfig {
     std::string host            = "127.0.0.1";
     int         port            = 8332;
-    int         timeout_seconds = 30;
+    int         timeout_seconds = 300;
 };
 
 struct RpcAuth {
