@@ -23,6 +23,10 @@ const re2::RE2 re_received_block(
     R"(received block (\w+) peer=)"
 );
 
+const re2::RE2 re_connect_start(
+    R"(- Load block from disk: ([0-9.]+)ms)"
+);
+
 const re2::RE2 re_connect_block(
     R"(- Connect block: ([0-9.]+)ms)"
 );
@@ -102,6 +106,12 @@ std::optional<LogEvent> parse_log_line(const std::string& line) {
     if (re2::RE2::PartialMatch(line, re_received_block, &s1)) {
         ev.type = LogEvent::BLOCK_RECEIVED;
         ev.hash = s1;
+        return ev;
+    }
+
+    if (re2::RE2::PartialMatch(line, re_connect_start, &s1)) {
+        ev.type = LogEvent::CONNECT_START;
+        ev.elapsed_ms = std::stod(s1);
         return ev;
     }
 
@@ -193,6 +203,9 @@ void BlockTracker::process(const LogEvent& ev) {
         }
         break;
     }
+
+    case LogEvent::CONNECT_START:
+        break;
 
     case LogEvent::CONNECT_BLOCK: {
         pending_connect_ms_ = ev.elapsed_ms;

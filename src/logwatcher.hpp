@@ -17,6 +17,7 @@ struct LogEvent {
         SAW_HEADER,           // "Saw new [cmpctblock ]header hash=... height=..."
         BLOCK_RECONSTRUCTED,  // "Successfully reconstructed block ... requested"
         BLOCK_RECEIVED,       // "received block ... peer=..."
+        CONNECT_START,        // "  - Load block from disk: ...ms" (first bench line in ConnectTip)
         CONNECT_BLOCK,        // "- Connect block: ...ms"
         DISCONNECT_BLOCK,     // "- Disconnect block: ...ms"
         UPDATE_TIP,           // "UpdateTip: new best=... height=..."

@@ -348,10 +348,21 @@ void watch_log(const std::string& path,
         if (std::getline(f, line)) {
             auto ev = parse_log_line(line);
             if (ev) {
+                // Track validation state for live timer
+                if (ev->type == LogEvent::CONNECT_START) {
+                    sb_state.update([](auto& s) {
+                        s.validating_since = Clock::now();
+                    });
+                    wake_ui();
+                } else if (ev->type == LogEvent::UPDATE_TIP ||
+                           ev->type == LogEvent::CONNECT_BLOCK) {
+                    sb_state.update([](auto& s) {
+                        s.validating_since = std::nullopt;
+                    });
+                }
+
                 tracker.process(*ev);
-                // Enrich any newly seen blocks (may be a no-op)
                 enrich_blocks(tracker, rpc, sb_state, wake_ui);
-                // Always re-sync so updates to existing blocks are visible
                 tips = fetch_tips(rpc, tracker);
                 sync_state(tracker, tips, sb_state);
                 wake_ui();
@@ -363,6 +374,8 @@ void watch_log(const std::string& path,
             wake_ui();
         } else {
             f.clear();
+            // Wake periodically so the validation timer updates
+            wake_ui();
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
     }
@@ -398,12 +411,14 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
     std::string log_status;
     int64_t lines_parsed = 0;
     std::vector<std::string> log_lines;
+    std::optional<TimePoint> validating_since;
     sb_state_.access([&](const auto& s) {
         blocks = s.blocks;
         tips = s.tips;
         log_status = s.status;
         lines_parsed = s.lines_parsed;
         log_lines.assign(s.recent_log_lines.begin(), s.recent_log_lines.end());
+        validating_since = s.validating_since;
     });
 
     // Column widths
@@ -451,7 +466,17 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
             block_str = fmt_delta(delta);
             if (on_active) blk_color = block_delay_color(delta);
         }
-        std::string valid_str = b.validation_ms < 0 ? "" : fmt_validation_time(b.validation_ms);
+        // Validation column: show live timer if this is the block being validated
+        std::string valid_str;
+        if (b.validation_ms >= 0) {
+            valid_str = fmt_validation_time(b.validation_ms);
+        } else if (validating_since && &b == &blocks.back()) {
+            double elapsed = to_seconds(Clock::now() - *validating_since);
+            if (elapsed > 2.0) {
+                valid_str = fmt_validation_time(elapsed * 1000.0) + "...";
+                val_color = Color::Red;
+            }
+        }
 
         Elements row_cells = {
             text(" " + height_str) | size(WIDTH, EQUAL, W_HEIGHT - 3) | color(row_color),
