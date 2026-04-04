@@ -476,7 +476,36 @@ void rpc_thread_fn(Guarded<SlowBlocksState>& sb_state, Guarded<BlockTracker>& g_
             });
             RpcClient rpc(cfg, auth);
             auto      tips = fetch_tips(rpc, tip_known);
+
+            // Check logging categories
+            std::string warn;
+            try {
+                auto                     logging = rpc.call("logging")["result"];
+                std::vector<std::string> need    = {"cmpctblock", "bench"};
+                std::vector<std::string> missing;
+                for (const auto& cat : need) {
+                    if (!logging.value(cat, false)) {
+                        missing.push_back(cat);
+                    }
+                }
+                if (!missing.empty()) {
+                    std::string list, json_arr;
+                    for (size_t i = 0; i < missing.size(); ++i) {
+                        if (i > 0) {
+                            list += ", ";
+                            json_arr += ", ";
+                        }
+                        list += missing[i];
+                        json_arr += "\"" + missing[i] + "\"";
+                    }
+                    warn = "Missing log categories: " + list + " (run: bitcoin-cli logging '[" +
+                           json_arr + "]')";
+                }
+            } catch (...) {
+            }
+
             g_tracker.access([&](const auto& t) { sync_state(t, tips, sb_state); });
+            sb_state.update([&](auto& s) { s.warning = std::move(warn); });
             wake_ui();
             last_tips = Clock::now();
         }
@@ -524,6 +553,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
     int64_t                   lines_parsed = 0;
     std::vector<std::string>  log_lines;
     std::optional<TimePoint>  validating_since;
+    std::string               warning;
     sb_state_.access([&](const auto& s) {
         blocks       = s.blocks;
         tips         = s.tips;
@@ -531,6 +561,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
         lines_parsed = s.lines_parsed;
         log_lines.assign(s.recent_log_lines.begin(), s.recent_log_lines.end());
         validating_since = s.validating_since;
+        warning          = s.warning;
     });
 
     // Column widths
@@ -653,12 +684,14 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
     }
     auto log_panel = vbox(log_rows) | border;
 
-    return vbox({
-               block_table,
-               tips_panel,
-               log_panel,
-           }) |
-           flex;
+    Elements panels;
+    if (!warning.empty()) {
+        panels.push_back(text(" " + warning) | bold | color(Color::Red) | border);
+    }
+    panels.push_back(block_table);
+    panels.push_back(tips_panel);
+    panels.push_back(log_panel);
+    return vbox(panels) | flex;
 }
 
 void SlowBlocksTab::join() {

@@ -41,7 +41,8 @@ struct SlowBlocksState {
     std::string               status;           // "reading...", "tailing", "error: ..."
     std::deque<std::string>   recent_log_lines; // last N matched log lines
     std::optional<std::chrono::system_clock::time_point>
-        validating_since; // set during slow validation
+        validating_since;  // set during slow validation
+    std::string warning;   // e.g. missing log categories
 };
 
 class SlowBlocksTab : public Tab {
