@@ -21,6 +21,7 @@
 #include "rpc_client.hpp"
 #include "state.hpp"
 #include "tabs/dashboard.hpp"
+#include "tabs/luatab.hpp"
 #include "tabs/mempool.hpp"
 #include "tabs/network.hpp"
 #include "tabs/peers.hpp"
@@ -95,6 +96,8 @@ class Application {
     std::string              bitcoind_cmd;
     bool                     explicit_host = false;
     bool                     can_launch    = false;
+    std::string              debug_log_file;
+    std::vector<std::string> lua_tabs;
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -158,6 +161,10 @@ int Application::configure(int argc, char* argv[]) {
         } else if (arg == "--signet") {
             cfg.port = 38332;
             network  = "signet";
+        } else if (arg == "--debuglog") {
+            debug_log_file = next();
+        } else if (arg == "--tab") {
+            lua_tabs.push_back(next());
         } else if (arg == "--bitcoind") {
             bitcoind_cmd = next();
         } else if (arg == "--version" || arg == "-v") {
@@ -182,11 +189,15 @@ int Application::configure(int argc, char* argv[]) {
                 "\n"
                 "Node:\n"
                 "      --bitcoind <path>  Path to bitcoind binary   (default: bitcoind from PATH)\n"
+                "      --debuglog <path>  Path to debug.log         (default: <datadir>/debug.log)\n"
                 "\n"
                 "Network:\n"
                 "      --testnet          Use testnet3 port (18332) and cookie subdir\n"
                 "      --regtest          Use regtest  port (18443) and cookie subdir\n"
                 "      --signet           Use signet   port (38332) and cookie subdir\n"
+                "\n"
+                "Lua tabs:\n"
+                "      --tab <path.lua>   Load a Lua tab script (repeatable)\n"
                 "\n"
                 "Display:\n"
                 "  -r, --refresh <secs>   Refresh interval     (default: 5)\n"
@@ -249,7 +260,18 @@ int Application::run() const {
         cfg, auth, screen, running, state, refresh_secs,
         [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
 
+    std::string                          debug_log = debug_log_file.empty()
+                                                         ? datadir + "/" + network_subdir(network) + "debug.log"
+                                                         : debug_log_file;
+    std::vector<std::unique_ptr<LuaTab>> lua_tab_ptrs;
+    for (const auto& script : lua_tabs) {
+        lua_tab_ptrs.push_back(std::make_unique<LuaTab>(cfg, auth, screen, running, state,
+                                                        refresh_secs, debug_log, script));
+    }
+
     std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
+    for (auto& p : lua_tab_ptrs)
+        tabs.push_back(p.get());
 
     // Tab toggle
     std::vector<std::string> tab_labels;
