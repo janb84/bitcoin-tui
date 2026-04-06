@@ -22,8 +22,9 @@ class MempoolTab : public Tab {
     // switch_tab=true sets tab_index_out=1 before launching the search thread
     void trigger_search(const std::string& query, bool switch_tab, int& tab_index_out);
 
-    ftxui::Element      render(const AppState& snap) override;
-    ftxui::Element      key_hints(const AppState& snap) const override;
+    std::string    name() const override { return "Mempool"; }
+    ftxui::Element render(const AppState& snap) override;
+    ftxui::Element key_hints(const AppState& snap) const override;
     // Handles outputs/inputs sub-overlays; nullopt = not in overlay mode
     std::optional<bool> handle_tx_overlay(const ftxui::Event& event);
     // Handles mempool block navigation; call only when tab_index == 1

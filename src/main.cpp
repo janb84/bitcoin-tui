@@ -238,10 +238,7 @@ int Application::run() const {
     std::string global_search_str;
     bool        global_search_active = false;
 
-    // Tab toggle
-    std::vector<std::string> tab_labels = {"Dashboard", "Mempool", "Network", "Peers", "Tools"};
-    int                      tab_index  = 0;
-    auto                     tab_toggle = Toggle(&tab_labels, &tab_index);
+    int tab_index = 0;
 
     // Tab objects (mempool first — tools captures a reference to it via lambda)
     DashboardTab dashboard_tab(cfg, auth, screen, running, state, refresh_secs);
@@ -253,6 +250,12 @@ int Application::run() const {
         [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
 
     std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
+
+    // Tab toggle
+    std::vector<std::string> tab_labels;
+    for (auto* tab : tabs)
+        tab_labels.push_back(tab->name());
+    auto tab_toggle = Toggle(&tab_labels, &tab_index);
 
     auto layout = Container::Vertical({tab_toggle});
 

@@ -19,6 +19,7 @@ class ToolsTab : public Tab {
              std::function<void(const std::string&, bool)> trigger_search);
     ~ToolsTab() override = default;
 
+    std::string    name() const override { return "Tools"; }
     ftxui::Element render(const AppState& snap) override;
     ftxui::Element key_hints(const AppState& snap) const override;
     // Handles tools_input_active mode; call unconditionally (before tab navigation)

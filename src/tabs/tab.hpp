@@ -19,9 +19,10 @@ class Tab {
           refresh_secs_{refresh_secs} {}
     virtual ~Tab() = default;
 
-    virtual ftxui::Element render(const AppState& snap) = 0;
+    virtual std::string    name() const                          = 0;
+    virtual ftxui::Element render(const AppState& snap)          = 0;
     virtual ftxui::Element key_hints(const AppState& snap) const = 0;
-    virtual void           join()                           = 0;
+    virtual void           join()                                = 0;
 
     static ftxui::Element refresh_indicator(const AppState& snap, int refresh_secs) {
         return snap.refreshing
