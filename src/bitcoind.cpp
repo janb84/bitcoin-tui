@@ -2,8 +2,13 @@
 
 #include <cstring>
 #include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
+
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include <sys/wait.h>
+#  include <unistd.h>
+#endif
 
 std::string find_bitcoind() {
     const char* path_env = getenv("PATH");
@@ -12,14 +17,26 @@ std::string find_bitcoind() {
 
     std::string            path(path_env);
     std::string::size_type start = 0;
+#ifdef _WIN32
+    const char sep = ';';
+    const std::string exe = "\\bitcoind.exe";
+#else
+    const char sep = ':';
+    const std::string exe = "/bitcoind";
+#endif
     while (start < path.size()) {
-        auto end = path.find(':', start);
+        auto end = path.find(sep, start);
         if (end == std::string::npos)
             end = path.size();
-        std::string candidate = path.substr(start, end - start) + "/bitcoind";
+        std::string candidate = path.substr(start, end - start) + exe;
         struct stat st{};
+#ifdef _WIN32
+        if (stat(candidate.c_str(), &st) == 0)
+            return candidate;
+#else
         if (stat(candidate.c_str(), &st) == 0 && (st.st_mode & S_IXUSR))
             return candidate;
+#endif
         start = end + 1;
     }
     return {};
@@ -27,6 +44,11 @@ std::string find_bitcoind() {
 
 int launch_bitcoind(const std::string& cmd, const std::string& datadir, const std::string& network,
                     const OutputCallback& on_output) {
+#ifdef _WIN32
+    // Not implemented on Windows.
+    (void)cmd; (void)datadir; (void)network; (void)on_output;
+    return -1;
+#else
     // Build argv.
     std::vector<std::string> args_storage;
     args_storage.push_back(cmd);
@@ -39,14 +61,6 @@ int launch_bitcoind(const std::string& cmd, const std::string& datadir, const st
         args_storage.push_back("-signet");
     else if (network == "regtest")
         args_storage.push_back("-regtest");
-
-    // Report the command line.
-    std::string cmdline;
-    for (const auto& s : args_storage) {
-        if (!cmdline.empty())
-            cmdline += ' ';
-        cmdline += s;
-    }
 
     std::vector<char*> argv;
     for (auto& s : args_storage)
@@ -73,7 +87,6 @@ int launch_bitcoind(const std::string& cmd, const std::string& datadir, const st
         close(pipefd[1]);
 
         execvp(argv[0], argv.data());
-        // If execvp returns, it failed.
         std::string           err = std::string(argv[0]) + ": " + strerror(errno) + "\n";
         [[maybe_unused]] auto _   = write(STDERR_FILENO, err.c_str(), err.size());
         _exit(127);
@@ -102,4 +115,5 @@ int launch_bitcoind(const std::string& cmd, const std::string& datadir, const st
     int status = 0;
     waitpid(pid, &status, 0);
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
 }
