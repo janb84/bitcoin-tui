@@ -156,6 +156,11 @@ target_include_directories(test_guarded PRIVATE src/)
 target_link_libraries(test_guarded PRIVATE Catch2::Catch2WithMain Threads::Threads)
 add_test(NAME test_guarded COMMAND test_guarded)
 
+if(WIN32)
+  target_link_libraries(test_rpc_config PRIVATE ws2_32)
+  target_link_libraries(test_bitcoind PRIVATE ws2_32)
+endif()
+
 add_executable(test_cli tests/test_cli.cpp)
 target_link_libraries(test_cli PRIVATE Catch2::Catch2WithMain)
 add_dependencies(test_cli bitcoin-tui)

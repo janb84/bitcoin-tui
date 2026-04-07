@@ -1,3 +1,5 @@
+#ifndef _WIN32
+
 #include <catch2/catch_test_macros.hpp>
 
 #include "bitcoind.hpp"
@@ -87,8 +89,10 @@ TEST_CASE("find_bitcoind: non-executable file is not returned") {
     TempDir   dir;
     fs::path  p = dir.path / "bitcoind";
     std::ofstream(p).close();
-    chmod(p.c_str(), 0644);  // readable but not executable
+    chmod(p.string().c_str(), 0644);  // readable but not executable
     PathGuard g(dir.path.string());
 
     CHECK(find_bitcoind().empty());
 }
+
+#endif // _WIN32
