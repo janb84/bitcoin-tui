@@ -597,11 +597,18 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
     rpc_thread.join();
 }
 
+static std::set<std::string> make_allowlist(std::span<const std::string> extra) {
+    auto allowlist = DEFAULT_RPC_ALLOWLIST;
+    allowlist.insert(extra.begin(), extra.end());
+    return allowlist;
+}
+
 LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
                std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
-               std::string debug_log_path, std::string lua_script)
+               std::string debug_log_path, std::string lua_script,
+               std::span<const std::string> extra_rpcs)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
-      debug_log_path_(std::move(debug_log_path)), rpc_allowlist_(DEFAULT_RPC_ALLOWLIST) {
+      debug_log_path_(std::move(debug_log_path)), rpc_allowlist_(make_allowlist(extra_rpcs)) {
     auto script = std::make_unique<LuaScript>();
     lua_tab_state_.update([&](auto& st) { st.tab_name = lua_script; });
     register_lua_api(*script);

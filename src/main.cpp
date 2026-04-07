@@ -98,6 +98,7 @@ class Application {
     bool                     can_launch    = false;
     std::string              debug_log_file;
     std::vector<std::string> lua_tabs;
+    std::vector<std::string> extra_rpcs;
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -165,6 +166,8 @@ int Application::configure(int argc, char* argv[]) {
             debug_log_file = next();
         } else if (arg == "--tab") {
             lua_tabs.push_back(next());
+        } else if (arg == "--allow-rpc") {
+            extra_rpcs.push_back(next());
         } else if (arg == "--bitcoind") {
             bitcoind_cmd = next();
         } else if (arg == "--version" || arg == "-v") {
@@ -198,6 +201,7 @@ int Application::configure(int argc, char* argv[]) {
                 "\n"
                 "Lua tabs:\n"
                 "      --tab <path.lua>   Load a Lua tab script (repeatable)\n"
+                "      --allow-rpc <name> Add RPC method to Lua allowlist (repeatable)\n"
                 "\n"
                 "Display:\n"
                 "  -r, --refresh <secs>   Refresh interval     (default: 5)\n"
@@ -265,8 +269,8 @@ int Application::run() const {
                                                          : debug_log_file;
     std::vector<std::unique_ptr<LuaTab>> lua_tab_ptrs;
     for (const auto& script : lua_tabs) {
-        lua_tab_ptrs.push_back(std::make_unique<LuaTab>(cfg, auth, screen, running, state,
-                                                        refresh_secs, debug_log, script));
+        lua_tab_ptrs.push_back(std::make_unique<LuaTab>(
+            cfg, auth, screen, running, state, refresh_secs, debug_log, script, extra_rpcs));
     }
 
     std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};

@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <thread>
 
@@ -39,7 +40,8 @@ class LuaTab : public Tab {
   public:
     LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
            std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
-           std::string debug_log_path, std::string lua_script);
+           std::string debug_log_path, std::string lua_script,
+           std::span<const std::string> extra_rpcs = {});
     ~LuaTab() override = default;
 
     std::string    name() const override;
