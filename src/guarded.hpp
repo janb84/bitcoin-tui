@@ -94,15 +94,16 @@ template <typename T> class WaitableGuarded : public Guarded<T> {
     template <typename Clock, typename Duration>
     void wait(std::chrono::time_point<Clock, Duration> deadline)
         EXCLUSIVE_LOCKS_REQUIRED(!this->mtx_) {
-        std::unique_lock lock(this->mtx_);
+        StdUniqueLock lock(this->mtx_);
         cv_.wait_until(lock, deadline);
     }
 
     template <typename Clock, typename Duration, typename Pred>
     void wait_until(std::chrono::time_point<Clock, Duration> deadline, Pred&& pred)
         EXCLUSIVE_LOCKS_REQUIRED(!this->mtx_) {
-        std::unique_lock lock(this->mtx_);
-        cv_.wait_until(lock, deadline, [&] { return pred(this->value_); });
+        StdUniqueLock lock(this->mtx_);
+        cv_.wait_until(lock, deadline,
+                       [&]() NO_THREAD_SAFETY_ANALYSIS { return pred(this->value_); });
     }
 
     template <typename Fn>
@@ -111,8 +112,8 @@ template <typename T> class WaitableGuarded : public Guarded<T> {
 
     template <typename Pred, typename Fn>
     auto access_when(Pred&& pred, Fn&& fn) EXCLUSIVE_LOCKS_REQUIRED(!this->mtx_) {
-        std::unique_lock lock(this->mtx_);
-        cv_.wait(lock, [&] { return pred(this->value_); });
+        StdUniqueLock lock(this->mtx_);
+        cv_.wait(lock, [&]() NO_THREAD_SAFETY_ANALYSIS { return pred(this->value_); });
         return fn(this->value_);
     }
 

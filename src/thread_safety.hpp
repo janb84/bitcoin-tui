@@ -77,3 +77,12 @@ class LOCKABLE StdMutex : public std::mutex {
 // Locks cs after asserting it is not already held.
 #define STDLOCK(cs)                                                                                \
     StdMutex::Guard UNIQUE_NAME(criticalblock) { StdMutex::CheckNotHeld(cs) }
+
+// StdUniqueLock: std::unique_lock<StdMutex> annotated for Clang Thread Safety Analysis.
+// Required for condition variable waits where the lock must be released temporarily.
+class SCOPED_LOCKABLE StdUniqueLock : public std::unique_lock<StdMutex> {
+  public:
+    explicit StdUniqueLock(StdMutex& cs) EXCLUSIVE_LOCK_FUNCTION(cs)
+        : std::unique_lock<StdMutex>(cs) {}
+    ~StdUniqueLock() UNLOCK_FUNCTION() = default;
+};
