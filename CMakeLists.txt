@@ -94,3 +94,11 @@ add_executable(test_guarded tests/test_guarded.cpp)
 target_include_directories(test_guarded PRIVATE src/)
 target_link_libraries(test_guarded PRIVATE Catch2::Catch2WithMain Threads::Threads)
 add_test(NAME test_guarded COMMAND test_guarded)
+
+add_executable(test_cli tests/test_cli.cpp)
+target_link_libraries(test_cli PRIVATE Catch2::Catch2WithMain)
+add_dependencies(test_cli bitcoin-tui)
+add_test(NAME test_cli COMMAND test_cli)
+set_tests_properties(test_cli PROPERTIES
+    ENVIRONMENT "BITCOIN_TUI_BINARY=$<TARGET_FILE:bitcoin-tui>"
+)

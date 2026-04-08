@@ -118,7 +118,9 @@ class Application {
     static int run(int argc, char* argv[]) {
         Application app;
         int         rc = app.configure(argc, argv);
-        if (rc != 0)
+        if (rc < 0)
+            return 0;
+        if (rc > 0)
             return rc;
         return app.run();
     }
@@ -162,7 +164,7 @@ int Application::configure(int argc, char* argv[]) {
             bitcoind_cmd = next();
         } else if (arg == "--version" || arg == "-v") {
             std::puts("bitcoin-tui " BITCOIN_TUI_VERSION);
-            return 0;
+            return -1;
         } else if (arg == "--help") {
             // clang-format off
             std::puts(
@@ -200,7 +202,7 @@ int Application::configure(int argc, char* argv[]) {
                 "  q                      Quit\n"
             );
             // clang-format on
-            return 0;
+            return -1;
         }
     }
 
