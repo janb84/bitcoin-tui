@@ -76,6 +76,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(sol2)
 
+# CLI11
+FetchContent_Declare(
+  cli11
+  GIT_REPOSITORY https://github.com/CLIUtils/CLI11
+  GIT_TAG        v2.6.2
+)
+set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(cli11)
+
 add_executable(bitcoin-tui
   src/main.cpp
   src/render.cpp
@@ -106,6 +117,7 @@ target_link_libraries(bitcoin-tui PRIVATE
   re2::re2
   lua_static
   sol2
+  CLI11::CLI11
 )
 
 if(WIN32)

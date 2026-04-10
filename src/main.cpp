@@ -7,6 +7,8 @@
 #include <thread>
 #include <vector>
 
+#include <CLI/CLI.hpp>
+
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -30,6 +32,26 @@
 // ============================================================================
 // Cookie authentication helpers
 // ============================================================================
+
+static std::string default_config_dir() {
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata)
+        return std::string(appdata) + "\\bitcoin-tui";
+#elif defined(__APPLE__)
+    const char* home = std::getenv("HOME");
+    if (home)
+        return std::string(home) + "/Library/Application Support/bitcoin-tui";
+#else
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    if (xdg)
+        return std::string(xdg) + "/bitcoin-tui";
+    const char* home = std::getenv("HOME");
+    if (home)
+        return std::string(home) + "/.config/bitcoin-tui";
+#endif
+    return "";
+}
 
 static std::string default_datadir() {
     const char* home = std::getenv("HOME");
@@ -131,94 +153,104 @@ class Application {
 };
 
 int Application::configure(int argc, char* argv[]) {
-    for (int i = 1; i < argc; ++i) {
-        std::string arg  = argv[i];
-        auto        next = [&]() -> std::string {
-            if (i + 1 < argc)
-                return argv[++i];
-            return {};
-        };
-        if (arg == "--host" || arg == "-h") {
-            cfg.host      = next();
-            explicit_host = true;
-        } else if (arg == "--port" || arg == "-p") {
-            cfg.port = std::stoi(next());
-        } else if (arg == "--user" || arg == "-u") {
-            auth.update([&](auto& a) { a.user = next(); });
-            explicit_creds = true;
-        } else if (arg == "--password" || arg == "-P") {
-            auth.update([&](auto& a) { a.password = next(); });
-            explicit_creds = true;
-        } else if (arg == "--cookie" || arg == "-c") {
-            cookie_file = next();
-        } else if (arg == "--datadir" || arg == "-d") {
-            datadir = next();
-        } else if (arg == "--refresh" || arg == "-r") {
-            refresh_secs = std::stoi(next());
-        } else if (arg == "--testnet") {
-            cfg.port = 18332;
-            network  = "testnet3";
-        } else if (arg == "--regtest") {
-            cfg.port = 18443;
-            network  = "regtest";
-        } else if (arg == "--signet") {
-            cfg.port = 38332;
-            network  = "signet";
-        } else if (arg == "--debuglog") {
-            debug_log_file = next();
-        } else if (arg == "--tab") {
-            lua_tabs.push_back(next());
-        } else if (arg == "--allow-rpc") {
-            extra_rpcs.push_back(next());
-        } else if (arg == "--bitcoind") {
-            bitcoind_cmd = next();
-        } else if (arg == "--version" || arg == "-v") {
-            std::puts("bitcoin-tui " BITCOIN_TUI_VERSION);
-            return -1;
-        } else if (arg == "--help") {
-            // clang-format off
-            std::puts(
-                "bitcoin-tui — Terminal UI for Bitcoin Core\n"
-                "\n"
-                "Usage: bitcoin-tui [options]\n"
-                "\n"
-                "Connection:\n"
-                "  -h, --host <host>      RPC host             (default: 127.0.0.1)\n"
-                "  -p, --port <port>      RPC port             (default: 8332)\n"
-                "\n"
-                "Authentication (cookie auth is used by default):\n"
-                "  -c, --cookie <path>    Path to .cookie file (auto-detected if omitted)\n"
-                "  -d, --datadir <path>   Bitcoin data directory for cookie lookup\n"
-                "  -u, --user <user>      RPC username         (disables cookie auth)\n"
-                "  -P, --password <pass>  RPC password         (disables cookie auth)\n"
-                "\n"
-                "Node:\n"
-                "      --bitcoind <path>  Path to bitcoind binary   (default: bitcoind from PATH)\n"
-                "      --debuglog <path>  Path to debug.log         (default: <datadir>/debug.log)\n"
-                "\n"
-                "Network:\n"
-                "      --testnet          Use testnet3 port (18332) and cookie subdir\n"
-                "      --regtest          Use regtest  port (18443) and cookie subdir\n"
-                "      --signet           Use signet   port (38332) and cookie subdir\n"
-                "\n"
-                "Lua tabs:\n"
-                "      --tab <path.lua>   Load a Lua tab script (repeatable)\n"
-                "      --allow-rpc <name> Add RPC method to Lua allowlist (repeatable)\n"
-                "\n"
-                "Display:\n"
-                "  -r, --refresh <secs>   Refresh interval     (default: 5)\n"
-                "  -v, --version          Print version and exit\n"
-                "\n"
-                "Keyboard:\n"
-                "  Tab / Left / Right     Switch tabs\n"
-                "  /                      Activate txid search\n"
-                "  Enter                  Submit search\n"
-                "  Escape                 Cancel input / dismiss result / quit\n"
-                "  q                      Quit\n"
-            );
-            // clang-format on
-            return -1;
-        }
+    CLI::App app{"bitcoin-tui — Terminal UI for Bitcoin Core"};
+
+    // CLI11 uses -h for help by default; we need it for --host
+    app.set_help_flag("--help", "Print this help message and exit");
+    app.set_version_flag("-v,--version", BITCOIN_TUI_VERSION);
+    app.get_formatter()->column_width(40);
+    app.get_formatter()->long_option_alignment_ratio(0.15);
+    app.get_formatter()->enable_footer_formatting(false);
+
+    // Connection
+    auto* host_opt = app.add_option("-h,--host", cfg.host, "RPC host")
+                         ->default_val("127.0.0.1")
+                         ->group("Connection");
+    app.add_option("-p,--port", cfg.port, "RPC port")->default_val(8332)->group("Connection");
+
+    // Authentication (cookie auth is used by default)
+    std::string user_str, pass_str;
+    auto* user_opt = app.add_option("-u,--user", user_str, "RPC username (disables cookie auth)")
+                         ->group("Authentication");
+    auto* pass_opt =
+        app.add_option("-P,--password", pass_str, "RPC password (disables cookie auth)")
+            ->group("Authentication");
+    app.add_option("-c,--cookie", cookie_file, "Path to .cookie file (auto-detected if omitted)")
+        ->group("Authentication");
+    app.add_option("-d,--datadir", datadir, "Bitcoin data directory for cookie lookup")
+        ->group("Authentication");
+
+    // Node
+    app.add_option("--bitcoind", bitcoind_cmd, "Path to bitcoind binary")->group("Node");
+    app.add_option("--debuglog", debug_log_file, "Path to debug.log")->group("Node");
+
+    // Network
+    bool use_testnet{false}, use_regtest{false}, use_signet{false};
+    app.add_flag("--testnet", use_testnet, "Use testnet3 port (18332) and cookie subdir")
+        ->group("Network");
+    app.add_flag("--regtest", use_regtest, "Use regtest port (18443) and cookie subdir")
+        ->group("Network");
+    app.add_flag("--signet", use_signet, "Use signet port (38332) and cookie subdir")
+        ->group("Network");
+
+    // Lua tabs
+    app.add_option("--tab", lua_tabs, "Load a Lua tab script (repeatable)")->group("Lua");
+    app.add_option("--allow-rpc", extra_rpcs, "Add RPC method to Lua allowlist (repeatable)")
+        ->group("Lua");
+
+    // Display
+    app.add_option("-r,--refresh", refresh_secs, "Refresh interval in seconds")
+        ->default_val(5)
+        ->group("Display");
+
+    // clang-format off
+    app.footer(
+        "\nKeyboard:\n"
+        "      Tab / Left / Right                Switch tabs\n"
+        "      /                                 Activate txid search\n"
+        "      Enter                             Submit search\n"
+        "      Escape                            Cancel input / dismiss result / quit\n"
+        "      q                                 Quit"
+    );
+    // clang-format on
+
+    // Config file
+    std::string cfg_dir = default_config_dir();
+    app.set_config("--config", cfg_dir.empty() ? "" : cfg_dir + "/config.toml",
+                   "Read configuration from file")
+        ->transform(CLI::FileOnDefaultPath(cfg_dir));
+
+    try {
+        app.parse(argc, argv);
+    } catch (const CLI::ParseError& e) {
+        int rc = app.exit(e);
+        // --help and --version exit with 0; treat as clean early exit
+        return (rc == 0) ? -1 : rc;
+    }
+
+    // Apply network selection
+    if (use_testnet + use_regtest + use_signet > 1) {
+        std::fprintf(stderr, "bitcoin-tui: only one of --testnet, --regtest, --signet allowed\n");
+        return 1;
+    } else if (use_testnet) {
+        cfg.port = 18332;
+        network  = "testnet3";
+    } else if (use_regtest) {
+        cfg.port = 18443;
+        network  = "regtest";
+    } else if (use_signet) {
+        cfg.port = 38332;
+        network  = "signet";
+    }
+
+    // Apply credentials
+    explicit_host  = host_opt->count() > 0;
+    explicit_creds = user_opt->count() > 0 || pass_opt->count() > 0;
+    if (explicit_creds) {
+        auth.update([&](auto& a) {
+            a.user     = user_str;
+            a.password = pass_str;
+        });
     }
 
     if (datadir.empty())
