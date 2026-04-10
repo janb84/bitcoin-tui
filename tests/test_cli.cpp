@@ -2,7 +2,9 @@
 
 #include <cstdlib>
 #include <string>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 
 // Path to the bitcoin-tui binary, injected via CMake ENVIRONMENT.
 static std::string binary() {
@@ -12,8 +14,12 @@ static std::string binary() {
 }
 
 static int exit_code(const std::string& cmd) {
+#ifdef _WIN32
+    return std::system(cmd.c_str());
+#else
     int status = std::system(cmd.c_str());
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
 }
 
 // Regression: --help and --version used to return 0 from configure() while the
