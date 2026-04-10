@@ -1,20 +1,20 @@
 #include "rpc_client.hpp"
 
 #ifdef _WIN32
-#  include <winsock2.h>
-#  include <ws2tcpip.h>
-   using sock_t  = SOCKET;
-   using io_sz_t = int;
-   static constexpr sock_t kBadSock = INVALID_SOCKET;
-   static void net_close(sock_t s) { closesocket(s); }
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using sock_t                     = SOCKET;
+using io_sz_t                    = int;
+static constexpr sock_t kBadSock = INVALID_SOCKET;
+static void             net_close(sock_t s) { closesocket(s); }
 #else
-#  include <netdb.h>
-#  include <sys/socket.h>
-#  include <unistd.h>
-   using sock_t  = int;
-   using io_sz_t = ssize_t;
-   static constexpr sock_t kBadSock = -1;
-   static void net_close(sock_t s) { close(s); }
+#include <netdb.h>
+#include <sys/socket.h>
+#include <unistd.h>
+using sock_t                     = int;
+using io_sz_t                    = ssize_t;
+static constexpr sock_t kBadSock = -1;
+static void             net_close(sock_t s) { close(s); }
 #endif
 
 #include <cerrno>
@@ -92,8 +92,10 @@ std::string RpcClient::http_post(const std::string& body) {
     // Set send/recv timeout
 #ifdef _WIN32
     DWORD timeout_ms = static_cast<DWORD>(config_.timeout_seconds) * 1000;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+               sizeof(timeout_ms));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+               sizeof(timeout_ms));
 #else
     struct timeval tv = {};
     tv.tv_sec         = config_.timeout_seconds;

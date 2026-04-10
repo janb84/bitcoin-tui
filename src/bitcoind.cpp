@@ -4,10 +4,10 @@
 #include <sys/stat.h>
 
 #ifdef _WIN32
-#  include <windows.h>
+#include <windows.h>
 #else
-#  include <sys/wait.h>
-#  include <unistd.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 std::string find_bitcoind() {
@@ -18,10 +18,10 @@ std::string find_bitcoind() {
     std::string            path(path_env);
     std::string::size_type start = 0;
 #ifdef _WIN32
-    const char sep = ';';
+    const char        sep = ';';
     const std::string exe = "\\bitcoind.exe";
 #else
-    const char sep = ':';
+    const char        sep = ':';
     const std::string exe = "/bitcoind";
 #endif
     while (start < path.size()) {
@@ -46,7 +46,10 @@ int launch_bitcoind(const std::string& cmd, const std::string& datadir, const st
                     const OutputCallback& on_output) {
 #ifdef _WIN32
     // Not implemented on Windows.
-    (void)cmd; (void)datadir; (void)network; (void)on_output;
+    (void)cmd;
+    (void)datadir;
+    (void)network;
+    (void)on_output;
     return -1;
 #else
     // Build argv.
