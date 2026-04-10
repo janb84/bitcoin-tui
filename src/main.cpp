@@ -469,6 +469,26 @@ int Application::run() const {
             }
         }
 
+        // Mouse click on tab bar (y=4: title border=3 rows, tab bar top border=1 row)
+        // Note: Event::mouse() is not const-qualified in FTXUI v6
+        if (event.is_mouse()) {
+            auto& me = const_cast<Event&>(event);
+            if (me.mouse().button == Mouse::Left && me.mouse().motion == Mouse::Pressed &&
+                me.mouse().y == 4) {
+                int mx = me.mouse().x;
+                int x  = 1; // after left border character
+                for (int i = 0; i < static_cast<int>(tab_labels.size()); ++i) {
+                    int w = static_cast<int>(tab_labels[i].size()) + 2; // " label "
+                    if (mx >= x && mx < x + w) {
+                        tab_index = i;
+                        screen.PostEvent(Event::Custom);
+                        return true;
+                    }
+                    x += w + 1; // +1 for │ separator
+                }
+            }
+        }
+
         // Global search bar
         if (global_search_active) {
             if (event == Event::Escape) {

@@ -2,6 +2,15 @@
 
 All notable changes to bitcoin-tui are documented here.
 
+## [Unreleased]
+
+### Added
+- **Mouse support** — click tabs to switch between them
+- **Lua scripting** — load custom tabs from Lua scripts with `--tab <path.lua>`; scripts can call a configurable set of RPC methods (allowlisted with `--allow-rpc`); optional debug log via `--debuglog`; bundled example: slow-block monitor tab
+
+### Changed
+- FTXUI updated from v5.0.0 to v6.1.9
+
 ## [0.8.3] - 2026-04-11
 
 ### Fixed
