@@ -2,6 +2,11 @@
 
 All notable changes to bitcoin-tui are documented here.
 
+## [0.8.3] - 2026-04-11
+
+### Fixed
+- Guix release binaries are now stripped of debug symbols, reducing binary size.
+
 ## [0.8.2] - 2026-04-10
 
 ### Added
