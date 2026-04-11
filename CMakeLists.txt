@@ -119,6 +119,7 @@ target_compile_definitions(bitcoin-tui PRIVATE
 
 if(MSVC)
   target_compile_definitions(bitcoin-tui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_sources(bitcoin-tui PRIVATE contrib/windeploy/bitcoin-tui.rc)
 endif()
 
 target_link_libraries(bitcoin-tui PRIVATE
