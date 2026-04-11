@@ -9,8 +9,11 @@
 #include <vector>
 
 #ifdef _WIN32
+// clang-format off
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
+// clang-format on
 #endif
 
 #include <CLI/CLI.hpp>
@@ -67,6 +70,20 @@ static std::string config_file_if_exists(const std::string& dir) {
 }
 
 static std::string default_datadir() {
+#ifdef _WIN32
+    // Match Bitcoin Core's GetDefaultDataDir(): check legacy APPDATA location first,
+    // fall back to LOCAL_APPDATA for fresh installs.
+    char legacy[MAX_PATH], local[MAX_PATH];
+    if (SHGetSpecialFolderPathA(NULL, legacy, CSIDL_APPDATA, false)) {
+        std::string legacy_path = std::string(legacy) + "\\Bitcoin";
+        if (GetFileAttributesA(legacy_path.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return legacy_path;
+    }
+    if (SHGetSpecialFolderPathA(NULL, local, CSIDL_LOCAL_APPDATA, false))
+        return std::string(local) + "\\Bitcoin";
+    throw std::runtime_error(
+        "Cannot determine data directory; use --datadir or --cookie to locate .cookie");
+#else
     const char* home = std::getenv("HOME");
     if (!home)
         throw std::runtime_error("HOME not set; use --datadir or --cookie to locate .cookie");
@@ -74,6 +91,7 @@ static std::string default_datadir() {
     return std::string(home) + "/Library/Application Support/Bitcoin";
 #else
     return std::string(home) + "/.bitcoin";
+#endif
 #endif
 }
 
