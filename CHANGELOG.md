@@ -2,6 +2,20 @@
 
 All notable changes to bitcoin-tui are documented here.
 
+## [0.8.3] - 2026-04-11
+
+### Fixed
+- Guix release binaries are now stripped of debug symbols, reducing binary size.
+
+## [0.8.2] - 2026-04-10
+
+### Added
+- Reproducible builds via GNU Guix (`contrib/guix/guix-build`) for Linux (x86\_64, arm), Windows (x86\_64), and macOS (x86\_64, aarch64)
+
+### Fixed
+- Show `--help` / `--version` output and exit without starting the TUI
+- Cross-platform build support for Windows and macOS (Winsock, POSIX `#ifdef` guards)
+
 ## [0.8.1] - 2026-03-24
 
 ### Added
