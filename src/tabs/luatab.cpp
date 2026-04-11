@@ -218,7 +218,10 @@ CellData LuaScript::to_cell_data(ColumnType type, int decimals, const sol::objec
         if (v.is<double>())
             return static_cast<int64_t>(v.as<double>());
         return int64_t(0);
-    case ColumnType::Timestamp:
+    case ColumnType::DateTime:
+    case ColumnType::Date:
+    case ColumnType::Time:
+    case ColumnType::TimeMS:
         if (v.is<double>())
             return v.as<double>();
         return 0.0;

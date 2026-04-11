@@ -12,7 +12,7 @@
 
 #include "guarded.hpp"
 
-enum class ColumnType { String, Number, Timestamp };
+enum class ColumnType { String, Number, DateTime, Date, Time, TimeMS };
 
 std::optional<ColumnType> parse_column_type(const std::string& s);
 
