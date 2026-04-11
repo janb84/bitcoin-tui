@@ -20,6 +20,22 @@ static void             net_close(sock_t s) { close(s); }
 #include <cerrno>
 #include <cstring>
 
+static std::string safe_strerror(int errnum) {
+    char buf[128];
+#ifdef _WIN32
+    strerror_s(buf, sizeof(buf), errnum);
+    return buf;
+#elif defined(__GLIBC__) && (_GNU_SOURCE || !(_POSIX_C_SOURCE >= 200112L))
+    // GNU strerror_r returns char*
+    return strerror_r(errnum, buf, sizeof(buf));
+#else
+    // POSIX strerror_r returns int
+    if (strerror_r(errnum, buf, sizeof(buf)) == 0)
+        return buf;
+    return "Unknown error " + std::to_string(errnum);
+#endif
+}
+
 RpcClient::RpcClient(RpcConfig config, RpcAuth auth)
     : config_(std::move(config)), auth_(std::move(auth)) {}
 
@@ -86,7 +102,7 @@ std::string RpcClient::http_post(const std::string& body) {
     sock_t sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (sock == kBadSock) {
         freeaddrinfo(res);
-        throw RpcError("socket(): " + std::string(strerror(errno)));
+        throw RpcError("socket(): " + safe_strerror(errno));
     }
 
     // Set send/recv timeout
@@ -107,7 +123,7 @@ std::string RpcClient::http_post(const std::string& body) {
         freeaddrinfo(res);
         net_close(sock);
         throw RpcError("connect to " + config_.host + ":" + port_str +
-                       " failed: " + strerror(errno));
+                       " failed: " + safe_strerror(errno));
     }
     freeaddrinfo(res);
 
@@ -136,7 +152,7 @@ std::string RpcClient::http_post(const std::string& body) {
                          static_cast<int>(request.size() - sent_total), 0);
         if (n <= 0) {
             net_close(sock);
-            throw RpcError("send() failed: " + std::string(strerror(errno)));
+            throw RpcError("send() failed: " + safe_strerror(errno));
         }
         sent_total += static_cast<size_t>(n);
     }
@@ -164,7 +180,7 @@ std::string RpcClient::http_post(const std::string& body) {
             throw RpcError("RPC timeout — Bitcoin Core did not respond within " +
                            std::to_string(config_.timeout_seconds) + "s");
         else if (n < 0)
-            throw RpcError("recv() failed: " + std::string(strerror(recv_err)));
+            throw RpcError("recv() failed: " + safe_strerror(recv_err));
         else
             throw RpcError(
                 "Empty response from Bitcoin Core — connection closed before any data was sent");
