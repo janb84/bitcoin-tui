@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <ctime>
 #include <iomanip>
 #include <sstream>
 
@@ -32,11 +31,10 @@ static Element render_io_overlay_panel(const std::vector<T>& items, int selected
         rows.push_back(row_builder(i, items[i], i == selected));
 
     if (n > window.win) {
-        rows.push_back(
-            hbox({filler(), text(std::to_string(window.top + 1) + "\u2013" +
-                                 std::to_string(window.top + window.win) + " / " +
-                                 std::to_string(n)) |
-                                color(Color::GrayDark)}));
+        rows.push_back(hbox(
+            {filler(), text(std::to_string(window.top + 1) + "\u2013" +
+                            std::to_string(window.top + window.win) + " / " + std::to_string(n)) |
+                           color(Color::GrayDark)}));
     }
 
     auto panel = build_titled_panel(" " + title_prefix + " (" + std::to_string(n) + ") ",
@@ -187,10 +185,8 @@ MempoolTab::OverlayInfo MempoolTab::overlay_info() const {
 }
 
 Element MempoolTab::key_hints(const AppState& snap) const {
-    auto oi = overlay_info();
-    auto yellow_hint = [](const char* hint) {
-        return hbox({text(hint) | color(Color::Yellow)});
-    };
+    auto oi          = overlay_info();
+    auto yellow_hint = [](const char* hint) { return hbox({text(hint) | color(Color::Yellow)}); };
 
     struct HintCase {
         bool        enabled;
@@ -215,7 +211,8 @@ Element MempoolTab::key_hints(const AppState& snap) const {
     }
 
     if (mempool_sel >= 0)
-        return yellow_hint("  [\u23ce] view block  [\u2190/\u2192] navigate  [Esc] deselect  [q] quit ");
+        return yellow_hint(
+            "  [\u23ce] view block  [\u2190/\u2192] navigate  [Esc] deselect  [q] quit ");
 
     return hbox({refresh_indicator(snap),
                  text("  [\u2193] select  [Tab/\u2190/\u2192] switch  [/] search  [q] quit ") |
@@ -239,11 +236,7 @@ Element MempoolTab::render(const AppState& snap) {
         result_rows.push_back(text("  Searching\u2026") | color(Color::Yellow));
         break;
     case TxResultKind::Block: {
-        auto               blk_time_t = static_cast<std::time_t>(ss.blk_time);
-        auto*              blk_tm_ptr = std::localtime(&blk_time_t);
-        std::tm            blk_tm     = blk_tm_ptr ? *blk_tm_ptr : std::tm{};
-        std::ostringstream blk_time_ss;
-        blk_time_ss << std::put_time(&blk_tm, "%Y-%m-%d %H:%M:%S");
+        std::string blk_time_str = fmt_localtime(to_time_point(ss.blk_time), TimeFmt::YMDHMS);
 
         int64_t blk_age =
             ss.blk_time > 0
@@ -258,7 +251,7 @@ Element MempoolTab::render(const AppState& snap) {
         result_rows.push_back(text("  \u26cf BLOCK") | color(Color::Cyan) | bold);
         result_rows.push_back(label_value("  Height       : ", fmt_height(ss.blk_height)));
         result_rows.push_back(label_value("  Hash         : ", hash_short));
-        result_rows.push_back(label_value("  Time         : ", blk_time_ss.str()));
+        result_rows.push_back(label_value("  Time         : ", blk_time_str));
         result_rows.push_back(
             label_value("  Age          : ", ss.blk_time > 0 ? fmt_age(blk_age) : "\u2014"));
         result_rows.push_back(label_value("  Transactions : ", fmt_int(ss.blk_ntx)));
@@ -303,7 +296,7 @@ Element MempoolTab::render(const AppState& snap) {
                 block_row = std::move(block_row) | inverted;
             result_rows.push_back(std::move(block_row));
         }
-                std::string bh_short = ellipsize_middle(ss.blockhash, 48, 4, 44);
+        std::string bh_short = ellipsize_middle(ss.blockhash, 48, 4, 44);
         result_rows.push_back(label_value("  Block hash   : ", bh_short));
         result_rows.push_back(
             label_value("  Block age    : ", ss.blocktime > 0 ? fmt_age(age) : "\u2014"));
@@ -337,30 +330,29 @@ Element MempoolTab::render(const AppState& snap) {
         break;
     }
 
-    std::string overlay_title = result_kind == TxResultKind::Block ? " Block Search "
-                                                                    : " Transaction Search ";
-    auto overlay_panel =
-        build_titled_panel(std::move(overlay_title), txid_abbrev, std::move(result_rows),
-                           kOverlayPanelWidth);
+    std::string overlay_title =
+        result_kind == TxResultKind::Block ? " Block Search " : " Transaction Search ";
+    auto overlay_panel = build_titled_panel(std::move(overlay_title), txid_abbrev,
+                                            std::move(result_rows), kOverlayPanelWidth);
 
     if (ss.outputs_overlay_open && !ss.vout_list.empty()) {
         return render_io_overlay_panel(
             ss.vout_list, ss.output_overlay_sel, "Outputs", txid_abbrev,
             [](int i, const auto& v, bool selected) {
-            std::ostringstream val_ss;
-            val_ss << std::fixed << std::setprecision(8) << v.value;
-            std::string label = val_ss.str() + " BTC";
-            if (!v.address.empty()) {
-                std::string addr = ellipsize_middle(v.address, 60, 28, 28);
-                label += "  " + addr;
-            } else if (!v.type.empty()) {
-                label += "  [" + v.type + "]";
-            }
-            auto row      = hbox(
-                {text("  [" + std::to_string(i) + "] ") | color(Color::GrayDark), text(label)});
-            if (selected)
-                row = std::move(row) | inverted;
-            return row;
+                std::ostringstream val_ss;
+                val_ss << std::fixed << std::setprecision(8) << v.value;
+                std::string label = val_ss.str() + " BTC";
+                if (!v.address.empty()) {
+                    std::string addr = ellipsize_middle(v.address, 60, 28, 28);
+                    label += "  " + addr;
+                } else if (!v.type.empty()) {
+                    label += "  [" + v.type + "]";
+                }
+                auto row = hbox(
+                    {text("  [" + std::to_string(i) + "] ") | color(Color::GrayDark), text(label)});
+                if (selected)
+                    row = std::move(row) | inverted;
+                return row;
             });
     }
 
@@ -368,13 +360,14 @@ Element MempoolTab::render(const AppState& snap) {
         return render_io_overlay_panel(
             ss.vin_list, ss.input_overlay_sel, "Inputs", txid_abbrev,
             [](int i, const auto& v, bool selected) {
-            std::string label = v.is_coinbase ? "coinbase" : v.txid + ":" + std::to_string(v.vout);
-            auto        row      = hbox(
-                {text("  [" + std::to_string(i) + "] ") | color(Color::GrayDark),
-                             text(label) | (v.is_coinbase ? color(Color::GrayDark) : color(Color::Default))});
-            if (selected)
-                row = std::move(row) | inverted;
-            return row;
+                std::string label =
+                    v.is_coinbase ? "coinbase" : v.txid + ":" + std::to_string(v.vout);
+                auto row = hbox({text("  [" + std::to_string(i) + "] ") | color(Color::GrayDark),
+                                 text(label) | (v.is_coinbase ? color(Color::GrayDark)
+                                                              : color(Color::Default))});
+                if (selected)
+                    row = std::move(row) | inverted;
+                return row;
             });
     }
 

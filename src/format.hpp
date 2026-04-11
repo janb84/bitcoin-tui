@@ -88,15 +88,47 @@ inline std::string fmt_satsvb(double btc_per_kvb) {
     return ss.str();
 }
 
+template <typename T> std::chrono::system_clock::time_point to_time_point(T epoch_secs) {
+    return std::chrono::system_clock::time_point{
+        std::chrono::duration_cast<std::chrono::system_clock::duration>(
+            std::chrono::duration<T>{epoch_secs})};
+}
+
+enum class TimeFmt { YMDHMS, YMD, HMS, HMSM };
+
+inline std::string fmt_localtime(std::chrono::system_clock::time_point tp, TimeFmt fmt) {
+    auto    t = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[32];
+    switch (fmt) {
+    case TimeFmt::YMDHMS:
+        snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", tm.tm_year + 1900,
+                 tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+        break;
+    case TimeFmt::YMD:
+        snprintf(buf, sizeof(buf), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+        break;
+    case TimeFmt::HMS:
+        snprintf(buf, sizeof(buf), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+        break;
+    case TimeFmt::HMSM: {
+        auto ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()) % 1000;
+        snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d", tm.tm_hour, tm.tm_min, tm.tm_sec,
+                 static_cast<int>(ms.count()));
+        break;
+    }
+    }
+    return buf;
+}
+
 inline std::string now_string() {
-    auto  t      = std::time(nullptr);
-    auto* tm_ptr = std::localtime(&t);
-    if (!tm_ptr)
-        return "??:??:??";
-    auto               tm = *tm_ptr;
-    std::ostringstream ss;
-    ss << std::put_time(&tm, "%H:%M:%S");
-    return ss.str();
+    return fmt_localtime(std::chrono::system_clock::now(), TimeFmt::HMS);
 }
 
 inline std::string fmt_btc(double btc, int precision = 8) {

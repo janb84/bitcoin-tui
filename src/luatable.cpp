@@ -1,7 +1,8 @@
 #include "luatable.hpp"
 
+#include "format.hpp"
+
 #include <cmath>
-#include <ctime>
 #include <map>
 
 std::optional<ColumnType> parse_column_type(const std::string& s) {
@@ -23,14 +24,8 @@ std::string format_cell(ColumnType type, const CellData& data, int decimals) {
     char buf[64];
     switch (type) {
     case ColumnType::Timestamp: {
-        double  value = std::holds_alternative<double>(data) ? std::get<double>(data) : 0.0;
-        auto    sec   = static_cast<time_t>(value);
-        double  frac  = value - sec;
-        std::tm tm{};
-        localtime_r(&sec, &tm);
-        int ms = static_cast<int>(frac * 1000);
-        snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d", tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
-        return buf;
+        double value = std::holds_alternative<double>(data) ? std::get<double>(data) : 0.0;
+        return fmt_localtime(to_time_point(value), TimeFmt::HMSM);
     }
     case ColumnType::Number: {
         if (decimals >= 0) {
