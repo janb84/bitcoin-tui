@@ -162,7 +162,7 @@ mkdir -p "$OUTDIR"
 ###########################
 
 # CFLAGS
-HOST_CFLAGS="-O2 -g"
+HOST_CFLAGS="-O2"
 HOST_CFLAGS+=$(find /gnu/store -maxdepth 1 -mindepth 1 -type d -exec echo -n " -ffile-prefix-map={}=/usr" \;)
 HOST_CFLAGS+=" -fdebug-prefix-map=${DISTSRC}/src=."
 case "$HOST" in
@@ -263,7 +263,7 @@ mkdir -p "$DISTSRC"
             cmake --install build --strip --prefix "${INSTALLPATH}" --component runtime ${V:+--verbose}
             ;;
         *)
-            cmake --install build --prefix "${INSTALLPATH}" --component runtime ${V:+--verbose}
+            cmake --install build --strip --prefix "${INSTALLPATH}" --component runtime ${V:+--verbose}
             ;;
     esac
 
