@@ -11,6 +11,7 @@
 #include <re2/re2.h>
 #include <sol/sol.hpp>
 
+#include "format.hpp"
 #include "luatable.hpp"
 #include "render.hpp"
 
@@ -217,7 +218,10 @@ CellData LuaScript::to_cell_data(ColumnType type, int decimals, const sol::objec
         if (v.is<double>())
             return static_cast<int64_t>(v.as<double>());
         return int64_t(0);
-    case ColumnType::Timestamp:
+    case ColumnType::DateTime:
+    case ColumnType::Date:
+    case ColumnType::Time:
+    case ColumnType::TimeMS:
         if (v.is<double>())
             return v.as<double>();
         return 0.0;
@@ -462,14 +466,12 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                 std::string y, mo, d, h, mi, s, frac, msg;
                 double      ts = 0.0;
                 if (RE2::FullMatch(line, re_ts_msg, &y, &mo, &d, &h, &mi, &s, &frac, &msg)) {
-                    std::tm tm{};
-                    tm.tm_year = std::stoi(y) - 1900;
-                    tm.tm_mon  = std::stoi(mo) - 1;
-                    tm.tm_mday = std::stoi(d);
-                    tm.tm_hour = std::stoi(h);
-                    tm.tm_min  = std::stoi(mi);
-                    tm.tm_sec  = std::stoi(s);
-                    auto tp    = Clock::from_time_t(timegm(&tm));
+                    auto ymd = std::chrono::year{std::stoi(y)} /
+                               std::chrono::month{static_cast<unsigned>(std::stoi(mo))} /
+                               std::chrono::day{static_cast<unsigned>(std::stoi(d))};
+                    Clock::time_point tp =
+                        std::chrono::sys_days{ymd} + std::chrono::hours{std::stoi(h)} +
+                        std::chrono::minutes{std::stoi(mi)} + std::chrono::seconds{std::stoi(s)};
                     if (!frac.empty()) {
                         while (frac.size() < 6)
                             frac += '0';
@@ -815,11 +817,8 @@ Element LuaTab::render(const AppState& /*snap*/) {
         [](const auto& s) { return std::make_tuple(s.init_error, s.callback_errors, s.warnings); });
     if (init_err || !errors.empty() || !warnings.empty()) {
         auto format_entry = [](Elements& rows, const LuaError& err) {
-            auto t  = Clock::to_time_t(err.when);
-            auto tm = *std::localtime(&t);
-            char ts[9];
-            std::strftime(ts, sizeof(ts), "%H:%M:%S", &tm);
-            std::string prefix = " " + std::string(ts) + " " + err.source_id + ": ";
+            std::string prefix =
+                " " + fmt_localtime(err.when, TimeFmt::HMS) + " " + err.source_id + ": ";
             if (err.message.find('\n') == std::string::npos) {
                 rows.push_back(hbox({text(prefix) | bold, paragraph(err.message)}) |
                                color(Color::White));

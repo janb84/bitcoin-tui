@@ -12,6 +12,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+if(MSVC)
+  add_compile_options(/EHsc)
+endif()
+
 include(FetchContent)
 if(POLICY CMP0135)
   cmake_policy(SET CMP0135 NEW)
@@ -112,6 +116,11 @@ target_include_directories(bitcoin-tui PRIVATE src/)
 target_compile_definitions(bitcoin-tui PRIVATE
   BITCOIN_TUI_VERSION="${PROJECT_VERSION}"
 )
+
+if(MSVC)
+  target_compile_definitions(bitcoin-tui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_sources(bitcoin-tui PRIVATE contrib/windeploy/bitcoin-tui.rc)
+endif()
 
 target_link_libraries(bitcoin-tui PRIVATE
   ftxui::screen

@@ -130,13 +130,17 @@ function Table:set_header_info(info) end
 ---@class ColumnDef
 ---@field name      string   Column identifier, used as key in update() data tables.
 ---@field header    string   Header text. Use \n for multi-line. Empty string hides the column.
----@field type?     string   "string" (default), "number", or "timestamp".
+---@field type?     string   "string" (default), "number", or a time format.
 ---@field decimals? integer  Fixed decimal places for number columns (-1 = auto).
 
 --- Column types:
 ---   "string"    — displayed as-is, left-aligned
 ---   "number"    — right-aligned; use decimals for fixed precision
----   "timestamp" — unix timestamp displayed as HH:MM:SS.mmm
+---   "datetime"  — unix timestamp displayed as YYYY-MM-DD HH:MM:SS
+---   "date"      — unix timestamp displayed as YYYY-MM-DD
+---   "time"      — unix timestamp displayed as HH:MM:SS
+---   "time_ms"   — unix timestamp displayed as HH:MM:SS.mmm
+---   "timestamp" — alias for "time_ms" (deprecated)
 
 ----------------------------------------------------------------------
 -- Cell values

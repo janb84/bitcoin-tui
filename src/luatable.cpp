@@ -1,7 +1,8 @@
 #include "luatable.hpp"
 
+#include "format.hpp"
+
 #include <cmath>
-#include <ctime>
 #include <map>
 
 std::optional<ColumnType> parse_column_type(const std::string& s) {
@@ -9,8 +10,14 @@ std::optional<ColumnType> parse_column_type(const std::string& s) {
         return ColumnType::String;
     if (s == "number")
         return ColumnType::Number;
-    if (s == "timestamp")
-        return ColumnType::Timestamp;
+    if (s == "datetime")
+        return ColumnType::DateTime;
+    if (s == "date")
+        return ColumnType::Date;
+    if (s == "time")
+        return ColumnType::Time;
+    if (s == "time_ms" || s == "timestamp")
+        return ColumnType::TimeMS;
     return std::nullopt;
 }
 
@@ -22,15 +29,15 @@ std::string format_cell(ColumnType type, const CellData& data, int decimals) {
     }
     char buf[64];
     switch (type) {
-    case ColumnType::Timestamp: {
-        double  value = std::holds_alternative<double>(data) ? std::get<double>(data) : 0.0;
-        auto    sec   = static_cast<time_t>(value);
-        double  frac  = value - sec;
-        std::tm tm{};
-        localtime_r(&sec, &tm);
-        int ms = static_cast<int>(frac * 1000);
-        snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d", tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
-        return buf;
+    case ColumnType::DateTime:
+    case ColumnType::Date:
+    case ColumnType::Time:
+    case ColumnType::TimeMS: {
+        double value = std::holds_alternative<double>(data) ? std::get<double>(data) : 0.0;
+        static constexpr TimeFmt fmts[] = {TimeFmt::YMDHMS, TimeFmt::YMD, TimeFmt::HMS,
+                                           TimeFmt::HMSM};
+        return fmt_localtime(to_time_point(value),
+                             fmts[static_cast<int>(type) - static_cast<int>(ColumnType::DateTime)]);
     }
     case ColumnType::Number: {
         if (decimals >= 0) {
