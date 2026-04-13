@@ -25,11 +25,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Run clang-tidy
-        run: |
-          clang-tidy -p build \
-            src/main.cpp       \
-            src/rpc_client.cpp \
-            tests/test_json.cpp
+        run: find src tests -name '*.cpp' -print0 | xargs -0 clang-tidy -p build
 
   clang-format:
     runs-on: ubuntu-24.04
@@ -40,10 +36,4 @@ jobs:
         run: sudo apt-get install -y clang-format
 
       - name: Check formatting
-        run: |
-          clang-format --dry-run --Werror \
-            src/main.cpp       \
-            src/rpc_client.cpp \
-            src/rpc_client.hpp \
-            src/json.hpp       \
-            tests/test_json.cpp
+        run: git ls-files -- '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
