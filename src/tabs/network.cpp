@@ -73,9 +73,9 @@ NetworkTab::NetworkTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive&
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 
 Element NetworkTab::key_hints(const AppState& snap) const {
-    return hbox({refresh_indicator(snap),
-                 text("  [Tab/\u2190/\u2192] switch  [/] search  [q] quit ") |
-                     color(Color::GrayDark)});
+    return hbox(
+        {refresh_indicator(snap),
+         text("  [Tab/\u2190/\u2192] switch  [/] search  [q] quit ") | color(Color::GrayDark)});
 }
 
 void NetworkTab::fetch() {

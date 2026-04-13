@@ -109,7 +109,7 @@ static Element render_tools(const AppState& snap, const BroadcastState& bs, int 
 
     if (!snap.privbcast_txids.empty()) {
         Elements queue_rows;
-        for (const auto & privbcast_txid : snap.privbcast_txids) {
+        for (const auto& privbcast_txid : snap.privbcast_txids) {
             queue_rows.push_back(hbox({
                 text("  ") | color(Color::GrayDark),
                 text(privbcast_txid) | color(Color::White),
@@ -140,12 +140,8 @@ ToolsTab::ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& scr
       trigger_search_(std::move(trigger_search)) {}
 
 Element ToolsTab::key_hints(const AppState& /*snap*/) const {
-    auto yellow_hint = [](const char* hint) {
-        return hbox({text(hint) | color(Color::Yellow)});
-    };
-    auto gray_hint = [](const char* hint) {
-        return hbox({text(hint) | color(Color::GrayDark)});
-    };
+    auto yellow_hint = [](const char* hint) { return hbox({text(hint) | color(Color::Yellow)}); };
+    auto gray_hint   = [](const char* hint) { return hbox({text(hint) | color(Color::GrayDark)}); };
 
     if (tools_input_active)
         return yellow_hint("  [\u23ce] submit  [Esc] cancel ");

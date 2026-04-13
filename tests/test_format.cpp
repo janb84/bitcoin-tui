@@ -75,62 +75,38 @@ TEST_CASE("fmt_bytes — gigabytes") {
 // fmt_difficulty
 // ============================================================================
 
-TEST_CASE("fmt_difficulty — small (no suffix)") {
-    CHECK(fmt_difficulty(1234.5) == "1234.50");
-}
+TEST_CASE("fmt_difficulty — small (no suffix)") { CHECK(fmt_difficulty(1234.5) == "1234.50"); }
 
-TEST_CASE("fmt_difficulty — giga") {
-    CHECK(fmt_difficulty(1.5e9) == "1.50 G");
-}
+TEST_CASE("fmt_difficulty — giga") { CHECK(fmt_difficulty(1.5e9) == "1.50 G"); }
 
 TEST_CASE("fmt_difficulty — tera") {
     CHECK(fmt_difficulty(1.0e12) == "1.00 T");
     CHECK(fmt_difficulty(113.76e12) == "113.76 T");
 }
 
-TEST_CASE("fmt_difficulty — peta") {
-    CHECK(fmt_difficulty(1.5e15) == "1.50 P");
-}
+TEST_CASE("fmt_difficulty — peta") { CHECK(fmt_difficulty(1.5e15) == "1.50 P"); }
 
-TEST_CASE("fmt_difficulty — exa") {
-    CHECK(fmt_difficulty(2.0e18) == "2.00 E");
-}
+TEST_CASE("fmt_difficulty — exa") { CHECK(fmt_difficulty(2.0e18) == "2.00 E"); }
 
 // ============================================================================
 // fmt_hashrate
 // ============================================================================
 
-TEST_CASE("fmt_hashrate — H/s") {
-    CHECK(fmt_hashrate(500.0) == "500.00 H/s");
-}
+TEST_CASE("fmt_hashrate — H/s") { CHECK(fmt_hashrate(500.0) == "500.00 H/s"); }
 
-TEST_CASE("fmt_hashrate — kH/s") {
-    CHECK(fmt_hashrate(1500.0) == "1.50 kH/s");
-}
+TEST_CASE("fmt_hashrate — kH/s") { CHECK(fmt_hashrate(1500.0) == "1.50 kH/s"); }
 
-TEST_CASE("fmt_hashrate — MH/s") {
-    CHECK(fmt_hashrate(5.0e6) == "5.00 MH/s");
-}
+TEST_CASE("fmt_hashrate — MH/s") { CHECK(fmt_hashrate(5.0e6) == "5.00 MH/s"); }
 
-TEST_CASE("fmt_hashrate — GH/s") {
-    CHECK(fmt_hashrate(3.0e9) == "3.00 GH/s");
-}
+TEST_CASE("fmt_hashrate — GH/s") { CHECK(fmt_hashrate(3.0e9) == "3.00 GH/s"); }
 
-TEST_CASE("fmt_hashrate — TH/s") {
-    CHECK(fmt_hashrate(2.0e12) == "2.00 TH/s");
-}
+TEST_CASE("fmt_hashrate — TH/s") { CHECK(fmt_hashrate(2.0e12) == "2.00 TH/s"); }
 
-TEST_CASE("fmt_hashrate — PH/s") {
-    CHECK(fmt_hashrate(1.5e15) == "1.50 PH/s");
-}
+TEST_CASE("fmt_hashrate — PH/s") { CHECK(fmt_hashrate(1.5e15) == "1.50 PH/s"); }
 
-TEST_CASE("fmt_hashrate — EH/s") {
-    CHECK(fmt_hashrate(700.0e18) == "700.00 EH/s");
-}
+TEST_CASE("fmt_hashrate — EH/s") { CHECK(fmt_hashrate(700.0e18) == "700.00 EH/s"); }
 
-TEST_CASE("fmt_hashrate — ZH/s") {
-    CHECK(fmt_hashrate(1.0e21) == "1.00 ZH/s");
-}
+TEST_CASE("fmt_hashrate — ZH/s") { CHECK(fmt_hashrate(1.0e21) == "1.00 ZH/s"); }
 
 // ============================================================================
 // fmt_satsvb
@@ -196,21 +172,13 @@ TEST_CASE("fmt_time_ago — future timestamp") {
     CHECK(fmt_time_ago(now_secs() + 100) == "just now");
 }
 
-TEST_CASE("fmt_time_ago — seconds ago") {
-    CHECK(fmt_time_ago(now_secs() - 30) == "30s ago");
-}
+TEST_CASE("fmt_time_ago — seconds ago") { CHECK(fmt_time_ago(now_secs() - 30) == "30s ago"); }
 
-TEST_CASE("fmt_time_ago — minutes ago") {
-    CHECK(fmt_time_ago(now_secs() - 300) == "5m ago");
-}
+TEST_CASE("fmt_time_ago — minutes ago") { CHECK(fmt_time_ago(now_secs() - 300) == "5m ago"); }
 
-TEST_CASE("fmt_time_ago — hours ago") {
-    CHECK(fmt_time_ago(now_secs() - 7200) == "2h ago");
-}
+TEST_CASE("fmt_time_ago — hours ago") { CHECK(fmt_time_ago(now_secs() - 7200) == "2h ago"); }
 
-TEST_CASE("fmt_time_ago — days ago") {
-    CHECK(fmt_time_ago(now_secs() - 86400) == "1d ago");
-}
+TEST_CASE("fmt_time_ago — days ago") { CHECK(fmt_time_ago(now_secs() - 86400) == "1d ago"); }
 
 // ============================================================================
 // trimmed
@@ -232,18 +200,14 @@ TEST_CASE("trimmed — trailing whitespace") {
     CHECK(trimmed("hello\t") == "hello");
 }
 
-TEST_CASE("trimmed — both sides") {
-    CHECK(trimmed("  hello world  ") == "hello world");
-}
+TEST_CASE("trimmed — both sides") { CHECK(trimmed("  hello world  ") == "hello world"); }
 
 TEST_CASE("trimmed — only whitespace") {
     CHECK(trimmed("   ") == "");
     CHECK(trimmed("\t\t") == "");
 }
 
-TEST_CASE("trimmed — interior spaces preserved") {
-    CHECK(trimmed("  a b c  ") == "a b c");
-}
+TEST_CASE("trimmed — interior spaces preserved") { CHECK(trimmed("  a b c  ") == "a b c"); }
 
 // ============================================================================
 // extract_miner
@@ -276,7 +240,8 @@ TEST_CASE("extract_miner — forward slash breaks run") {
 TEST_CASE("extract_miner — picks longest run") {
     // "ABC" + 0x01 + "ABCDEFG"
     // first run = "ABC" (3, < 4, ignored); second = "ABCDEFG" (7)
-    CHECK(extract_miner("41424301" "41424344454647") == "ABCDEFG");
+    CHECK(extract_miner("41424301"
+                        "41424344454647") == "ABCDEFG");
 }
 
 TEST_CASE("extract_miner — truncates at 24 chars") {

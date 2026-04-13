@@ -29,7 +29,7 @@ std::string find_bitcoind() {
         if (end == std::string::npos)
             end = path.size();
         std::string candidate = path.substr(start, end - start) + exe;
-        struct stat st{};
+        struct stat st        = {};
 #ifdef _WIN32
         if (stat(candidate.c_str(), &st) == 0)
             return candidate;

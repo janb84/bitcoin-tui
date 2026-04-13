@@ -37,7 +37,7 @@ struct PathGuard {
 
     explicit PathGuard(const std::string& new_path) {
         const char* p = getenv("PATH");
-        saved          = p ? p : "";
+        saved         = p ? p : "";
         setenv("PATH", new_path.c_str(), 1);
     }
 
@@ -86,10 +86,10 @@ TEST_CASE("find_bitcoind: prefers first match in PATH") {
 }
 
 TEST_CASE("find_bitcoind: non-executable file is not returned") {
-    TempDir   dir;
-    fs::path  p = dir.path / "bitcoind";
+    TempDir  dir;
+    fs::path p = dir.path / "bitcoind";
     std::ofstream(p).close();
-    chmod(p.string().c_str(), 0644);  // readable but not executable
+    chmod(p.string().c_str(), 0644); // readable but not executable
     PathGuard g(dir.path.string());
 
     CHECK(find_bitcoind().empty());

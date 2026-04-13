@@ -51,9 +51,9 @@ TEST_CASE("Guarded — update modifies value") {
 // ============================================================================
 
 TEST_CASE("Guarded — concurrent increments produce correct count") {
-    constexpr int       kThreads = 8;
-    constexpr int       kIter    = 1000;
-    Guarded<int>        counter(0);
+    constexpr int            kThreads = 8;
+    constexpr int            kIter    = 1000;
+    Guarded<int>             counter(0);
     std::vector<std::thread> threads;
     threads.reserve(kThreads);
     for (int i = 0; i < kThreads; ++i) {
@@ -82,7 +82,7 @@ TEST_CASE("Guarded — concurrent reads never observe torn writes") {
         }
     });
 
-    bool torn = false;
+    bool                     torn = false;
     std::vector<std::thread> readers;
     readers.reserve(4);
     for (int i = 0; i < 4; ++i) {

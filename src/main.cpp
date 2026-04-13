@@ -14,6 +14,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 // clang-format on
+static void ensure_terminal();
 #endif
 
 #include <CLI/CLI.hpp>
@@ -312,6 +313,10 @@ int Application::configure(int argc, char* argv[]) {
 
 int Application::run() const {
     using namespace ftxui;
+
+#ifdef _WIN32
+    ensure_terminal();
+#endif
 
     auto screen = ScreenInteractive::Fullscreen();
     running     = true;
@@ -721,9 +726,6 @@ static void ensure_terminal() {
 #endif
 
 int main(int argc, char* argv[]) {
-#ifdef _WIN32
-    ensure_terminal();
-#endif
     try {
         return Application::run(argc, argv);
     } catch (const std::exception& e) {

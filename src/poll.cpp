@@ -113,7 +113,7 @@ void poll_rpc(RpcClient& rpc, Guarded<AppState>& state,
                 }
             }
             state.update([&](auto& s) { s.privbcast_txids = std::move(txids); });
-        } catch (...) {
+        } catch (...) { // NOLINT(bugprone-empty-catch) — RPC absent on older nodes
         }
 
         // Let the UI render with core data while block stats are fetched.

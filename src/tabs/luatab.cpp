@@ -259,7 +259,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
     };
     lua_.new_usertype<LuaTable>(
         "LuaTable", "update",
-        [](LuaTable& self, const sol::object& key, sol::table data) {
+        [](LuaTable& self, const sol::object& key, const sol::table& data) {
             std::map<std::string, CellValue> cells;
             const auto&                      cols = self.columns();
             for (auto& [k, v] : data) {
@@ -429,8 +429,8 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
     // Resume a coroutine with a value. If it yields another RPC,
     // submit that and return the new rpc_id. If it finishes,
     // return nullopt (caller reschedules timer).
-    auto resume_coro = [&](PendingCoroutine& pc, sol::object value,
-                           sol::object err) -> std::optional<int> {
+    auto resume_coro = [&](PendingCoroutine& pc, const sol::object& value,
+                           const sol::object& err) -> std::optional<int> {
         auto result = pc.coro(value, err);
         while (pc.coro.status() == sol::call_status::yielded) {
             std::string tag = result;

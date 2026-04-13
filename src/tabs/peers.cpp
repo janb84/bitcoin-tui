@@ -324,12 +324,8 @@ PeersTab::PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& scr
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 
 Element PeersTab::key_hints(const AppState& snap) const {
-    auto yellow_hint = [](const char* hint) {
-        return hbox({text(hint) | color(Color::Yellow)});
-    };
-    auto gray_hint = [](const char* hint) {
-        return hbox({text(hint) | color(Color::GrayDark)});
-    };
+    auto yellow_hint = [](const char* hint) { return hbox({text(hint) | color(Color::Yellow)}); };
+    auto gray_hint   = [](const char* hint) { return hbox({text(hint) | color(Color::GrayDark)}); };
 
     struct HintCase {
         bool        enabled;
@@ -338,7 +334,8 @@ Element PeersTab::key_hints(const AppState& snap) const {
     };
     const HintCase overlay_hints[] = {
         {addnode_input_active, true, "  [\u23ce] submit  [\u2190/\u2192] change  [Esc] cancel "},
-        {ban_input_active, true, "  [\u23ce] submit  [\u2190/\u2192] ban\u2215unban  [Esc] cancel "},
+        {ban_input_active, true,
+         "  [\u23ce] submit  [\u2190/\u2192] ban\u2215unban  [Esc] cancel "},
         {peer_disconnect_overlay && !peer_action_in_flight.load(), true,
          "  [Esc] dismiss  [q] quit "},
         {peer_disconnect_overlay, false, "  [q] quit "},
@@ -357,10 +354,9 @@ Element PeersTab::key_hints(const AppState& snap) const {
 
     auto ri = refresh_indicator(snap);
     if (peer_selected >= 0)
-        return hbox({ri,
-                     text("  [\u2191/\u2193] navigate  [\u23ce] details  [a] added nodes  "
-                          "[b] ban list  [q] quit ") |
-                         color(Color::GrayDark)});
+        return hbox({ri, text("  [\u2191/\u2193] navigate  [\u23ce] details  [a] added nodes  "
+                              "[b] ban list  [q] quit ") |
+                             color(Color::GrayDark)});
     return hbox({ri, text("  [\u2191/\u2193] navigate  [a] added nodes  [b] ban list  "
                           "[q] quit ") |
                          color(Color::GrayDark)});

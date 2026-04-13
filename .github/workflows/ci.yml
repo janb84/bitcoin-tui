@@ -29,8 +29,13 @@ jobs:
             cc: clang
             cxx: clang++
 
+          - name: Windows · MSVC
+            os: windows-latest
+            build_flags: --config Release
+            test_flags: -C Release
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure
         env:
@@ -39,7 +44,7 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel ${{ matrix.build_flags }}
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure ${{ matrix.test_flags }}

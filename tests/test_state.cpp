@@ -144,9 +144,7 @@ TEST_CASE("is_height — valid heights") {
     CHECK(is_height("99999999")); // 8 digits
 }
 
-TEST_CASE("is_height — empty string") {
-    CHECK_FALSE(is_height(""));
-}
+TEST_CASE("is_height — empty string") { CHECK_FALSE(is_height("")); }
 
 TEST_CASE("is_height — too long (> 8 digits)") {
     CHECK_FALSE(is_height("123456789")); // 9 digits

@@ -358,12 +358,22 @@ TEST_CASE("parse string") {
 }
 
 TEST_CASE("parse string escapes") {
-    CHECK(json::parse(R"("a\"b")").get<std::string>() == "a\"b");
-    CHECK(json::parse(R"("a\\b")").get<std::string>() == "a\\b");
-    CHECK(json::parse(R"("a\/b")").get<std::string>() == "a/b");
-    CHECK(json::parse(R"("a\nb")").get<std::string>() == "a\nb");
-    CHECK(json::parse(R"("a\tb")").get<std::string>() == "a\tb");
-    CHECK(json::parse(R"("a\rb")").get<std::string>() == "a\rb");
+    // Hoist literals into variables: MSVC's preprocessor mis-tokenises
+    // string literals containing backslash sequences inside CHECK() macros.
+    auto got_quote   = json::parse(R"("a\"b")").get<std::string>();
+    auto got_bslash  = json::parse(R"("a\\b")").get<std::string>();
+    auto got_fslash  = json::parse(R"("a\/b")").get<std::string>();
+    auto got_newline = json::parse(R"("a\nb")").get<std::string>();
+    auto got_tab     = json::parse(R"("a\tb")").get<std::string>();
+    auto got_cr      = json::parse(R"("a\rb")").get<std::string>();
+    // clang-format off
+    CHECK(got_quote   == "a\"b");
+    CHECK(got_bslash  == "a\\b");
+    CHECK(got_fslash  == "a/b");
+    CHECK(got_newline == "a\nb");
+    CHECK(got_tab     == "a\tb");
+    CHECK(got_cr      == "a\rb");
+    // clang-format on
 }
 
 TEST_CASE("parse unicode escape") {
@@ -458,10 +468,23 @@ TEST_CASE("dump primitives") {
 }
 
 TEST_CASE("dump string escaping") {
-    CHECK(json("a\"b").dump() == R"("a\"b")");
-    CHECK(json("a\\b").dump() == R"("a\\b")");
-    CHECK(json("a\nb").dump() == R"("a\nb")");
-    CHECK(json("a\tb").dump() == R"("a\tb")");
+    // Hoist ALL expressions out of CHECK(): MSVC stringifies the full
+    // expression (both sides of ==), mis-tokenising backslash sequences
+    // in raw string literals such as R"("a\"b")".
+    auto d_quote   = json("a\"b").dump();
+    auto d_bslash  = json("a\\b").dump();
+    auto d_newline = json("a\nb").dump();
+    auto d_tab     = json("a\tb").dump();
+
+    std::string e_quote   = R"("a\"b")";
+    std::string e_bslash  = R"("a\\b")";
+    std::string e_newline = R"("a\nb")";
+    std::string e_tab     = R"("a\tb")";
+
+    CHECK(d_quote == e_quote);
+    CHECK(d_bslash == e_bslash);
+    CHECK(d_newline == e_newline);
+    CHECK(d_tab == e_tab);
 }
 
 TEST_CASE("dump array") {
