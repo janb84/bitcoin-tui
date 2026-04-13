@@ -94,13 +94,26 @@ set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(cli11)
 
+# Object libraries for sources shared between bitcoin-tui and the test suite.
+# Compiled once; CMake 3.12+ propagates object files + PUBLIC includes + PUBLIC
+# link libs when you target_link_libraries against an OBJECT library.
+add_library(rpc_client_obj OBJECT src/rpc_client.cpp)
+target_include_directories(rpc_client_obj PUBLIC src/)
+if(WIN32)
+  target_link_libraries(rpc_client_obj PUBLIC ws2_32)
+endif()
+
+add_library(bitcoind_obj OBJECT src/bitcoind.cpp)
+target_include_directories(bitcoind_obj PUBLIC src/)
+if(WIN32)
+  target_link_libraries(bitcoind_obj PUBLIC ws2_32)
+endif()
+
 add_executable(bitcoin-tui
   src/main.cpp
   src/render.cpp
   src/poll.cpp
   src/search.cpp
-  src/rpc_client.cpp
-  src/bitcoind.cpp
   src/tabs/dashboard.cpp
   src/tabs/network.cpp
   src/tabs/mempool.cpp
@@ -123,6 +136,8 @@ if(MSVC)
 endif()
 
 target_link_libraries(bitcoin-tui PRIVATE
+  rpc_client_obj
+  bitcoind_obj
   ftxui::screen
   ftxui::dom
   ftxui::component
@@ -131,10 +146,6 @@ target_link_libraries(bitcoin-tui PRIVATE
   sol2
   CLI11::CLI11
 )
-
-if(WIN32)
-  target_link_libraries(bitcoin-tui PRIVATE ws2_32)
-endif()
 
 install(TARGETS bitcoin-tui RUNTIME DESTINATION bin COMPONENT runtime)
 
@@ -151,47 +162,4 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(Catch2)
 
 enable_testing()
-
-add_executable(test_json tests/test_json.cpp)
-target_include_directories(test_json PRIVATE src/)
-target_link_libraries(test_json PRIVATE Catch2::Catch2WithMain)
-add_test(NAME test_json COMMAND test_json)
-
-add_executable(test_rpc_config tests/test_rpc_config.cpp src/rpc_client.cpp)
-target_include_directories(test_rpc_config PRIVATE src/)
-target_link_libraries(test_rpc_config PRIVATE Catch2::Catch2WithMain)
-add_test(NAME test_rpc_config COMMAND test_rpc_config)
-
-add_executable(test_bitcoind tests/test_bitcoind.cpp src/bitcoind.cpp)
-target_include_directories(test_bitcoind PRIVATE src/)
-target_link_libraries(test_bitcoind PRIVATE Catch2::Catch2WithMain)
-add_test(NAME test_bitcoind COMMAND test_bitcoind)
-
-add_executable(test_format tests/test_format.cpp)
-target_include_directories(test_format PRIVATE src/)
-target_link_libraries(test_format PRIVATE Catch2::Catch2WithMain)
-add_test(NAME test_format COMMAND test_format)
-
-add_executable(test_state tests/test_state.cpp)
-target_include_directories(test_state PRIVATE src/)
-target_link_libraries(test_state PRIVATE Catch2::Catch2WithMain)
-add_test(NAME test_state COMMAND test_state)
-
-find_package(Threads REQUIRED)
-add_executable(test_guarded tests/test_guarded.cpp)
-target_include_directories(test_guarded PRIVATE src/)
-target_link_libraries(test_guarded PRIVATE Catch2::Catch2WithMain Threads::Threads)
-add_test(NAME test_guarded COMMAND test_guarded)
-
-if(WIN32)
-  target_link_libraries(test_rpc_config PRIVATE ws2_32)
-  target_link_libraries(test_bitcoind PRIVATE ws2_32)
-endif()
-
-add_executable(test_cli tests/test_cli.cpp)
-target_link_libraries(test_cli PRIVATE Catch2::Catch2WithMain)
-add_dependencies(test_cli bitcoin-tui)
-add_test(NAME test_cli COMMAND test_cli)
-set_tests_properties(test_cli PROPERTIES
-    ENVIRONMENT "BITCOIN_TUI_BINARY=$<TARGET_FILE:bitcoin-tui>"
-)
+add_subdirectory(tests)
