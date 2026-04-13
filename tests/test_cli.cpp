@@ -19,7 +19,21 @@
 static std::string binary() {
     const char* p = std::getenv("BITCOIN_TUI_BINARY");
     REQUIRE(p != nullptr);
+#ifdef _WIN32
+    // Quote the path so spaces in it don't confuse cmd.exe.
+    return "\"" + std::string(p) + "\"";
+#else
     return p;
+#endif
+}
+
+// Redirect that discards all output on both Unix and Windows.
+static const char* null_sink() {
+#ifdef _WIN32
+    return " >NUL 2>&1";
+#else
+    return " >/dev/null 2>&1";
+#endif
 }
 
 static int exit_code(const std::string& cmd) {
@@ -111,15 +125,15 @@ static int exit_code_with_home(const std::filesystem::path& home, const std::str
 // ---------------------------------------------------------------------------
 
 TEST_CASE("--help exits 0 without launching TUI") {
-    CHECK(exit_code(binary() + " --help >/dev/null 2>&1") == 0);
+    CHECK(exit_code(binary() + " --help" + null_sink()) == 0);
 }
 
 TEST_CASE("--version exits 0 without launching TUI") {
-    CHECK(exit_code(binary() + " --version >/dev/null 2>&1") == 0);
+    CHECK(exit_code(binary() + " --version" + null_sink()) == 0);
 }
 
 TEST_CASE("-v exits 0 without launching TUI") {
-    CHECK(exit_code(binary() + " -v >/dev/null 2>&1") == 0);
+    CHECK(exit_code(binary() + " -v" + null_sink()) == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +141,7 @@ TEST_CASE("-v exits 0 without launching TUI") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("unknown option exits non-zero") {
-    CHECK(exit_code(binary() + " --does-not-exist >/dev/null 2>&1") != 0);
+    CHECK(exit_code(binary() + " --does-not-exist" + null_sink()) != 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -135,18 +149,18 @@ TEST_CASE("unknown option exits non-zero") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("--port accepts valid port with --version") {
-    CHECK(exit_code(binary() + " --port 8332 --version >/dev/null 2>&1") == 0);
-    CHECK(exit_code(binary() + " --port 1 --version >/dev/null 2>&1") == 0);
-    CHECK(exit_code(binary() + " --port 65535 --version >/dev/null 2>&1") == 0);
+    CHECK(exit_code(binary() + " --port 8332 --version" + null_sink()) == 0);
+    CHECK(exit_code(binary() + " --port 1 --version" + null_sink()) == 0);
+    CHECK(exit_code(binary() + " --port 65535 --version" + null_sink()) == 0);
 }
 
 TEST_CASE("--port rejects out-of-range values") {
-    CHECK(exit_code(binary() + " --port 0 >/dev/null 2>&1") != 0);
-    CHECK(exit_code(binary() + " --port 65536 >/dev/null 2>&1") != 0);
+    CHECK(exit_code(binary() + " --port 0" + null_sink()) != 0);
+    CHECK(exit_code(binary() + " --port 65536" + null_sink()) != 0);
 }
 
 TEST_CASE("--port rejects non-numeric value") {
-    CHECK(exit_code(binary() + " --port abc >/dev/null 2>&1") != 0);
+    CHECK(exit_code(binary() + " --port abc" + null_sink()) != 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,15 +168,15 @@ TEST_CASE("--port rejects non-numeric value") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("--testnet and --regtest together exit non-zero") {
-    CHECK(exit_code(binary() + " --testnet --regtest >/dev/null 2>&1") != 0);
+    CHECK(exit_code(binary() + " --testnet --regtest" + null_sink()) != 0);
 }
 
 TEST_CASE("--testnet and --signet together exit non-zero") {
-    CHECK(exit_code(binary() + " --testnet --signet >/dev/null 2>&1") != 0);
+    CHECK(exit_code(binary() + " --testnet --signet" + null_sink()) != 0);
 }
 
 TEST_CASE("--regtest and --signet together exit non-zero") {
-    CHECK(exit_code(binary() + " --regtest --signet >/dev/null 2>&1") != 0);
+    CHECK(exit_code(binary() + " --regtest --signet" + null_sink()) != 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,11 +186,11 @@ TEST_CASE("--regtest and --signet together exit non-zero") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("--tab with --version exits 0") {
-    CHECK(exit_code(binary() + " --tab /nonexistent.lua --version >/dev/null 2>&1") == 0);
+    CHECK(exit_code(binary() + " --tab /nonexistent.lua --version" + null_sink()) == 0);
 }
 
 TEST_CASE("--allow-rpc with --version exits 0") {
-    CHECK(exit_code(binary() + " --allow-rpc getblockchaininfo --version >/dev/null 2>&1") == 0);
+    CHECK(exit_code(binary() + " --allow-rpc getblockchaininfo --version" + null_sink()) == 0);
 }
 
 #ifndef _WIN32
