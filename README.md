@@ -72,6 +72,7 @@ Authentication (cookie auth is used by default):
 
 Network:
       --testnet          Use testnet3 port (18332) and cookie subdir
+      --testnet4         Use testnet4 port (48332) and cookie subdir
       --regtest          Use regtest  port (18443) and cookie subdir
       --signet           Use signet   port (38332) and cookie subdir
 

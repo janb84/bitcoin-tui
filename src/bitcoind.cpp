@@ -60,6 +60,8 @@ int launch_bitcoind(const std::string& cmd, const std::string& datadir, const st
         args_storage.push_back("-datadir=" + datadir);
     if (network == "testnet3")
         args_storage.push_back("-testnet");
+    else if (network == "testnet4")
+        args_storage.push_back("-testnet4");
     else if (network == "signet")
         args_storage.push_back("-signet");
     else if (network == "regtest")

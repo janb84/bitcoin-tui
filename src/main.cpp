@@ -99,6 +99,8 @@ static std::string default_datadir() {
 static std::string network_subdir(const std::string& network) {
     if (network == "testnet3")
         return "testnet3/";
+    if (network == "testnet4")
+        return "testnet4/";
     if (network == "signet")
         return "signet/";
     if (network == "regtest")
@@ -220,8 +222,10 @@ int Application::configure(int argc, char* argv[]) {
     app.add_option("--debuglog", debug_log_file, "Path to debug.log")->group("Node");
 
     // Network
-    bool use_testnet{false}, use_regtest{false}, use_signet{false};
+    bool use_testnet{false}, use_testnet4{false}, use_regtest{false}, use_signet{false};
     app.add_flag("--testnet", use_testnet, "Use testnet3 port (18332) and cookie subdir")
+        ->group("Network");
+    app.add_flag("--testnet4", use_testnet4, "Use testnet4 port (48332) and cookie subdir")
         ->group("Network");
     app.add_flag("--regtest", use_regtest, "Use regtest port (18443) and cookie subdir")
         ->group("Network");
@@ -263,12 +267,17 @@ int Application::configure(int argc, char* argv[]) {
     }
 
     // Apply network selection
-    if (use_testnet + use_regtest + use_signet > 1) {
-        std::fprintf(stderr, "bitcoin-tui: only one of --testnet, --regtest, --signet allowed\n");
+    if (use_testnet + use_testnet4 + use_regtest + use_signet > 1) {
+        std::fprintf(
+            stderr,
+            "bitcoin-tui: only one of --testnet, --testnet4, --regtest, --signet allowed\n");
         return 1;
     } else if (use_testnet) {
         cfg.port = 18332;
         network  = "testnet3";
+    } else if (use_testnet4) {
+        cfg.port = 48332;
+        network  = "testnet4";
     } else if (use_regtest) {
         cfg.port = 18443;
         network  = "regtest";

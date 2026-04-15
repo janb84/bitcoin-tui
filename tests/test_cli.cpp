@@ -179,6 +179,22 @@ TEST_CASE("--regtest and --signet together exit non-zero") {
     CHECK(exit_code(binary() + " --regtest --signet" + null_sink()) != 0);
 }
 
+TEST_CASE("--testnet and --testnet4 together exit non-zero") {
+    CHECK(exit_code(binary() + " --testnet --testnet4" + null_sink()) != 0);
+}
+
+TEST_CASE("--testnet4 and --signet together exit non-zero") {
+    CHECK(exit_code(binary() + " --testnet4 --signet" + null_sink()) != 0);
+}
+
+TEST_CASE("--testnet4 and --regtest together exit non-zero") {
+    CHECK(exit_code(binary() + " --testnet4 --regtest" + null_sink()) != 0);
+}
+
+TEST_CASE("--testnet4 with --version exits 0") {
+    CHECK(exit_code(binary() + " --testnet4 --version" + null_sink()) == 0);
+}
+
 // ---------------------------------------------------------------------------
 // Lua flags — parse-time only (no running node required)
 // --version short-circuits before any connection attempt, so combining it
