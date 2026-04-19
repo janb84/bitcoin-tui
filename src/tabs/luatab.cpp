@@ -33,9 +33,10 @@ static const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
 };
 
 struct RpcRequest {
-    int         id;
-    std::string method;
-    json        params;
+    int                        id;
+    std::string                method;
+    json                       params;
+    std::optional<std::string> wallet; // empty = regular RPC, set = wallet RPC
 };
 
 struct RpcResponse {
@@ -135,6 +136,11 @@ LuaScript::LuaScript() {
     lua_.script(R"(
         function btcui_rpc(method, ...)
             local result, err = coroutine.yield('rpc', method, {...})
+            if err then error(err, 2) end
+            return result
+        end
+        function btcui_rpc_wallet(wallet, method, ...)
+            local result, err = coroutine.yield('rpc_wallet', wallet, method, {...})
             if err then error(err, 2) end
             return result
         end
@@ -358,8 +364,13 @@ void LuaTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>&  requests,
         RpcResponse resp{req->id, {}, {}};
         try {
             RpcClient rpc(cfg_, auth_);
-            json      rpc_result = rpc.call(req->method, req->params);
-            resp.result          = rpc_result["result"];
+            json      rpc_result;
+            if (!req->wallet.has_value()) {
+                rpc_result = rpc.call(req->method, req->params);
+            } else {
+                rpc_result = rpc.call_wallet(*req->wallet, req->method, req->params);
+            }
+            resp.result = rpc_result["result"];
         } catch (const std::exception& e) {
             resp.error = e.what();
         }
@@ -368,22 +379,18 @@ void LuaTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>&  requests,
     }
 }
 
-// Extract RPC params from a yielded coroutine result
-static json extract_rpc_params(const sol::protected_function_result& result) {
+static json extract_rpc_params(const sol::table& args) {
     std::vector<json> pv;
-    if (result.return_count() >= 3) {
-        sol::table args = result.get<sol::table>(2);
-        for (size_t i = 1; i <= args.size(); ++i) {
-            sol::object a = args[i];
-            if (a.is<int64_t>())
-                pv.emplace_back(a.as<int64_t>());
-            else if (a.is<double>())
-                pv.emplace_back(a.as<double>());
-            else if (a.is<bool>())
-                pv.emplace_back(a.as<bool>());
-            else if (a.is<std::string>())
-                pv.emplace_back(a.as<std::string>());
-        }
+    for (size_t i = 1; i <= args.size(); ++i) {
+        sol::object a = args[i];
+        if (a.is<int64_t>())
+            pv.emplace_back(a.as<int64_t>());
+        else if (a.is<double>())
+            pv.emplace_back(a.as<double>());
+        else if (a.is<bool>())
+            pv.emplace_back(a.as<bool>());
+        else if (a.is<std::string>())
+            pv.emplace_back(a.as<std::string>());
     }
     return json(std::move(pv));
 }
@@ -420,9 +427,11 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
 
     auto wake_ui = [this] { screen_.PostEvent(ftxui::Event::Custom); };
 
-    auto submit_rpc = [&](const std::string& method, json params) -> int {
+    auto submit_rpc = [&](const std::string& method, json params,
+                          std::optional<std::string> wallet = std::nullopt) -> int {
         int id = ++next_rpc_id;
-        requests.update_and_notify([&](auto& q) { q.push_back({id, method, std::move(params)}); });
+        requests.update_and_notify(
+            [&](auto& q) { q.push_back({id, method, std::move(params), std::move(wallet)}); });
         return id;
     };
 
@@ -440,7 +449,15 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                     result = pc.coro(sol::lua_nil, "RPC method not allowed: " + method);
                     continue;
                 }
-                return submit_rpc(method, extract_rpc_params(result));
+                return submit_rpc(method, extract_rpc_params(result.get<sol::table>(2)));
+            } else if (tag == "rpc_wallet" && result.return_count() >= 3) {
+                std::string wallet = result.get<std::string>(1);
+                std::string method = result.get<std::string>(2);
+                if (!rpc_allowlist_.contains(method)) {
+                    result = pc.coro(sol::lua_nil, "RPC method not allowed: " + method);
+                    continue;
+                }
+                return submit_rpc(method, extract_rpc_params(result.get<sol::table>(3)), wallet);
             } else {
                 break;
             }
@@ -555,7 +572,19 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                     if (!rpc_allowlist_.contains(method)) {
                         result = coro(sol::lua_nil, "RPC method not allowed: " + method);
                     } else {
-                        int rpc_id = submit_rpc(method, extract_rpc_params(result));
+                        int rpc_id = submit_rpc(method, extract_rpc_params(result.get<sol::table>(2)));
+                        pending.emplace(rpc_id, PendingCoroutine{std::move(thread), std::move(coro),
+                                                                 std::move(timer)});
+                        now = Clock::now();
+                        continue; // timer NOT rescheduled yet
+                    }
+                } else if (tag == "rpc_wallet" && result.return_count() >= 3) {
+                    std::string wallet = result.get<std::string>(1);
+                    std::string method = result.get<std::string>(2);
+                    if (!rpc_allowlist_.contains(method)) {
+                        result = coro(sol::lua_nil, "RPC method not allowed: " + method);
+                    } else {
+                        int rpc_id = submit_rpc(method, extract_rpc_params(result.get<sol::table>(3)), wallet);
                         pending.emplace(rpc_id, PendingCoroutine{std::move(thread), std::move(coro),
                                                                  std::move(timer)});
                         now = Clock::now();

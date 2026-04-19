@@ -28,12 +28,15 @@ class RpcClient {
     explicit RpcClient(RpcConfig config, RpcAuth auth);
 
     json call(const std::string& method, const json& params = json::array());
+    json call_wallet(const std::string& wallet, const std::string& method,
+                     const json& params = json::array());
 
   private:
+    json      call(const std::string& endpoint, const std::string& method, const json& params);
     RpcConfig config_;
     RpcAuth   auth_;
     int       request_id_ = 0;
 
-    std::string        http_post(const std::string& body);
+    std::string        http_post(const std::string& endpoint, const std::string& body);
     static std::string base64_encode(const std::string& input);
 };
