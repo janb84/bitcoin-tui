@@ -35,8 +35,19 @@ function btcui_wake(handle) end
 --- during script loading (top-level code); calling it from a
 --- callback raises an error. The name takes effect immediately,
 --- so it persists even if the script fails to load.
+--- Note: if the user specified t=... in the --tab option, that
+--- takes precedence over btcui_set_name().
 ---@param name string
 function btcui_set_name(name) end
+
+--- Read a tab option set via --tab script.lua,key=val,...
+--- Returns the string value if set. If not set, returns default_val.
+--- If not set and no default is provided, raises an error.
+--- The "t" key is reserved for the tab title override.
+---@param key string
+---@param default_val? any   Returned when the option is not set
+---@return any
+function btcui_option(key, default_val) end
 
 --- Register a log pattern callback. The pattern uses RE2 syntax and
 --- is matched against the message portion of each debug.log line.

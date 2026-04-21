@@ -1,8 +1,12 @@
-btcui_set_name("Wallet Details")
 
 -- Requires --allow-rpc=getwalletinfo,getbalances,listunspent,listtransactions
 
-local WALLET_NAME = ""  -- Empty string means default wallet
+local WALLET_NAME = btcui_option("wallet", "")
+if WALLET_NAME == "" then
+  btcui_set_name("Default Wallet")
+else
+  btcui_set_name(WALLET_NAME .. " Wallet")
+end
 local REFRESH_INTERVAL = 5
 
 local wallet_info_panel = btcui_summary({

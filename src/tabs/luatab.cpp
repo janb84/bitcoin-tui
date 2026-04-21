@@ -1,6 +1,7 @@
 #include "luatab.hpp"
 
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -395,6 +396,15 @@ void LuaTab::register_lua_api(LuaScript& script) {
     lua_["btcui_set_name"] = [this](const std::string& name) {
         lua_tab_state_.update([&](auto& st) { st.tab_name = name; });
     };
+
+    lua_["btcui_option"] = [this](sol::this_state ts, const std::string& key,
+                                  sol::optional<sol::object> default_val) -> sol::object {
+        if (tab_options_.contains(key))
+            return sol::make_object(ts, tab_options_[key].get<std::string>());
+        if (default_val)
+            return *default_val;
+        throw std::runtime_error("required tab option '" + key + "' not set");
+    };
 }
 
 void LuaTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>&  requests,
@@ -688,12 +698,15 @@ static std::set<std::string> make_allowlist(std::span<const std::string> extra) 
 
 LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
                std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
-               std::string debug_log_path, std::string lua_script,
+               std::string debug_log_path, json tab_options,
                std::span<const std::string> extra_rpcs)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
-      debug_log_path_(std::move(debug_log_path)), rpc_allowlist_(make_allowlist(extra_rpcs)) {
-    auto script = std::make_unique<LuaScript>();
-    lua_tab_state_.update([&](auto& st) { st.tab_name = lua_script; });
+      debug_log_path_(std::move(debug_log_path)), tab_options_(std::move(tab_options)),
+      rpc_allowlist_(make_allowlist(extra_rpcs)) {
+    const std::string lua_script = tab_options_["script"].get<std::string>();
+    auto              script     = std::make_unique<LuaScript>();
+    lua_tab_state_.update(
+        [&](auto& st) { st.tab_name = std::filesystem::path(lua_script).stem().string(); });
     register_lua_api(*script);
     auto result = script->load(lua_script);
     if (!result.valid()) {
@@ -709,6 +722,8 @@ LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
 }
 
 std::string LuaTab::name() const {
+    if (tab_options_.contains("t"))
+        return tab_options_["t"].get<std::string>();
     return lua_tab_state_.access([](const auto& s) { return s.tab_name; });
 }
 

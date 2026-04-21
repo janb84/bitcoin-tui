@@ -14,6 +14,7 @@
 #include <ftxui/dom/elements.hpp>
 
 #include "guarded.hpp"
+#include "json.hpp"
 #include "luatable.hpp"
 #include "tabs/tab.hpp"
 
@@ -42,7 +43,7 @@ class LuaTab : public Tab {
   public:
     LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
            std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
-           std::string debug_log_path, std::string lua_script,
+           std::string debug_log_path, json tab_options = {},
            std::span<const std::string> extra_rpcs = {});
     ~LuaTab() override = default;
 
@@ -60,6 +61,7 @@ class LuaTab : public Tab {
     void clear_callback_error(int id);
 
     const std::string           debug_log_path_;
+    const json                  tab_options_;
     const std::set<std::string> rpc_allowlist_;
     Guarded<LuaTabState>        lua_tab_state_;
     std::thread                 lua_thread_;
