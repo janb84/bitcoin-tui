@@ -23,10 +23,12 @@ struct LuaError {
     std::chrono::system_clock::time_point when;
 };
 
+using LuaPanelVec = std::vector<std::shared_ptr<LuaPanel>>;
+
 struct LuaTabState {
     std::string             lua_status; // status output from Lua
     std::string             tab_name;   // set by btcui_set_name()
-    LuaTableVec             lua_tables;
+    LuaPanelVec             lua_panels;
     std::optional<LuaError> init_error;      // script load failure
     std::map<int, LuaError> callback_errors; // keyed by timer/watch id
     std::vector<LuaError>   warnings;        // age out after 20s

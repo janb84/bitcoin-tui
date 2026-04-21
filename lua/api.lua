@@ -70,6 +70,16 @@ function btcui_rpc(method, ...) end
 ---@return any
 function btcui_rpc_wallet(wallet, method, ...) end
 
+--- Create a summary panel for display. Returns a Summary object.
+--- Summary panels show compact "Label : Value" lines and are
+--- rendered side-by-side when consecutive summaries are created.
+--- Options:
+---   title   string        Section title (default: "Summary")
+---   fields  FieldDef[]    Field definitions (required)
+---@param opts SummaryOpts
+---@return Summary
+function btcui_summary(opts) end
+
 --- Set the status line hint text (displayed in the tab bar).
 ---@param text string
 function btcui_key_hint(text) end
@@ -124,6 +134,33 @@ function Table:finish_refresh() end
 --- Set to "" to clear.
 ---@param info string|StyledValue
 function Table:set_header_info(info) end
+
+----------------------------------------------------------------------
+-- Summary object
+----------------------------------------------------------------------
+
+---@class Summary
+local Summary = {}
+
+--- Update one or more fields. Values can be plain values or
+--- styled tables with { value = v, color = "red", bold = true }.
+--- Only named fields are updated; others keep their previous value.
+---@param data table    Field values as { name = value, ... }
+function Summary:set(data) end
+
+----------------------------------------------------------------------
+-- Summary options
+----------------------------------------------------------------------
+
+---@class SummaryOpts
+---@field title?  string       Section title (default: "Summary")
+---@field fields  FieldDef[]   Field definitions
+
+---@class FieldDef
+---@field name      string   Field identifier, used as key in set() data tables.
+---@field label     string   Display label shown before the value.
+---@field type?     string   "string" (default), "number", or a time format.
+---@field decimals? integer  Fixed decimal places for number fields (-1 = auto).
 
 ----------------------------------------------------------------------
 -- Table options

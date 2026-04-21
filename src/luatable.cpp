@@ -142,6 +142,32 @@ void LuaTable::set_header_info(CellValue info) {
     rows_.update([&](auto& rd) { rd.header_info = std::move(info); });
 }
 
+// --- LuaSummary ---
+
+LuaSummary::LuaSummary(std::vector<ColumnDef> fields, std::string title)
+    : fields_(std::move(fields)), title_(std::move(title)),
+      values_(std::vector<CellValue>(fields_.size())) {}
+
+size_t LuaSummary::field_index(const std::string& name) const {
+    for (size_t i = 0; i < fields_.size(); ++i) {
+        if (fields_[i].name == name)
+            return i;
+    }
+    return fields_.size();
+}
+
+void LuaSummary::set(const std::map<std::string, CellValue>& values) {
+    values_.update([&](auto& v) {
+        for (const auto& [name, cell] : values) {
+            size_t idx = field_index(name);
+            if (idx < fields_.size())
+                v[idx] = cell;
+        }
+    });
+}
+
+// --- LuaTable ---
+
 std::vector<std::string> LuaTable::keys() const {
     return rows_.access([&](const auto& rd) {
         std::vector<std::string> result;

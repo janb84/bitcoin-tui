@@ -323,8 +323,58 @@ void LuaTab::register_lua_api(LuaScript& script) {
         bool        no_header  = opts.get_or("no_header", false);
         auto        tbl =
             std::make_shared<LuaTable>(key_column, std::move(cols), std::move(title), no_header);
-        lua_tab_state_.update([&](auto& st) { st.lua_tables.push_back(tbl); });
+        lua_tab_state_.update([&](auto& st) { st.lua_panels.push_back(tbl); });
         return tbl;
+    };
+
+    lua_.new_usertype<LuaSummary>("LuaSummary", "set",
+                                  [](LuaSummary& self, const sol::table& data) {
+                                      std::map<std::string, CellValue> cells;
+                                      const auto&                      flds = self.fields();
+                                      for (auto& [k, v] : data) {
+                                          if (v.is<sol::lua_nil_t>())
+                                              continue;
+                                          std::string field_name = k.as<std::string>();
+                                          ColumnType  ct         = ColumnType::String;
+                                          int         dec        = -1;
+                                          for (const auto& f : flds) {
+                                              if (f.name == field_name) {
+                                                  ct  = f.type;
+                                                  dec = f.decimals;
+                                                  break;
+                                              }
+                                          }
+                                          cells[field_name] = LuaScript::to_cell_value(ct, dec, v);
+                                      }
+                                      self.set(cells);
+                                  });
+
+    lua_["btcui_summary"] = [this](sol::table opts) -> std::shared_ptr<LuaSummary> {
+        sol::table             field_defs = opts["fields"];
+        std::vector<ColumnDef> fields;
+        size_t                 max_label = 0;
+        for (size_t i = 1; i <= field_defs.size(); ++i) {
+            sol::table  f        = field_defs[i];
+            std::string name     = f["name"];
+            std::string label    = f.get_or<std::string>("label", name);
+            std::string type_str = f.get_or<std::string>("type", "string");
+            auto        type     = parse_column_type(type_str);
+            if (!type) {
+                throw std::runtime_error("unknown field type: " + type_str);
+            }
+            if (label.size() > max_label)
+                max_label = label.size();
+            int decimals = f.get_or("decimals", -1);
+            fields.push_back({std::move(name), std::move(label), *type, decimals});
+        }
+        // Pad labels so colons align in the rendered summary
+        for (auto& f : fields)
+            f.header.resize(max_label, ' ');
+
+        std::string title = opts.get_or("title", std::string{});
+        auto        sum   = std::make_shared<LuaSummary>(std::move(fields), std::move(title));
+        lua_tab_state_.update([&](auto& st) { st.lua_panels.push_back(sum); });
+        return sum;
     };
 
     lua_["btcui_key_hint"] = [this](const std::string& hint) {
@@ -572,7 +622,8 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                     if (!rpc_allowlist_.contains(method)) {
                         result = coro(sol::lua_nil, "RPC method not allowed: " + method);
                     } else {
-                        int rpc_id = submit_rpc(method, extract_rpc_params(result.get<sol::table>(2)));
+                        int rpc_id =
+                            submit_rpc(method, extract_rpc_params(result.get<sol::table>(2)));
                         pending.emplace(rpc_id, PendingCoroutine{std::move(thread), std::move(coro),
                                                                  std::move(timer)});
                         now = Clock::now();
@@ -584,7 +635,8 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                     if (!rpc_allowlist_.contains(method)) {
                         result = coro(sol::lua_nil, "RPC method not allowed: " + method);
                     } else {
-                        int rpc_id = submit_rpc(method, extract_rpc_params(result.get<sol::table>(3)), wallet);
+                        int rpc_id = submit_rpc(
+                            method, extract_rpc_params(result.get<sol::table>(3)), wallet);
                         pending.emplace(rpc_id, PendingCoroutine{std::move(thread), std::move(coro),
                                                                  std::move(timer)});
                         now = Clock::now();
@@ -694,151 +746,174 @@ static Element apply_style(Element el, const CellValue& cv) {
 }
 
 Element LuaTab::render(const AppState& /*snap*/) {
-    // Lua tables
-    Elements lua_panels;
-    auto     tables = lua_tab_state_.access([](const auto& s) { return s.lua_tables; });
-    for (const auto& tbl : tables) {
-        const auto& cols  = tbl->columns();
-        size_t      ncols = cols.size();
+    Elements    lua_elems;
+    LuaPanelVec panels_vec = lua_tab_state_.access([](const auto& s) { return s.lua_panels; });
 
-        // Visible columns (non-empty header)
-        std::vector<size_t> vis;
-        for (size_t i = 0; i < ncols; ++i) {
-            if (!cols[i].header.empty())
-                vis.push_back(i);
-        }
+    // Collect runs of consecutive summaries for side-by-side layout
+    Elements summary_run;
+    auto     flush_summaries = [&]() {
+        if (summary_run.empty())
+            return;
+        lua_elems.push_back(hbox(std::move(summary_run)));
+        summary_run.clear();
+    };
 
-        // Compute column widths for visible columns
-        // For multi-line headers, use the widest line
-        // First column has no leading space; others have 1 char leading space
-        std::vector<int> widths(vis.size());
-        for (size_t vi = 0; vi < vis.size(); ++vi) {
-            const auto& hdr   = cols[vis[vi]].header;
-            int         max_w = 0;
-            size_t      pos   = 0;
-            while (pos <= hdr.size()) {
-                size_t nl = hdr.find('\n', pos);
-                if (nl == std::string::npos)
-                    nl = hdr.size();
-                int w = static_cast<int>(nl - pos);
-                if (w > max_w)
-                    max_w = w;
-                pos = nl + 1;
+    for (const auto& panel : panels_vec) {
+        if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panel)) {
+            flush_summaries();
+
+            const auto& cols  = tbl->columns();
+            size_t      ncols = cols.size();
+
+            // Visible columns (non-empty header)
+            std::vector<size_t> vis;
+            for (size_t i = 0; i < ncols; ++i) {
+                if (!cols[i].header.empty())
+                    vis.push_back(i);
             }
-            widths[vi] = max_w + (vi == 0 ? 1 : 2);
-        }
-        tbl->access([&](const auto& rows) {
-            for (const auto& row : rows) {
-                for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
-                    auto s = format_cell(cols[vis[vi]].type, row.cells[vis[vi]].data,
-                                         cols[vis[vi]].decimals);
-                    int  w = static_cast<int>(s.size()) + (vi == 0 ? 1 : 2);
-                    if (w > widths[vi])
-                        widths[vi] = w;
+
+            // Compute column widths for visible columns
+            std::vector<int> widths(vis.size());
+            for (size_t vi = 0; vi < vis.size(); ++vi) {
+                const auto& hdr   = cols[vis[vi]].header;
+                int         max_w = 0;
+                size_t      pos   = 0;
+                while (pos <= hdr.size()) {
+                    size_t nl = hdr.find('\n', pos);
+                    if (nl == std::string::npos)
+                        nl = hdr.size();
+                    int w = static_cast<int>(nl - pos);
+                    if (w > max_w)
+                        max_w = w;
+                    pos = nl + 1;
+                }
+                widths[vi] = max_w + (vi == 0 ? 1 : 2);
+            }
+            tbl->access([&](const auto& rows) {
+                for (const auto& row : rows) {
+                    for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
+                        auto s = format_cell(cols[vis[vi]].type, row.cells[vis[vi]].data,
+                                             cols[vis[vi]].decimals);
+                        int  w = static_cast<int>(s.size()) + (vi == 0 ? 1 : 2);
+                        if (w > widths[vi])
+                            widths[vi] = w;
+                    }
+                }
+            });
+
+            // Right-aligned columns
+            std::vector<bool> ralign(vis.size(), false);
+            for (size_t vi = 0; vi < vis.size(); ++vi) {
+                switch (cols[vis[vi]].type) {
+                case ColumnType::Number:
+                    ralign[vi] = true;
+                    break;
+                default:
+                    break;
                 }
             }
-        });
 
-        // Right-aligned columns
-        std::vector<bool> ralign(vis.size(), false);
-        for (size_t vi = 0; vi < vis.size(); ++vi) {
-            switch (cols[vis[vi]].type) {
-            case ColumnType::Number:
-                ralign[vi] = true;
-                break;
-            default:
-                break;
-            }
-        }
-
-        // Header row (supports multi-line headers with \n, bottom-aligned)
-        // First pass: split headers and find max line count
-        std::vector<std::vector<std::string>> hdr_lines(vis.size());
-        size_t                                max_lines = 1;
-        for (size_t vi = 0; vi < vis.size(); ++vi) {
-            const std::string& hdr = cols[vis[vi]].header;
-            size_t             pos = 0;
-            while (pos <= hdr.size()) {
-                size_t nl = hdr.find('\n', pos);
-                if (nl == std::string::npos)
-                    nl = hdr.size();
-                hdr_lines[vi].push_back(hdr.substr(pos, nl - pos));
-                pos = nl + 1;
-            }
-            if (hdr_lines[vi].size() > max_lines)
-                max_lines = hdr_lines[vi].size();
-        }
-        // Second pass: build cells, padding short headers with blank lines above
-        Elements hdr_cells;
-        for (size_t vi = 0; vi < vis.size(); ++vi) {
-            Elements lines;
-            size_t   pad_lines = max_lines - hdr_lines[vi].size();
-            for (size_t i = 0; i < pad_lines; ++i)
-                lines.push_back(text(""));
-            std::string prefix = " ";
-            for (const auto& line : hdr_lines[vi]) {
-                std::string s = line;
-                if (ralign[vi]) {
-                    int pad =
-                        widths[vi] - static_cast<int>(s.size()) - static_cast<int>(prefix.size());
-                    if (pad > 0)
-                        s = std::string(pad, ' ') + s;
+            // Header row (supports multi-line headers with \n, bottom-aligned)
+            std::vector<std::vector<std::string>> hdr_lines(vis.size());
+            size_t                                max_lines = 1;
+            for (size_t vi = 0; vi < vis.size(); ++vi) {
+                const std::string& hdr = cols[vis[vi]].header;
+                size_t             pos = 0;
+                while (pos <= hdr.size()) {
+                    size_t nl = hdr.find('\n', pos);
+                    if (nl == std::string::npos)
+                        nl = hdr.size();
+                    hdr_lines[vi].push_back(hdr.substr(pos, nl - pos));
+                    pos = nl + 1;
                 }
-                lines.push_back(text(prefix + s));
+                if (hdr_lines[vi].size() > max_lines)
+                    max_lines = hdr_lines[vi].size();
             }
-            auto el = (max_lines == 1) ? std::move(lines[0]) : vbox(std::move(lines));
-            if (vi + 1 < vis.size() || ralign[vi])
-                el = el | size(WIDTH, EQUAL, widths[vi]);
-            else
-                el = el | flex;
-            hdr_cells.push_back(std::move(el));
-        }
-        Elements tbl_rows;
-        if (!tbl->no_header()) {
-            tbl_rows.push_back(hbox(hdr_cells) | color(Color::Cyan) | bold);
-            tbl_rows.push_back(separator());
-        }
-
-        // Data rows
-        tbl->access([&](const auto& rows) {
-            for (const auto& row : rows) {
-                Elements cells;
-                for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
-                    const auto& cv = row.cells[vis[vi]];
-                    std::string val =
-                        format_cell(cols[vis[vi]].type, cv.data, cols[vis[vi]].decimals);
-                    std::string prefix = " ";
+            Elements hdr_cells;
+            for (size_t vi = 0; vi < vis.size(); ++vi) {
+                Elements lines;
+                size_t   pad_lines = max_lines - hdr_lines[vi].size();
+                for (size_t i = 0; i < pad_lines; ++i)
+                    lines.push_back(text(""));
+                std::string prefix = " ";
+                for (const auto& line : hdr_lines[vi]) {
+                    std::string s = line;
                     if (ralign[vi]) {
-                        int pad = widths[vi] - static_cast<int>(val.size()) -
+                        int pad = widths[vi] - static_cast<int>(s.size()) -
                                   static_cast<int>(prefix.size());
                         if (pad > 0)
-                            val = std::string(pad, ' ') + val;
+                            s = std::string(pad, ' ') + s;
                     }
-                    auto el = apply_style(text(prefix + val), cv);
-                    if (vi + 1 < vis.size() || ralign[vi])
-                        el = el | size(WIDTH, EQUAL, widths[vi]);
-                    else
-                        el = el | flex;
-                    cells.push_back(el);
+                    lines.push_back(text(prefix + s));
                 }
-                tbl_rows.push_back(hbox(cells));
+                auto el = (max_lines == 1) ? std::move(lines[0]) : vbox(std::move(lines));
+                if (vi + 1 < vis.size() || ralign[vi])
+                    el = el | size(WIDTH, EQUAL, widths[vi]);
+                else
+                    el = el | flex;
+                hdr_cells.push_back(std::move(el));
             }
-        });
+            Elements tbl_rows;
+            if (!tbl->no_header()) {
+                tbl_rows.push_back(hbox(hdr_cells) | color(Color::Cyan) | bold);
+                tbl_rows.push_back(separator());
+            }
 
-        std::string box_title = tbl->title().empty() ? "Lua Table" : tbl->title();
-        auto        hi        = tbl->header_info();
-        auto        hi_str    = format_cell(ColumnType::String, hi.data);
-        if (!hi_str.empty()) {
-            auto el = apply_style(text("  " + hi_str), hi);
-            box_title += " ";
-            tbl_rows.insert(tbl_rows.begin(),
-                            hbox({text(" " + box_title + " ") | bold | color(Color::Gold1),
-                                  std::move(el) | flex}));
-            lua_panels.push_back(vbox(std::move(tbl_rows)) | border);
-        } else {
-            lua_panels.push_back(section_box(box_title, tbl_rows));
+            // Data rows
+            tbl->access([&](const auto& rows) {
+                for (const auto& row : rows) {
+                    Elements cells;
+                    for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
+                        const auto& cv = row.cells[vis[vi]];
+                        std::string val =
+                            format_cell(cols[vis[vi]].type, cv.data, cols[vis[vi]].decimals);
+                        std::string prefix = " ";
+                        if (ralign[vi]) {
+                            int pad = widths[vi] - static_cast<int>(val.size()) -
+                                      static_cast<int>(prefix.size());
+                            if (pad > 0)
+                                val = std::string(pad, ' ') + val;
+                        }
+                        auto el = apply_style(text(prefix + val), cv);
+                        if (vi + 1 < vis.size() || ralign[vi])
+                            el = el | size(WIDTH, EQUAL, widths[vi]);
+                        else
+                            el = el | flex;
+                        cells.push_back(el);
+                    }
+                    tbl_rows.push_back(hbox(cells));
+                }
+            });
+
+            std::string box_title = tbl->title().empty() ? "Lua Table" : tbl->title();
+            auto        hi        = tbl->header_info();
+            auto        hi_str    = format_cell(ColumnType::String, hi.data);
+            if (!hi_str.empty()) {
+                auto el = apply_style(text("  " + hi_str), hi);
+                box_title += " ";
+                tbl_rows.insert(tbl_rows.begin(),
+                                hbox({text(" " + box_title + " ") | bold | color(Color::Gold1),
+                                      std::move(el) | flex}));
+                lua_elems.push_back(vbox(std::move(tbl_rows)) | border);
+            } else {
+                lua_elems.push_back(section_box(box_title, tbl_rows));
+            }
+        } else if (auto sum = std::dynamic_pointer_cast<LuaSummary>(panel)) {
+            const auto& flds = sum->fields();
+            Elements    rows;
+            sum->access([&](const auto& values) {
+                for (size_t i = 0; i < flds.size(); ++i) {
+                    std::string label = "  " + flds[i].header + " : ";
+                    std::string val   = format_cell(flds[i].type, values[i].data, flds[i].decimals);
+                    auto        el    = apply_style(text(val), values[i]);
+                    rows.push_back(hbox({text(label) | color(Color::GrayDark), std::move(el)}));
+                }
+            });
+            std::string box_title = sum->title().empty() ? "Summary" : sum->title();
+            summary_run.push_back(section_box(box_title, rows) | flex);
         }
     }
+    flush_summaries();
 
     Elements panels;
 
@@ -876,7 +951,7 @@ Element LuaTab::render(const AppState& /*snap*/) {
         panels.push_back(section_box("ERRORS", std::move(err_rows)) | color(Color::Red));
     }
 
-    for (auto& lp : lua_panels) {
+    for (auto& lp : lua_elems) {
         panels.push_back(std::move(lp));
     }
     return vbox(panels) | flex;
