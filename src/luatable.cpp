@@ -100,25 +100,19 @@ size_t LuaTable::col_index(const std::string& name) const {
 void LuaTable::update(const CellData& key, const std::map<std::string, CellValue>& data) {
     Row row;
     row.cells.resize(columns_.size());
-
-    // Set key column
     row.cells[key_index_].data = key;
 
     for (const auto& [name, cell] : data) {
         size_t idx = col_index(name);
-        if (idx < columns_.size()) {
+        if (idx < columns_.size() && idx != key_index_) {
             row.cells[idx] = cell;
         }
     }
 
     rows_.update([&](auto& rd) {
-        // Remove existing row with this key
-        for (auto it = rd.rows.begin(); it != rd.rows.end(); ++it) {
-            if (it->cells[key_index_].data == key) {
-                rd.rows.erase(it);
-                break;
-            }
-        }
+        auto it = rd.rows.find(key);
+        if (it != rd.rows.end())
+            rd.rows.erase(it);
         row.epoch = rd.current_epoch;
         rd.rows.insert(std::move(row));
     });
@@ -126,13 +120,11 @@ void LuaTable::update(const CellData& key, const std::map<std::string, CellValue
 
 bool LuaTable::remove(const CellData& key) {
     return rows_.update([&](auto& rd) {
-        for (auto it = rd.rows.begin(); it != rd.rows.end(); ++it) {
-            if (it->cells[key_index_].data == key) {
-                rd.rows.erase(it);
-                return true;
-            }
-        }
-        return false;
+        auto it = rd.rows.find(key);
+        if (it == rd.rows.end())
+            return false;
+        rd.rows.erase(it);
+        return true;
     });
 }
 

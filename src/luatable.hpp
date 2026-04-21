@@ -40,10 +40,13 @@ struct Row {
 };
 
 struct RowCompare {
-    size_t key_index = 0;
+    using is_transparent = void;
+    size_t key_index     = 0;
     bool   operator()(const Row& a, const Row& b) const {
         return a.cells[key_index].data < b.cells[key_index].data;
     }
+    bool operator()(const Row& a, const CellData& b) const { return a.cells[key_index].data < b; }
+    bool operator()(const CellData& a, const Row& b) const { return a < b.cells[key_index].data; }
 };
 
 struct RowData {
