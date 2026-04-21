@@ -234,8 +234,10 @@ int Application::configure(int argc, char* argv[]) {
 
     // Lua tabs
     app.add_option("--tab", lua_tabs, "Load a Lua tab script (repeatable)")->group("Lua");
-    app.add_option("--allow-rpc", extra_rpcs, "Add RPC method to Lua allowlist (repeatable)")
-        ->group("Lua");
+    app.add_option("--allow-rpc", extra_rpcs,
+                   "Add RPC method to Lua allowlist (repeatable, comma-separated)")
+        ->group("Lua")
+        ->delimiter(',');
 
     // Display
     app.add_option("-r,--refresh", refresh_secs, "Refresh interval in seconds")
