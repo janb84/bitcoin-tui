@@ -24,7 +24,14 @@ struct LuaError {
     std::chrono::system_clock::time_point when;
 };
 
-using LuaPanelVec = std::vector<std::shared_ptr<LuaPanel>>;
+struct LuaPanelRender {
+    explicit LuaPanelRender(std::shared_ptr<LuaPanel> p) : panel(std::move(p)) {}
+    std::shared_ptr<LuaPanel> panel;
+    std::atomic<int>          scroll_offset{0};
+    std::atomic<bool>         scrollable{false};
+};
+
+using LuaPanelVec = std::vector<std::shared_ptr<LuaPanelRender>>;
 
 struct LuaTabState {
     std::string             lua_status; // status output from Lua
@@ -50,6 +57,7 @@ class LuaTab : public Tab {
     std::string    name() const override;
     ftxui::Element render(const AppState& snap) override;
     ftxui::Element key_hints(const AppState& snap) const override;
+    bool           handle_focused_event(const ftxui::Event& event) override;
     void           join() override;
 
   private:
@@ -64,5 +72,7 @@ class LuaTab : public Tab {
     const json                  tab_options_;
     const std::set<std::string> rpc_allowlist_;
     Guarded<LuaTabState>        lua_tab_state_;
+    std::atomic<int>            focused_panel_{-1}; // -1 = no highlight
+    std::atomic<bool>           panel_scrolling_{false};
     std::thread                 lua_thread_;
 };

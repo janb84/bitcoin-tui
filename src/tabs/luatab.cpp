@@ -324,7 +324,8 @@ void LuaTab::register_lua_api(LuaScript& script) {
         bool        no_header  = opts.get_or("no_header", false);
         auto        tbl =
             std::make_shared<LuaTable>(key_column, std::move(cols), std::move(title), no_header);
-        lua_tab_state_.update([&](auto& st) { st.lua_panels.push_back(tbl); });
+        lua_tab_state_.update(
+            [&](auto& st) { st.lua_panels.push_back(std::make_shared<LuaPanelRender>(tbl)); });
         return tbl;
     };
 
@@ -374,7 +375,8 @@ void LuaTab::register_lua_api(LuaScript& script) {
 
         std::string title = opts.get_or("title", std::string{});
         auto        sum   = std::make_shared<LuaSummary>(std::move(fields), std::move(title));
-        lua_tab_state_.update([&](auto& st) { st.lua_panels.push_back(sum); });
+        lua_tab_state_.update(
+            [&](auto& st) { st.lua_panels.push_back(std::make_shared<LuaPanelRender>(sum)); });
         return sum;
     };
 
@@ -736,6 +738,88 @@ void LuaTab::clear_callback_error(int id) {
     lua_tab_state_.update([&](auto& st) { st.callback_errors.erase(id); });
 }
 
+bool LuaTab::handle_focused_event(const Event& event) {
+    auto panels = lua_tab_state_.access([](const auto& s) { return s.lua_panels; });
+    int  n      = static_cast<int>(panels.size());
+    if (n == 0)
+        return false;
+
+    int  fp        = focused_panel_.load();
+    bool scrolling = panel_scrolling_.load();
+
+    // Find next/prev scrollable panel, or -1 if none
+    auto next_scrollable = [&](int from, int dir) -> int {
+        for (int i = from + dir; i >= 0 && i < n; i += dir) {
+            if (panels[i]->scrollable)
+                return i;
+        }
+        return -1;
+    };
+
+    if (fp >= 0) {
+        if (event == Event::Return) {
+            panel_scrolling_ = !scrolling;
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        if (scrolling && fp < n) {
+            auto& panel_render = panels[fp];
+            if (event == Event::ArrowDown) {
+                ++panel_render->scroll_offset;
+                screen_.PostEvent(Event::Custom);
+                return true;
+            }
+            if (event == Event::ArrowUp) {
+                if (panel_render->scroll_offset > 0)
+                    --panel_render->scroll_offset;
+                screen_.PostEvent(Event::Custom);
+                return true;
+            }
+            return false;
+        }
+        if (event == Event::ArrowDown) {
+            int next = next_scrollable(fp, 1);
+            if (next >= 0)
+                focused_panel_ = next;
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        if (event == Event::ArrowUp) {
+            int prev = next_scrollable(fp, -1);
+            if (prev >= 0) {
+                focused_panel_ = prev;
+            } else {
+                focused_panel_   = -1;
+                panel_scrolling_ = false;
+            }
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        return false;
+    }
+
+    // No panel highlighted — arrow keys enter panel-selection mode
+    if (event == Event::ArrowDown) {
+        int first = next_scrollable(-1, 1);
+        if (first >= 0)
+            focused_panel_ = first;
+        else
+            return false;
+        screen_.PostEvent(Event::Custom);
+        return true;
+    }
+    if (event == Event::ArrowUp) {
+        int last = next_scrollable(n, -1);
+        if (last >= 0)
+            focused_panel_ = last;
+        else
+            return false;
+        screen_.PostEvent(Event::Custom);
+        return true;
+    }
+    return false;
+}
+
 Element LuaTab::key_hints(const AppState& snap) const {
     auto lua_str = lua_tab_state_.access([](const auto& s) { return s.lua_status; });
     return hbox({text("  " + lua_str) | color(Color::Cyan), refresh_indicator(snap),
@@ -762,8 +846,10 @@ static Element apply_style(Element el, const CellValue& cv) {
 
 Element LuaTab::render(const AppState& /*snap*/) {
     struct PanelInfo {
-        Element elem;
-        int     natural_height;
+        Elements chrome;             // title, header+separator (rendered before data rows)
+        Elements data_rows;          // scrollable content
+        int      chrome_height = 0;  // border(2) + chrome elements
+        int      panel_index   = -1; // index into panels_vec, -1 for summary groups
     };
     std::vector<PanelInfo> lua_elems;
     LuaPanelVec panels_vec = lua_tab_state_.access([](const auto& s) { return s.lua_panels; });
@@ -774,12 +860,15 @@ Element LuaTab::render(const AppState& /*snap*/) {
     auto     flush_summaries    = [&]() {
         if (summary_run.empty())
             return;
-        lua_elems.push_back({hbox(std::move(summary_run)), summary_max_height});
+        // Summaries are not scrollable — put everything in chrome, no data_rows
+        lua_elems.push_back({{hbox(std::move(summary_run))}, {}, summary_max_height});
         summary_run.clear();
         summary_max_height = 0;
     };
 
-    for (const auto& panel : panels_vec) {
+    for (int pi = 0; pi < static_cast<int>(panels_vec.size()); ++pi) {
+        const auto& panel_render = panels_vec[pi];
+        const auto& panel        = panel_render->panel;
         if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panel)) {
             flush_summaries();
 
@@ -874,16 +963,31 @@ Element LuaTab::render(const AppState& /*snap*/) {
                     el = el | flex;
                 hdr_cells.push_back(std::move(el));
             }
-            Elements tbl_rows;
+            Elements chrome;
             if (!tbl->no_header()) {
-                tbl_rows.push_back(hbox(hdr_cells) | color(Color::Cyan) | bold);
-                tbl_rows.push_back(separator());
+                chrome.push_back(hbox(hdr_cells) | color(Color::Cyan) | bold);
+                chrome.push_back(separator());
             }
 
+            const auto& box_title = tbl->title();
+            auto        hi        = tbl->header_info();
+            auto        hi_str    = format_cell(ColumnType::String, hi.data);
+            if (!hi_str.empty() && !box_title.empty()) {
+                auto el = apply_style(text("  " + hi_str), hi);
+                chrome.insert(chrome.begin(),
+                              hbox({text(" " + box_title + " ") | bold | color(Color::Gold1),
+                                    std::move(el) | flex}));
+            } else if (!box_title.empty()) {
+                chrome.insert(chrome.begin(),
+                              text(" " + box_title + " ") | bold | color(Color::Gold1));
+            }
+
+            // chrome_height: border(2) + chrome element count
+            int chrome_h = 2 + static_cast<int>(chrome.size());
+
             // Data rows
-            int data_row_count = 0;
+            Elements data_rows;
             tbl->access([&](const auto& rows) {
-                data_row_count = static_cast<int>(rows.size());
                 for (const auto& row : rows) {
                     Elements cells;
                     for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
@@ -904,31 +1008,11 @@ Element LuaTab::render(const AppState& /*snap*/) {
                             el = el | flex;
                         cells.push_back(el);
                     }
-                    tbl_rows.push_back(hbox(cells));
+                    data_rows.push_back(hbox(cells));
                 }
             });
 
-            // Natural height: border(2) + title(0-1) + header+sep(0-2) + data rows
-            const auto& box_title = tbl->title();
-            int         nat_h     = 2 + data_row_count;
-            if (!box_title.empty())
-                ++nat_h;
-            if (!tbl->no_header())
-                nat_h += static_cast<int>(max_lines) + 1; // header lines + separator
-
-            auto hi     = tbl->header_info();
-            auto hi_str = format_cell(ColumnType::String, hi.data);
-            if (!hi_str.empty() && !box_title.empty()) {
-                auto el = apply_style(text("  " + hi_str), hi);
-                tbl_rows.insert(tbl_rows.begin(),
-                                hbox({text(" " + box_title + " ") | bold | color(Color::Gold1),
-                                      std::move(el) | flex}));
-                lua_elems.push_back({vbox(std::move(tbl_rows)) | border, nat_h});
-            } else if (!box_title.empty()) {
-                lua_elems.push_back({section_box(box_title, tbl_rows), nat_h});
-            } else {
-                lua_elems.push_back({vbox(std::move(tbl_rows)) | border, nat_h});
-            }
+            lua_elems.push_back({std::move(chrome), std::move(data_rows), chrome_h, pi});
         } else if (auto sum = std::dynamic_pointer_cast<LuaSummary>(panel)) {
             const auto& flds = sum->fields();
             Elements    rows;
@@ -998,6 +1082,12 @@ Element LuaTab::render(const AppState& /*snap*/) {
     int available = screen_.dimy() - 9 - error_height;
     int n         = static_cast<int>(lua_elems.size());
 
+    // Natural height = chrome_height + data_rows.size()
+    // (for summary groups, data_rows is empty and chrome_height is the full height)
+    auto nat_height = [](const PanelInfo& p) {
+        return p.chrome_height + static_cast<int>(p.data_rows.size());
+    };
+
     std::vector<int> allocated(n);
     if (n > 0 && available > 0) {
         std::vector<bool> settled(n, false);
@@ -1009,8 +1099,8 @@ Element LuaTab::render(const AppState& /*snap*/) {
             for (int i = 0; i < n; ++i) {
                 if (settled[i])
                     continue;
-                if (lua_elems[i].natural_height <= share) {
-                    allocated[i] = lua_elems[i].natural_height;
+                if (nat_height(lua_elems[i]) <= share) {
+                    allocated[i] = nat_height(lua_elems[i]);
                     remaining -= allocated[i];
                     settled[i] = true;
                     ++progress;
@@ -1018,7 +1108,6 @@ Element LuaTab::render(const AppState& /*snap*/) {
             }
             unsettled -= progress;
             if (progress == 0) {
-                // All remaining panels need more than their share — give equal split
                 for (int i = 0; i < n; ++i) {
                     if (!settled[i]) {
                         allocated[i] = remaining / unsettled;
@@ -1031,15 +1120,61 @@ Element LuaTab::render(const AppState& /*snap*/) {
         }
     }
 
+    int  fp        = focused_panel_.load();
+    bool scrolling = panel_scrolling_.load();
+
     Elements panels;
     if (error_panel)
         panels.push_back(std::move(error_panel));
     for (int i = 0; i < n; ++i) {
         auto& lp = lua_elems[i];
-        if (allocated[i] < lp.natural_height)
-            panels.push_back(std::move(lp.elem) | size(HEIGHT, EQUAL, allocated[i]));
+
+        if (lp.data_rows.empty()) {
+            // Summary group — no scrolling, just use chrome as-is
+            Elements content(std::move(lp.chrome));
+            auto     elem = vbox(std::move(content));
+            if (allocated[i] < nat_height(lp))
+                elem = elem | size(HEIGHT, EQUAL, allocated[i]);
+            panels.push_back(std::move(elem));
+            continue;
+        }
+
+        // Table panel — apply scroll offset and row limit
+        int max_data_rows = allocated[i] - lp.chrome_height;
+        int total_rows    = static_cast<int>(lp.data_rows.size());
+        int offset        = 0;
+
+        if (lp.panel_index >= 0 && lp.panel_index < static_cast<int>(panels_vec.size())) {
+            offset = panels_vec[lp.panel_index]->scroll_offset;
+        }
+
+        // Clamp scroll offset
+        if (max_data_rows < total_rows) {
+            offset = std::clamp(offset, 0, total_rows - max_data_rows);
+        } else {
+            offset = 0;
+        }
+        // Write back scrollability and clamped offset
+        if (lp.panel_index >= 0 && lp.panel_index < static_cast<int>(panels_vec.size())) {
+            bool is_scrollable                        = (total_rows > max_data_rows);
+            panels_vec[lp.panel_index]->scrollable    = is_scrollable;
+            panels_vec[lp.panel_index]->scroll_offset = is_scrollable ? offset : 0;
+        }
+
+        Elements content(std::move(lp.chrome));
+        int      end = std::min(offset + max_data_rows, total_rows);
+        for (int r = offset; r < end; ++r) {
+            content.push_back(std::move(lp.data_rows[r]));
+        }
+
+        bool is_focused = (lp.panel_index >= 0 && lp.panel_index == fp);
+        auto body       = vbox(std::move(content));
+        if (is_focused && scrolling)
+            panels.push_back(window(text("***") | bold | color(Color::Cyan), std::move(body)));
+        else if (is_focused)
+            panels.push_back(window(text("***") | color(Color::White), std::move(body)));
         else
-            panels.push_back(std::move(lp.elem));
+            panels.push_back(std::move(body) | border);
     }
     return vbox(panels) | flex;
 }
