@@ -900,18 +900,19 @@ Element LuaTab::render(const AppState& /*snap*/) {
                 }
             });
 
-            std::string box_title = tbl->title().empty() ? "Lua Table" : tbl->title();
+            const auto& box_title = tbl->title();
             auto        hi        = tbl->header_info();
             auto        hi_str    = format_cell(ColumnType::String, hi.data);
-            if (!hi_str.empty()) {
+            if (!hi_str.empty() && !box_title.empty()) {
                 auto el = apply_style(text("  " + hi_str), hi);
-                box_title += " ";
                 tbl_rows.insert(tbl_rows.begin(),
                                 hbox({text(" " + box_title + " ") | bold | color(Color::Gold1),
                                       std::move(el) | flex}));
                 lua_elems.push_back(vbox(std::move(tbl_rows)) | border);
-            } else {
+            } else if (!box_title.empty()) {
                 lua_elems.push_back(section_box(box_title, tbl_rows));
+            } else {
+                lua_elems.push_back(vbox(std::move(tbl_rows)) | border);
             }
         } else if (auto sum = std::dynamic_pointer_cast<LuaSummary>(panel)) {
             const auto& flds = sum->fields();
@@ -924,8 +925,12 @@ Element LuaTab::render(const AppState& /*snap*/) {
                     rows.push_back(hbox({text(label) | color(Color::GrayDark), std::move(el)}));
                 }
             });
-            std::string box_title = sum->title().empty() ? "Summary" : sum->title();
-            summary_run.push_back(section_box(box_title, rows) | flex);
+            const auto& box_title = sum->title();
+            if (!box_title.empty()) {
+                summary_run.push_back(section_box(box_title, rows) | flex);
+            } else {
+                summary_run.push_back(vbox(std::move(rows)) | border | flex);
+            }
         }
     }
     flush_summaries();
