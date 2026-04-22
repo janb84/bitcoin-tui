@@ -24,7 +24,7 @@ class MempoolTab : public Tab {
 
     std::string    name() const override { return "Mempool"; }
     ftxui::Element render(const AppState& snap) override;
-    ftxui::Element key_hints(const AppState& snap) const override;
+    FooterSpec     footer_buttons(const AppState& snap) override;
     // Handles outputs/inputs sub-overlays; nullopt = not in overlay mode
     std::optional<bool> handle_tx_overlay(const ftxui::Event& event);
     // Handles mempool block navigation

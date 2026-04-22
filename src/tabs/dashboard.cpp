@@ -9,10 +9,8 @@ DashboardTab::DashboardTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteract
                            std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 
-Element DashboardTab::key_hints(const AppState& snap) const {
-    return hbox(
-        {refresh_indicator(snap),
-         text("  [Tab/\u2190/\u2192] switch  [/] search  [q] quit ") | color(Color::GrayDark)});
+FooterSpec DashboardTab::footer_buttons(const AppState& snap) {
+    return FooterSpec{{refresh_btn(snap)}};
 }
 
 Element DashboardTab::render(const AppState& s) {

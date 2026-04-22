@@ -100,6 +100,23 @@ function btcui_key_hint(text) end
 ---@param msg string
 function btcui_error(msg) end
 
+--- Register a clickable button in the footer bar. Can only be called
+--- during script loading (top-level code). The callback is invoked on
+--- the Lua thread when the button is clicked.
+---@param label string     Button label text
+---@param callback function  Called when the button is clicked
+function btcui_add_footer_button(label, callback) end
+
+--- Show or hide the global "/ search" button in the footer bar for this tab.
+--- Defaults to true. Can be called at any time (e.g. when an overlay is active).
+---@param show boolean
+function btcui_show_search_button(show) end
+
+--- Show or hide the global "[q] quit" button in the footer bar for this tab.
+--- Defaults to true. Can be called at any time.
+---@param show boolean
+function btcui_show_quit_button(show) end
+
 ----------------------------------------------------------------------
 -- Timer handle
 ----------------------------------------------------------------------

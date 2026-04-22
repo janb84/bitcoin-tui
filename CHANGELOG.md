@@ -6,12 +6,15 @@ All notable changes to bitcoin-tui are documented here.
 
 ### Added
 - **Mouse support** - click tabs to switch between them
+- **Clickable footer bar** - footer hints are now rendered as a dedicated mouse-aware footer bar; click refresh/search/quit and tab-specific actions directly
 - **Lua scripting** - load custom tabs from Lua scripts with `--tab <path.lua>`; scripts can call a configurable set of RPC methods (allowlisted with `--allow-rpc`); optional debug log via `--debuglog`; bundled example: slow-block monitor tab
+- **Lua footer buttons** - Lua scripts can register clickable footer actions with `btcui_add_footer_button(label, callback)`; `btcui_show_search_button(bool)` and `btcui_show_quit_button(bool)` let scripts hide the global search and quit buttons per-tab
 - **Config file support** - options can be set in a `config.toml` file (Linux: `$XDG_CONFIG_HOME/bitcoin-tui/` or `~/.config/bitcoin-tui/`; macOS: `~/Library/Application Support/bitcoin-tui/`; Windows: `%APPDATA%\bitcoin-tui\`); CLI flags override file values; path can be changed with `--config`
 - CLI11 replaces hand-rolled argument parsing; adds `--help` grouping, `--config` file support, and stricter validation of unknown flags
 
 ### Changed
 - FTXUI updated from v5.0.0 to v6.1.9
+- Footer hints are unified across tabs: context-sensitive actions now appear in one shared footer bar instead of each tab rendering its own status text
 
 ## [0.8.3] - 2026-04-11
 

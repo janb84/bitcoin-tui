@@ -184,39 +184,42 @@ MempoolTab::OverlayInfo MempoolTab::overlay_info() const {
     });
 }
 
-Element MempoolTab::key_hints(const AppState& snap) const {
-    auto oi          = overlay_info();
-    auto yellow_hint = [](const char* hint) { return hbox({text(hint) | color(Color::Yellow)}); };
+FooterSpec MempoolTab::footer_buttons(const AppState& snap) {
+    auto oi  = overlay_info();
+    auto esc = [this] { handle_escape(ftxui::Event::Escape); };
+    auto ent = [this] { handle_enter(ftxui::Event::Return); };
 
-    struct HintCase {
-        bool        enabled;
-        const char* hint;
-    };
-    const HintCase overlay_hints[] = {
-        {oi.outputs_open, "  [\u2191/\u2193] navigate  [Esc] back  [q] quit "},
-        {oi.inputs_open, "  [\u2191/\u2193] navigate  [\u23ce] lookup  [Esc] back  [q] quit "},
-        {oi.outputs_row_sel,
-         "  [\u23ce] show outputs  [\u2191/\u2193] navigate  [Esc] dismiss  [q] quit "},
-        {oi.inputs_row_sel,
-         "  [\u23ce] show inputs  [\u2191/\u2193] navigate  [Esc] dismiss  [q] quit "},
-        {oi.block_row_sel,
-         "  [\u23ce] view block  [\u2191/\u2193] navigate  [Esc] dismiss  [q] quit "},
-        {oi.is_confirmed_tx, "  [\u2191/\u2193] navigate  [Esc] dismiss  [q] quit "},
-        {oi.visible, "  [Esc] dismiss  [q] quit "},
-    };
-
-    for (const auto& item : overlay_hints) {
-        if (item.enabled)
-            return yellow_hint(item.hint);
-    }
-
+    if (oi.outputs_open)
+        return FooterSpec{
+            {{"  [\u2191/\u2193] navigate ", nullptr, true}, {"  [Esc] back ", esc, true}}};
+    if (oi.inputs_open)
+        return FooterSpec{{{"  [\u2191/\u2193] navigate ", nullptr, true},
+                           {"  [\u23ce] lookup ", ent, true},
+                           {"  [Esc] back ", esc, true}}};
+    if (oi.outputs_row_sel)
+        return FooterSpec{{{"  [\u23ce] show outputs ", ent, true},
+                           {"  [\u2191/\u2193] navigate ", nullptr, true},
+                           {"  [Esc] dismiss ", esc, true}}};
+    if (oi.inputs_row_sel)
+        return FooterSpec{{{"  [\u23ce] show inputs ", ent, true},
+                           {"  [\u2191/\u2193] navigate ", nullptr, true},
+                           {"  [Esc] dismiss ", esc, true}}};
+    if (oi.block_row_sel)
+        return FooterSpec{{{"  [\u23ce] view block ", ent, true},
+                           {"  [\u2191/\u2193] navigate ", nullptr, true},
+                           {"  [Esc] dismiss ", esc, true}}};
+    if (oi.is_confirmed_tx)
+        return FooterSpec{
+            {{"  [\u2191/\u2193] navigate ", nullptr, true}, {"  [Esc] dismiss ", esc, true}}};
+    if (oi.visible)
+        return FooterSpec{{{"  [Esc] dismiss ", esc, true}}};
     if (mempool_sel >= 0)
-        return yellow_hint(
-            "  [\u23ce] view block  [\u2190/\u2192] navigate  [Esc] deselect  [q] quit ");
-
-    return hbox({refresh_indicator(snap),
-                 text("  [\u2193] select  [Tab/\u2190/\u2192] switch  [/] search  [q] quit ") |
-                     color(Color::GrayDark)});
+        return FooterSpec{
+            {{"  [\u23ce] view block ", [this] { handle_focused_event(ftxui::Event::Return); },
+              true},
+             {"  [\u2190/\u2192] navigate ", nullptr, true},
+             {"  [Esc] deselect ", [this] { handle_focused_event(ftxui::Event::Escape); }, true}}};
+    return FooterSpec{{refresh_btn(snap), {"  [\u2193] select ", nullptr}}};
 }
 
 Element MempoolTab::render(const AppState& snap) {

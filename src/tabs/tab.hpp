@@ -3,11 +3,13 @@
 #include <atomic>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
+#include "elements/footer_bar.hpp"
 #include "guarded.hpp"
 #include "rpc_client.hpp"
 #include "state.hpp"
@@ -20,18 +22,11 @@ class Tab {
           refresh_secs_{refresh_secs} {}
     virtual ~Tab() = default;
 
-    virtual std::string    name() const                          = 0;
-    virtual ftxui::Element render(const AppState& snap)          = 0;
-    virtual ftxui::Element key_hints(const AppState& snap) const = 0;
+    virtual std::string    name() const                         = 0;
+    virtual ftxui::Element render(const AppState& snap)         = 0;
+    virtual FooterSpec     footer_buttons(const AppState& snap) = 0;
     virtual bool           handle_focused_event(const ftxui::Event&) { return false; }
     virtual void           join() = 0;
-
-    static ftxui::Element refresh_indicator(const AppState& snap, int refresh_secs) {
-        return snap.refreshing
-                   ? ftxui::text(" \u21bb refreshing") | ftxui::color(ftxui::Color::Yellow)
-                   : ftxui::text(" \u21bb every " + std::to_string(refresh_secs) + "s") |
-                         ftxui::color(ftxui::Color::GrayDark);
-    }
 
   protected:
     RpcConfig                 cfg_;
@@ -41,7 +36,9 @@ class Tab {
     Guarded<AppState>&        state_;
     int                       refresh_secs_;
 
-    ftxui::Element refresh_indicator(const AppState& snap) const {
-        return refresh_indicator(snap, refresh_secs_);
+    FooterButton refresh_btn(const AppState& snap) const {
+        return {snap.refreshing ? " \u21bb refreshing"
+                                : " \u21bb every " + std::to_string(refresh_secs_) + "s",
+                nullptr, snap.refreshing};
     }
 };

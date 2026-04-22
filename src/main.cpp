@@ -26,6 +26,7 @@ static void ensure_terminal();
 #include <ftxui/screen/color.hpp>
 
 #include "bitcoind.hpp"
+#include "elements/footer_bar.hpp"
 #include "format.hpp"
 #include "guarded.hpp"
 #include "poll.hpp"
@@ -385,7 +386,18 @@ int Application::run() const {
         tab_labels.push_back(tab->name());
     auto tab_toggle = Toggle(&tab_labels, &tab_index);
 
-    auto layout = Container::Vertical({tab_toggle});
+    // Footer bar — per-tab buttons + global search/quit, all mouse-clickable
+    auto footer_bar = make_footer_bar(
+        [&]() -> FooterSpec { return tabs[tab_index]->footer_buttons(state.get()); },
+        [&]() -> bool { return global_search_active; },
+        [&] {
+            global_search_active = true;
+            global_search_str.clear();
+            screen.PostEvent(Event::Custom);
+        },
+        [&] { screen.ExitLoopClosure()(); });
+
+    auto layout = Container::Vertical({tab_toggle, footer_bar});
 
     auto renderer = Renderer(layout, [&]() -> Element {
         AppState snap = state.get();
@@ -409,12 +421,6 @@ int Application::run() const {
                 text("  Last update: " + snap.last_update) | color(Color::GrayDark),
             });
         }
-
-        // Status bar — right side (context-sensitive hints)
-        Element status_right =
-            global_search_active
-                ? hbox({text("  [Enter] search  [Esc] cancel ") | color(Color::Yellow)})
-                : tabs[tab_index]->key_hints(snap);
 
         // Connection overlay (shown when disconnected)
         auto content = snap.connected ? tab_content | flex : [&]() -> Element {
@@ -520,7 +526,7 @@ int Application::run() const {
             content,
 
             // Status bar
-            hbox({status_left, filler(), status_right}) | border,
+            hbox({status_left, filler(), footer_bar->Render()}) | border,
         });
     });
 
@@ -573,6 +579,8 @@ int Application::run() const {
         // Note: Event::mouse() is not const-qualified in FTXUI v6
         if (event.is_mouse()) {
             auto& me = const_cast<Event&>(event);
+            if (me.mouse().motion == Mouse::Moved)
+                return false;
             if (me.mouse().button == Mouse::Left && me.mouse().motion == Mouse::Pressed &&
                 me.mouse().y == 4) {
                 int mx = me.mouse().x;

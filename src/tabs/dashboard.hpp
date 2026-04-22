@@ -14,6 +14,6 @@ class DashboardTab : public Tab {
 
     std::string    name() const override { return "Dashboard"; }
     ftxui::Element render(const AppState& snap) override;
-    ftxui::Element key_hints(const AppState& snap) const override;
+    FooterSpec     footer_buttons(const AppState& snap) override;
     void           join() override;
 };

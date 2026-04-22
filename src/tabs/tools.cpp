@@ -139,13 +139,16 @@ ToolsTab::ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& scr
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
       trigger_search_(std::move(trigger_search)) {}
 
-Element ToolsTab::key_hints(const AppState& /*snap*/) const {
-    auto yellow_hint = [](const char* hint) { return hbox({text(hint) | color(Color::Yellow)}); };
-    auto gray_hint   = [](const char* hint) { return hbox({text(hint) | color(Color::GrayDark)}); };
-
+FooterSpec ToolsTab::footer_buttons(const AppState& /*snap*/) {
     if (tools_input_active)
-        return yellow_hint("  [\u23ce] submit  [Esc] cancel ");
-    return gray_hint("  [\u2191/\u2193] navigate  [\u23ce] select  [q] quit ");
+        return FooterSpec{{
+            {"  [\u23ce] submit ", [this] { handle_tools_input(ftxui::Event::Return); }, true},
+            {"  [Esc] cancel ", [this] { handle_tools_input(ftxui::Event::Escape); }, true},
+        }};
+    return FooterSpec{{
+        {"  [\u2191/\u2193] navigate ", nullptr},
+        {"  [\u23ce] select ", [this] { handle_focused_event(ftxui::Event::Return); }},
+    }};
 }
 
 void ToolsTab::open_broadcast_dialog() {
