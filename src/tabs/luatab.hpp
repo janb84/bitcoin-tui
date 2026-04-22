@@ -40,6 +40,10 @@ struct LuaTabState {
     std::optional<LuaError> init_error;      // script load failure
     std::map<int, LuaError> callback_errors; // keyed by timer/watch id
     std::vector<LuaError>   warnings;        // age out after 20s
+    // footer buttons registered by Lua via btcui_add_footer_button()
+    std::vector<std::pair<int, std::string>> footer_btn_labels; // id → label
+    bool                                     show_search = true;
+    bool                                     show_quit   = true;
 };
 
 class LuaScript;
@@ -56,7 +60,7 @@ class LuaTab : public Tab {
 
     std::string    name() const override;
     ftxui::Element render(const AppState& snap) override;
-    ftxui::Element key_hints(const AppState& snap) const override;
+    FooterSpec     footer_buttons(const AppState& snap) override;
     bool           handle_focused_event(const ftxui::Event& event) override;
     void           join() override;
 
@@ -68,11 +72,12 @@ class LuaTab : public Tab {
     void report_callback_error(int id, const std::string& source_id, const std::string& msg);
     void clear_callback_error(int id);
 
-    const std::string           debug_log_path_;
-    const json                  tab_options_;
-    const std::set<std::string> rpc_allowlist_;
-    Guarded<LuaTabState>        lua_tab_state_;
-    std::atomic<int>            focused_panel_{-1}; // -1 = no highlight
-    std::atomic<bool>           panel_scrolling_{false};
-    std::thread                 lua_thread_;
+    const std::string                debug_log_path_;
+    const json                       tab_options_;
+    const std::set<std::string>      rpc_allowlist_;
+    Guarded<LuaTabState>             lua_tab_state_;
+    std::atomic<int>                 focused_panel_{-1};
+    std::atomic<bool>                panel_scrolling_{false};
+    mutable Guarded<std::deque<int>> btn_click_queue_;
+    std::thread                      lua_thread_;
 };

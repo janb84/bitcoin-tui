@@ -20,7 +20,7 @@ class PeersTab : public Tab {
 
     std::string    name() const override { return "Peers"; }
     ftxui::Element render(const AppState& snap) override;
-    ftxui::Element key_hints(const AppState& snap) const override;
+    FooterSpec     footer_buttons(const AppState& snap) override;
     // Handles addnode input mode; call unconditionally (before tab navigation)
     bool handle_addnode_input(const ftxui::Event& event);
     // Handles ban input mode; call unconditionally (before tab navigation)

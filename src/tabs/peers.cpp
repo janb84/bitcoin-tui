@@ -214,7 +214,7 @@ static Element render_ban_overlay(const BanNodeState& ban, const std::string& ad
 
     rows.push_back(hbox({
         text("  Command : ") | color(Color::GrayDark),
-        text(ban.is_remove ? "unban" : "ban  ") | color(Color::Yellow) | bold,
+        text(ban.is_remove ? "unban" : "ban") | color(Color::Yellow) | bold,
         done ? text("") : text("  [\u2190/\u2192 to toggle]") | color(Color::GrayDark),
         filler(),
     }));
@@ -323,43 +323,73 @@ PeersTab::PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& scr
                    std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 
-Element PeersTab::key_hints(const AppState& snap) const {
-    auto yellow_hint = [](const char* hint) { return hbox({text(hint) | color(Color::Yellow)}); };
-    auto gray_hint   = [](const char* hint) { return hbox({text(hint) | color(Color::GrayDark)}); };
+FooterSpec PeersTab::footer_buttons(const AppState& snap) {
+    auto esc_addnode = [this] { handle_addnode_input(ftxui::Event::Escape); };
+    auto esc_ban     = [this] { handle_ban_input(ftxui::Event::Escape); };
+    auto esc_tab     = [this] { handle_focused_event(ftxui::Event::Escape); };
+    auto ent_tab     = [this] { handle_focused_event(ftxui::Event::Return); };
+    auto a_addnode   = [this] { handle_focused_event(ftxui::Event::Character('a')); };
+    auto b_bannode   = [this] { handle_focused_event(ftxui::Event::Character('b')); };
+    auto ent_submit  = [this] { handle_focused_event(ftxui::Event::Return); };
 
-    struct HintCase {
-        bool        enabled;
-        bool        yellow;
-        const char* hint;
-    };
-    const HintCase overlay_hints[] = {
-        {addnode_input_active, true, "  [\u23ce] submit  [\u2190/\u2192] change  [Esc] cancel "},
-        {ban_input_active, true,
-         "  [\u23ce] submit  [\u2190/\u2192] ban\u2215unban  [Esc] cancel "},
-        {peer_disconnect_overlay && !peer_action_in_flight.load(), true,
-         "  [Esc] dismiss  [q] quit "},
-        {peer_disconnect_overlay, false, "  [q] quit "},
-        {peers_panel == 1, true,
-         "  [\u2191/\u2193] navigate  [\u23ce] remove  [a] add node  [Esc] close  [q] quit "},
-        {peers_panel == 2, true,
-         "  [\u2191/\u2193] navigate  [\u23ce] unban  [Esc] close  [q] quit "},
-        {peer_detail_open, true,
-         "  [\u2190/\u2192] select action  [\u23ce] confirm  [Esc] back  [q] quit "},
-    };
-
-    for (const auto& item : overlay_hints) {
-        if (item.enabled)
-            return item.yellow ? yellow_hint(item.hint) : gray_hint(item.hint);
+    if (addnode_input_active) {
+        bool done = addnode_state_.access([](const auto& s) { return s.pending || s.has_result; });
+        if (done)
+            return FooterSpec{};
+        return FooterSpec{{
+            {"  [\u23ce] submit ", ent_submit, true},
+            {"  [\u2190/\u2192] change ", nullptr, true},
+            {"  [Esc] cancel ", esc_addnode, true},
+        }};
     }
-
-    auto ri = refresh_indicator(snap);
+    if (ban_input_active) {
+        bool done = ban_state_.access([](const auto& s) { return s.pending || s.has_result; });
+        if (done)
+            return FooterSpec{};
+        return FooterSpec{{
+            {"  [\u23ce] submit ", ent_submit, true},
+            {"  [\u2190/\u2192] ban\u2215unban ", nullptr, true},
+            {"  [Esc] cancel ", esc_ban, true},
+        }};
+    }
+    if (peer_disconnect_overlay) {
+        if (!peer_action_in_flight.load())
+            return FooterSpec{{{"  [Esc] dismiss ", esc_tab, true}}};
+        return FooterSpec{};
+    }
+    if (peers_panel == 1)
+        return FooterSpec{{
+            {"  [\u2191/\u2193] navigate ", nullptr, true},
+            {"  [\u23ce] remove ", ent_tab, true},
+            {"  [a] add node ", a_addnode, true},
+            {"  [Esc] close ", esc_tab, true},
+        }};
+    if (peers_panel == 2)
+        return FooterSpec{{
+            {"  [\u2191/\u2193] navigate ", nullptr, true},
+            {"  [\u23ce] unban ", ent_tab, true},
+            {"  [Esc] close ", esc_tab, true},
+        }};
+    if (peer_detail_open)
+        return FooterSpec{{
+            {"  [\u2190/\u2192] select ", nullptr, true},
+            {"  [\u23ce] confirm ", ent_tab, true},
+            {"  [Esc] back ", esc_tab, true},
+        }};
     if (peer_selected >= 0)
-        return hbox({ri, text("  [\u2191/\u2193] navigate  [\u23ce] details  [a] added nodes  "
-                              "[b] ban list  [q] quit ") |
-                             color(Color::GrayDark)});
-    return hbox({ri, text("  [\u2191/\u2193] navigate  [a] added nodes  [b] ban list  "
-                          "[q] quit ") |
-                         color(Color::GrayDark)});
+        return FooterSpec{{
+            refresh_btn(snap),
+            {"  [\u2191/\u2193] navigate ", nullptr},
+            {"  [\u23ce] details ", ent_tab},
+            {"  [a] add node ", a_addnode},
+            {"  [b] ban list ", b_bannode},
+        }};
+    return FooterSpec{{
+        refresh_btn(snap),
+        {"  [\u2191/\u2193] navigate ", nullptr},
+        {"  [a] add node ", a_addnode},
+        {"  [b] ban list ", b_bannode},
+    }};
 }
 
 // ============================================================================

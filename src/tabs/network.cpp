@@ -72,10 +72,8 @@ NetworkTab::NetworkTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive&
                        std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 
-Element NetworkTab::key_hints(const AppState& snap) const {
-    return hbox(
-        {refresh_indicator(snap),
-         text("  [Tab/\u2190/\u2192] switch  [/] search  [q] quit ") | color(Color::GrayDark)});
+FooterSpec NetworkTab::footer_buttons(const AppState& snap) {
+    return FooterSpec{{refresh_btn(snap)}};
 }
 
 void NetworkTab::fetch() {

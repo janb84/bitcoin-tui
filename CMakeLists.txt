@@ -114,6 +114,7 @@ add_executable(bitcoin-tui
   src/render.cpp
   src/poll.cpp
   src/search.cpp
+  src/elements/footer_bar.cpp
   src/tabs/dashboard.cpp
   src/tabs/network.cpp
   src/tabs/mempool.cpp

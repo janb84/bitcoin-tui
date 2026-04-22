@@ -10,6 +10,7 @@ add_executable(bitcoin-tui-tests
   test_guarded.cpp
   test_rpc_config.cpp
   test_bitcoind.cpp
+  test_footer_spec.cpp
 )
 target_include_directories(bitcoin-tui-tests PRIVATE ${PROJECT_SOURCE_DIR}/src/)
 target_link_libraries(bitcoin-tui-tests PRIVATE

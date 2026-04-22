@@ -93,6 +93,12 @@ struct PendingCoroutine {
 
 } // namespace
 
+struct LuaFooterBtn {
+    int                     id;
+    std::string             label;
+    sol::protected_function fn;
+};
+
 class LuaScript {
   public:
     LuaScript();
@@ -102,11 +108,13 @@ class LuaScript {
     sol::state&                             lua() { return lua_; }
     std::vector<std::unique_ptr<LogWatch>>& log_watches() { return log_watches_; }
     std::map<TimePoint, LuaTimer>&          timers() { return timers_; }
+    std::vector<LuaFooterBtn>&              footer_btns() { return footer_btns_; }
 
     void        add_log_watch(const std::string& pattern, sol::protected_function fn,
                               std::string source_id, int64_t backlog);
     TimerHandle add_timer(Clock::duration interval, sol::protected_function fn,
                           std::string source_id);
+    int         add_footer_btn(std::string label, sol::protected_function fn);
     void        wake(const TimerHandle& h);
     std::map<int, PendingCoroutine>& pending() { return pending_; }
 
@@ -126,6 +134,7 @@ class LuaScript {
     sol::state                             lua_;
     std::vector<std::unique_ptr<LogWatch>> log_watches_;
     std::map<TimePoint, LuaTimer>          timers_;
+    std::vector<LuaFooterBtn>              footer_btns_;
     int                                    next_callback_id_ = 0;
     std::map<int, PendingCoroutine>        pending_;
     std::vector<LuaError>                  warnings_;
@@ -160,6 +169,12 @@ TimerHandle LuaScript::add_timer(Clock::duration interval, sol::protected_functi
     int id = ++next_callback_id_;
     timers_.insert({Clock::now(), {id, interval, std::move(fn), std::move(source_id)}});
     return {id};
+}
+
+int LuaScript::add_footer_btn(std::string label, sol::protected_function fn) {
+    int id = ++next_callback_id_;
+    footer_btns_.push_back({id, std::move(label), std::move(fn)});
+    return id;
 }
 
 void LuaScript::wake(const TimerHandle& h) {
@@ -384,6 +399,20 @@ void LuaTab::register_lua_api(LuaScript& script) {
         lua_tab_state_.update([&](auto& st) { st.lua_status = hint; });
     };
 
+    lua_["btcui_add_footer_button"] = [&script, this](const std::string&      label,
+                                                      sol::protected_function fn) {
+        int id = script.add_footer_btn(label, std::move(fn));
+        lua_tab_state_.update([&](auto& st) { st.footer_btn_labels.push_back({id, label}); });
+    };
+
+    lua_["btcui_show_search_button"] = [this](bool show) {
+        lua_tab_state_.update([show](auto& st) { st.show_search = show; });
+    };
+
+    lua_["btcui_show_quit_button"] = [this](bool show) {
+        lua_tab_state_.update([show](auto& st) { st.show_quit = show; });
+    };
+
     lua_.new_usertype<TimerHandle>("TimerHandle", sol::no_constructor);
 
     lua_["btcui_set_interval"] = [&script](double secs, sol::protected_function fn) -> TimerHandle {
@@ -535,6 +564,23 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
 
     std::string line;
     while (running_) {
+        // 0. Dispatch footer button clicks posted from the UI thread
+        auto clicks = btn_click_queue_.update([](auto& q) { return std::exchange(q, {}); });
+        for (int btn_id : clicks) {
+            for (auto& b : script->footer_btns()) {
+                if (b.id != btn_id)
+                    continue;
+                auto result = b.fn();
+                if (!result.valid()) {
+                    sol::error err = result;
+                    report_callback_error(btn_id, "footer_btn", err.what());
+                } else {
+                    clear_callback_error(btn_id);
+                }
+                break;
+            }
+        }
+
         // 1. Read new log lines, feed to Lua callbacks
         if (logfile) {
             while (std::getline(logfile, line)) {
@@ -820,10 +866,27 @@ bool LuaTab::handle_focused_event(const Event& event) {
     return false;
 }
 
-Element LuaTab::key_hints(const AppState& snap) const {
-    auto lua_str = lua_tab_state_.access([](const auto& s) { return s.lua_status; });
-    return hbox({text("  " + lua_str) | color(Color::Cyan), refresh_indicator(snap),
-                 text("  [Tab/\u2190/\u2192] switch  [q] quit ") | color(Color::GrayDark)});
+FooterSpec LuaTab::footer_buttons(const AppState& snap) {
+    struct Snapshot {
+        std::string                              lua_status;
+        std::vector<std::pair<int, std::string>> footer_btn_labels;
+        bool                                     show_search;
+        bool                                     show_quit;
+    };
+    auto                      st = lua_tab_state_.access([](const auto& s) {
+        return Snapshot{s.lua_status, s.footer_btn_labels, s.show_search, s.show_quit};
+    });
+    std::vector<FooterButton> btns;
+    if (!st.lua_status.empty())
+        btns.push_back({"  " + st.lua_status, nullptr, false});
+    btns.push_back(refresh_btn(snap));
+    for (const auto& [id, label] : st.footer_btn_labels) {
+        int btn_id = id;
+        btns.push_back({label, [this, btn_id] {
+                            btn_click_queue_.update([btn_id](auto& q) { q.push_back(btn_id); });
+                        }});
+    }
+    return FooterSpec{std::move(btns), st.show_search, st.show_quit};
 }
 
 static Element apply_style(Element el, const CellValue& cv) {
