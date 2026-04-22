@@ -234,8 +234,10 @@ int Application::configure(int argc, char* argv[]) {
 
     // Lua tabs
     app.add_option("--tab", lua_tabs, "Load a Lua tab script (repeatable)")->group("Lua");
-    app.add_option("--allow-rpc", extra_rpcs, "Add RPC method to Lua allowlist (repeatable)")
-        ->group("Lua");
+    app.add_option("--allow-rpc", extra_rpcs,
+                   "Add RPC method to Lua allowlist (repeatable, comma-separated)")
+        ->group("Lua")
+        ->delimiter(',');
 
     // Display
     app.add_option("-r,--refresh", refresh_secs, "Refresh interval in seconds")
@@ -349,9 +351,28 @@ int Application::run() const {
                                                          ? datadir + "/" + network_subdir(network) + "debug.log"
                                                          : debug_log_file;
     std::vector<std::unique_ptr<LuaTab>> lua_tab_ptrs;
-    for (const auto& script : lua_tabs) {
-        lua_tab_ptrs.push_back(std::make_unique<LuaTab>(
-            cfg, auth, screen, running, state, refresh_secs, debug_log, script, extra_rpcs));
+    for (const auto& tab_spec : lua_tabs) {
+        json options;
+        if (!tab_spec.empty() && tab_spec[0] == '{') {
+            options = json::parse(tab_spec);
+        } else {
+            std::istringstream ss(tab_spec);
+            std::string        token;
+            bool               first = true;
+            while (std::getline(ss, token, ',')) {
+                if (first) {
+                    options["script"] = token;
+                    first             = false;
+                } else if (auto eq = token.find('='); eq != std::string::npos) {
+                    options[token.substr(0, eq)] = token.substr(eq + 1);
+                }
+            }
+        }
+        if (!options.contains("script") || options["script"].get<std::string>().empty())
+            throw std::runtime_error("--tab: missing script path");
+        lua_tab_ptrs.push_back(std::make_unique<LuaTab>(cfg, auth, screen, running, state,
+                                                        refresh_secs, debug_log, std::move(options),
+                                                        extra_rpcs));
     }
 
     std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
@@ -611,9 +632,8 @@ int Application::run() const {
             return true;
         if (peers_tab.handle_ban_input(event))
             return true;
-        if (tab_index == 3 && peers_tab.handle_tab_events(event))
-            return true;
-        if (tab_index == 1 && mempool_tab.handle_navigation(event))
+        if (tab_index >= 0 && tab_index < static_cast<int>(tabs.size()) &&
+            tabs[tab_index]->handle_focused_event(event))
             return true;
 
         // Normal mode keys
@@ -623,8 +643,6 @@ int Application::run() const {
             screen.PostEvent(Event::Custom);
             return true;
         }
-        if (tab_index == 4 && tools_tab.handle_keys(event))
-            return true;
         if (mempool_tab.handle_io_nav(event))
             return true;
         if (mempool_tab.handle_enter(event))

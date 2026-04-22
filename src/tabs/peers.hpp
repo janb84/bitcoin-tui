@@ -25,8 +25,8 @@ class PeersTab : public Tab {
     bool handle_addnode_input(const ftxui::Event& event);
     // Handles ban input mode; call unconditionally (before tab navigation)
     bool handle_ban_input(const ftxui::Event& event);
-    // Handles all peers tab events; call only when tab_index == 3
-    bool handle_tab_events(const ftxui::Event& event);
+    // Handles all peers tab events
+    bool handle_focused_event(const ftxui::Event& event) override;
     void join() override;
 
   private:

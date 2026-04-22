@@ -35,8 +35,19 @@ function btcui_wake(handle) end
 --- during script loading (top-level code); calling it from a
 --- callback raises an error. The name takes effect immediately,
 --- so it persists even if the script fails to load.
+--- Note: if the user specified t=... in the --tab option, that
+--- takes precedence over btcui_set_name().
 ---@param name string
 function btcui_set_name(name) end
+
+--- Read a tab option set via --tab script.lua,key=val,...
+--- Returns the string value if set. If not set, returns default_val.
+--- If not set and no default is provided, raises an error.
+--- The "t" key is reserved for the tab title override.
+---@param key string
+---@param default_val? any   Returned when the option is not set
+---@return any
+function btcui_option(key, default_val) end
 
 --- Register a log pattern callback. The pattern uses RE2 syntax and
 --- is matched against the message portion of each debug.log line.
@@ -57,6 +68,28 @@ function btcui_watch_log(pattern, callback, backlog) end
 ---@param ... any         Method parameters
 ---@return any
 function btcui_rpc(method, ...) end
+
+--- Call a Bitcoin Core RPC method for a specific wallet. Can only be called from within a
+--- btcui_set_interval callback (yields the coroutine). The RPC is
+--- dispatched to a background thread, so other timers and log
+--- callbacks continue to run while waiting. Returns the parsed
+--- JSON result directly. On RPC error, raises a Lua error (catchable
+--- with pcall/xpcall).
+---@param wallet string   Wallet name (empty string for the default wallet)
+---@param method string   RPC method name (must be in the allowlist)
+---@param ... any         Method parameters
+---@return any
+function btcui_rpc_wallet(wallet, method, ...) end
+
+--- Create a summary panel for display. Returns a Summary object.
+--- Summary panels show compact "Label : Value" lines and are
+--- rendered side-by-side when consecutive summaries are created.
+--- Options:
+---   title   string        Section title (default: "Summary")
+---   fields  FieldDef[]    Field definitions (required)
+---@param opts SummaryOpts
+---@return Summary
+function btcui_summary(opts) end
 
 --- Set the status line hint text (displayed in the tab bar).
 ---@param text string
@@ -114,6 +147,33 @@ function Table:finish_refresh() end
 function Table:set_header_info(info) end
 
 ----------------------------------------------------------------------
+-- Summary object
+----------------------------------------------------------------------
+
+---@class Summary
+local Summary = {}
+
+--- Update one or more fields. Values can be plain values or
+--- styled tables with { value = v, color = "red", bold = true }.
+--- Only named fields are updated; others keep their previous value.
+---@param data table    Field values as { name = value, ... }
+function Summary:set(data) end
+
+----------------------------------------------------------------------
+-- Summary options
+----------------------------------------------------------------------
+
+---@class SummaryOpts
+---@field title?  string       Section title (default: "Summary")
+---@field fields  FieldDef[]   Field definitions
+
+---@class FieldDef
+---@field name      string   Field identifier, used as key in set() data tables.
+---@field label     string   Display label shown before the value.
+---@field type?     string   "string" (default), "number", or a time format.
+---@field decimals? integer  Fixed decimal places for number fields (-1 = auto).
+
+----------------------------------------------------------------------
 -- Table options
 ----------------------------------------------------------------------
 
@@ -163,7 +223,7 @@ function Table:set_header_info(info) end
 -- RPC allowlist
 ----------------------------------------------------------------------
 
---- The following read-only RPC methods are permitted via btcui_rpc():
+--- The following read-only RPC methods are permitted via btcui_rpc() and btcui_rpc_wallet():
 ---
 --- Blockchain:
 ---   getbestblockhash, getblock, getblockchaininfo, getblockcount,

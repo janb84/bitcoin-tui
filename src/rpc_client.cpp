@@ -17,7 +17,9 @@ static constexpr sock_t kBadSock = -1;
 static void             net_close(sock_t s) { close(s); }
 #endif
 
+#include <cctype>
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 
 static std::string safe_strerror(int errnum) {
@@ -78,7 +80,7 @@ std::string RpcClient::base64_encode(const std::string& input) {
 // ---------------------------------------------------------------------------
 // Low-level HTTP POST over a plain TCP socket
 // ---------------------------------------------------------------------------
-std::string RpcClient::http_post(const std::string& body) {
+std::string RpcClient::http_post(const std::string& endpoint, const std::string& body) {
 #ifdef _WIN32
     static const bool wsa_ok = []() {
         WSADATA d;
@@ -130,7 +132,8 @@ std::string RpcClient::http_post(const std::string& body) {
     // Build HTTP/1.1 request with Connection: close so the server closes after
     // responding, allowing recv() to reach EOF without waiting for a timeout.
     const std::string auth    = base64_encode(auth_.user + ":" + auth_.password);
-    const std::string request = "POST / HTTP/1.1\r\n"
+    const std::string request = "POST " + endpoint +
+                                " HTTP/1.1\r\n"
                                 "Host: " +
                                 config_.host +
                                 "\r\n"
@@ -222,6 +225,29 @@ std::string RpcClient::http_post(const std::string& body) {
 // JSON-RPC call
 // ---------------------------------------------------------------------------
 json RpcClient::call(const std::string& method, const json& params) {
+    return call("/", method, params);
+}
+
+static std::string uri_encode(const std::string& s) {
+    std::string out;
+    for (unsigned char c : s) {
+        if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~')
+            out += static_cast<char>(c);
+        else {
+            char buf[4];
+            std::snprintf(buf, sizeof(buf), "%%%02X", c);
+            out += buf;
+        }
+    }
+    return out;
+}
+
+json RpcClient::call_wallet(const std::string& wallet, const std::string& method,
+                            const json& params) {
+    return call("/wallet/" + uri_encode(wallet), method, params);
+}
+
+json RpcClient::call(const std::string& endpoint, const std::string& method, const json& params) {
     // Omit "jsonrpc" version field — Bitcoin Core v25+ rejects "1.1".
     // Legacy JSON-RPC 1.0 (no version field) is accepted by all versions.
     json req = {
@@ -231,7 +257,7 @@ json RpcClient::call(const std::string& method, const json& params) {
     };
 
     const std::string body     = req.dump();
-    const std::string response = http_post(body);
+    const std::string response = http_post(endpoint, body);
 
     json parsedJson;
     try {

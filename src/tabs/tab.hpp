@@ -4,6 +4,7 @@
 #include <string>
 #include <utility>
 
+#include <ftxui/component/event.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
@@ -22,7 +23,8 @@ class Tab {
     virtual std::string    name() const                          = 0;
     virtual ftxui::Element render(const AppState& snap)          = 0;
     virtual ftxui::Element key_hints(const AppState& snap) const = 0;
-    virtual void           join()                                = 0;
+    virtual bool           handle_focused_event(const ftxui::Event&) { return false; }
+    virtual void           join() = 0;
 
     static ftxui::Element refresh_indicator(const AppState& snap, int refresh_secs) {
         return snap.refreshing

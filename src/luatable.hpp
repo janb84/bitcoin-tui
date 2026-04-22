@@ -40,10 +40,13 @@ struct Row {
 };
 
 struct RowCompare {
-    size_t key_index = 0;
+    using is_transparent = void;
+    size_t key_index     = 0;
     bool   operator()(const Row& a, const Row& b) const {
         return a.cells[key_index].data < b.cells[key_index].data;
     }
+    bool operator()(const Row& a, const CellData& b) const { return a.cells[key_index].data < b; }
+    bool operator()(const CellData& a, const Row& b) const { return a < b.cells[key_index].data; }
 };
 
 struct RowData {
@@ -52,7 +55,13 @@ struct RowData {
     CellValue                 header_info;
 };
 
-class LuaTable {
+class LuaPanel {
+  public:
+    virtual ~LuaPanel()                      = default;
+    virtual const std::string& title() const = 0;
+};
+
+class LuaTable : public LuaPanel {
   public:
     LuaTable(const std::string& key_column, std::vector<ColumnDef> columns, std::string title = {},
              bool no_header = false);
@@ -66,7 +75,7 @@ class LuaTable {
     std::vector<std::string> keys() const;
 
     const std::vector<ColumnDef>& columns() const { return columns_; }
-    const std::string&            title() const { return title_; }
+    const std::string&            title() const override { return title_; }
     bool                          no_header() const { return no_header_; }
     size_t                        key_index() const { return key_index_; }
 
@@ -91,4 +100,23 @@ class LuaTable {
     size_t col_index(const std::string& name) const;
 };
 
-using LuaTableVec = std::vector<std::shared_ptr<LuaTable>>;
+class LuaSummary : public LuaPanel {
+  public:
+    LuaSummary(std::vector<ColumnDef> fields, std::string title = {});
+
+    void set(const std::map<std::string, CellValue>& values);
+
+    const std::vector<ColumnDef>& fields() const { return fields_; }
+    const std::string&            title() const override { return title_; }
+
+    template <typename F> auto access(F&& f) const {
+        return values_.access([&](const auto& v) { return f(v); });
+    }
+
+  private:
+    const std::vector<ColumnDef>    fields_;
+    const std::string               title_;
+    Guarded<std::vector<CellValue>> values_;
+
+    size_t field_index(const std::string& name) const;
+};

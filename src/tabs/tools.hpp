@@ -24,8 +24,8 @@ class ToolsTab : public Tab {
     ftxui::Element key_hints(const AppState& snap) const override;
     // Handles tools_input_active mode; call unconditionally (before tab navigation)
     bool handle_tools_input(const ftxui::Event& event);
-    // Handles tab 4 key navigation; call only when tab_index == 4
-    bool handle_keys(const ftxui::Event& event);
+    // Handles tab 4 key navigation
+    bool handle_focused_event(const ftxui::Event& event) override;
     void join() override;
 
   private:

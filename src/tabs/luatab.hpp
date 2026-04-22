@@ -14,6 +14,7 @@
 #include <ftxui/dom/elements.hpp>
 
 #include "guarded.hpp"
+#include "json.hpp"
 #include "luatable.hpp"
 #include "tabs/tab.hpp"
 
@@ -23,10 +24,19 @@ struct LuaError {
     std::chrono::system_clock::time_point when;
 };
 
+struct LuaPanelRender {
+    explicit LuaPanelRender(std::shared_ptr<LuaPanel> p) : panel(std::move(p)) {}
+    std::shared_ptr<LuaPanel> panel;
+    std::atomic<int>          scroll_offset{0};
+    std::atomic<bool>         scrollable{false};
+};
+
+using LuaPanelVec = std::vector<std::shared_ptr<LuaPanelRender>>;
+
 struct LuaTabState {
     std::string             lua_status; // status output from Lua
     std::string             tab_name;   // set by btcui_set_name()
-    LuaTableVec             lua_tables;
+    LuaPanelVec             lua_panels;
     std::optional<LuaError> init_error;      // script load failure
     std::map<int, LuaError> callback_errors; // keyed by timer/watch id
     std::vector<LuaError>   warnings;        // age out after 20s
@@ -40,13 +50,14 @@ class LuaTab : public Tab {
   public:
     LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
            std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
-           std::string debug_log_path, std::string lua_script,
+           std::string debug_log_path, json tab_options = {},
            std::span<const std::string> extra_rpcs = {});
     ~LuaTab() override = default;
 
     std::string    name() const override;
     ftxui::Element render(const AppState& snap) override;
     ftxui::Element key_hints(const AppState& snap) const override;
+    bool           handle_focused_event(const ftxui::Event& event) override;
     void           join() override;
 
   private:
@@ -58,7 +69,10 @@ class LuaTab : public Tab {
     void clear_callback_error(int id);
 
     const std::string           debug_log_path_;
+    const json                  tab_options_;
     const std::set<std::string> rpc_allowlist_;
     Guarded<LuaTabState>        lua_tab_state_;
+    std::atomic<int>            focused_panel_{-1}; // -1 = no highlight
+    std::atomic<bool>           panel_scrolling_{false};
     std::thread                 lua_thread_;
 };

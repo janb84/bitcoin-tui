@@ -722,7 +722,7 @@ bool PeersTab::handle_ban_input(const Event& event) {
     return true; // swallow all other keys while overlay is open
 }
 
-bool PeersTab::handle_tab_events(const Event& event) {
+bool PeersTab::handle_focused_event(const Event& event) {
     // peer_disconnect overlay — swallows all keys
     if (peer_disconnect_overlay) {
         if (event == Event::Escape && !peer_action_in_flight.load()) {
