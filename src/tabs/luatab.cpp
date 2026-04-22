@@ -761,16 +761,22 @@ static Element apply_style(Element el, const CellValue& cv) {
 }
 
 Element LuaTab::render(const AppState& /*snap*/) {
-    Elements    lua_elems;
+    struct PanelInfo {
+        Element elem;
+        int     natural_height;
+    };
+    std::vector<PanelInfo> lua_elems;
     LuaPanelVec panels_vec = lua_tab_state_.access([](const auto& s) { return s.lua_panels; });
 
     // Collect runs of consecutive summaries for side-by-side layout
     Elements summary_run;
-    auto     flush_summaries = [&]() {
+    int      summary_max_height = 0;
+    auto     flush_summaries    = [&]() {
         if (summary_run.empty())
             return;
-        lua_elems.push_back(hbox(std::move(summary_run)));
+        lua_elems.push_back({hbox(std::move(summary_run)), summary_max_height});
         summary_run.clear();
+        summary_max_height = 0;
     };
 
     for (const auto& panel : panels_vec) {
@@ -875,7 +881,9 @@ Element LuaTab::render(const AppState& /*snap*/) {
             }
 
             // Data rows
+            int data_row_count = 0;
             tbl->access([&](const auto& rows) {
+                data_row_count = static_cast<int>(rows.size());
                 for (const auto& row : rows) {
                     Elements cells;
                     for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
@@ -900,19 +908,26 @@ Element LuaTab::render(const AppState& /*snap*/) {
                 }
             });
 
+            // Natural height: border(2) + title(0-1) + header+sep(0-2) + data rows
             const auto& box_title = tbl->title();
-            auto        hi        = tbl->header_info();
-            auto        hi_str    = format_cell(ColumnType::String, hi.data);
+            int         nat_h     = 2 + data_row_count;
+            if (!box_title.empty())
+                ++nat_h;
+            if (!tbl->no_header())
+                nat_h += static_cast<int>(max_lines) + 1; // header lines + separator
+
+            auto hi     = tbl->header_info();
+            auto hi_str = format_cell(ColumnType::String, hi.data);
             if (!hi_str.empty() && !box_title.empty()) {
                 auto el = apply_style(text("  " + hi_str), hi);
                 tbl_rows.insert(tbl_rows.begin(),
                                 hbox({text(" " + box_title + " ") | bold | color(Color::Gold1),
                                       std::move(el) | flex}));
-                lua_elems.push_back(vbox(std::move(tbl_rows)) | border);
+                lua_elems.push_back({vbox(std::move(tbl_rows)) | border, nat_h});
             } else if (!box_title.empty()) {
-                lua_elems.push_back(section_box(box_title, tbl_rows));
+                lua_elems.push_back({section_box(box_title, tbl_rows), nat_h});
             } else {
-                lua_elems.push_back(vbox(std::move(tbl_rows)) | border);
+                lua_elems.push_back({vbox(std::move(tbl_rows)) | border, nat_h});
             }
         } else if (auto sum = std::dynamic_pointer_cast<LuaSummary>(panel)) {
             const auto& flds = sum->fields();
@@ -925,18 +940,24 @@ Element LuaTab::render(const AppState& /*snap*/) {
                     rows.push_back(hbox({text(label) | color(Color::GrayDark), std::move(el)}));
                 }
             });
+            // Natural height: border(2) + title(0-1) + field rows
             const auto& box_title = sum->title();
+            int         nat_h     = 2 + static_cast<int>(flds.size());
             if (!box_title.empty()) {
+                ++nat_h;
                 summary_run.push_back(section_box(box_title, rows) | flex);
             } else {
                 summary_run.push_back(vbox(std::move(rows)) | border | flex);
             }
+            if (nat_h > summary_max_height)
+                summary_max_height = nat_h;
         }
     }
     flush_summaries();
 
-    Elements panels;
-
+    // Error panel (not subject to fair allocation — always shown in full)
+    Element error_panel;
+    int     error_height              = 0;
     auto [init_err, errors, warnings] = lua_tab_state_.access(
         [](const auto& s) { return std::make_tuple(s.init_error, s.callback_errors, s.warnings); });
     if (init_err || !errors.empty() || !warnings.empty()) {
@@ -968,11 +989,57 @@ Element LuaTab::render(const AppState& /*snap*/) {
             format_entry(err_rows, err);
         for (const auto& w : warnings)
             format_entry(err_rows, w);
-        panels.push_back(section_box("ERRORS", std::move(err_rows)) | color(Color::Red));
+        error_height = static_cast<int>(err_rows.size()) + 3; // border(2) + title(1)
+        error_panel  = section_box("ERRORS", std::move(err_rows)) | color(Color::Red);
     }
 
-    for (auto& lp : lua_elems) {
-        panels.push_back(std::move(lp));
+    // Fair-share height allocation
+    // Outer chrome: title bar(3) + tab bar(3) + status bar(3) = 9
+    int available = screen_.dimy() - 9 - error_height;
+    int n         = static_cast<int>(lua_elems.size());
+
+    std::vector<int> allocated(n);
+    if (n > 0 && available > 0) {
+        std::vector<bool> settled(n, false);
+        int               remaining = available;
+        int               unsettled = n;
+        while (unsettled > 0) {
+            int share    = remaining / unsettled;
+            int progress = 0;
+            for (int i = 0; i < n; ++i) {
+                if (settled[i])
+                    continue;
+                if (lua_elems[i].natural_height <= share) {
+                    allocated[i] = lua_elems[i].natural_height;
+                    remaining -= allocated[i];
+                    settled[i] = true;
+                    ++progress;
+                }
+            }
+            unsettled -= progress;
+            if (progress == 0) {
+                // All remaining panels need more than their share — give equal split
+                for (int i = 0; i < n; ++i) {
+                    if (!settled[i]) {
+                        allocated[i] = remaining / unsettled;
+                        remaining -= allocated[i];
+                        --unsettled;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    Elements panels;
+    if (error_panel)
+        panels.push_back(std::move(error_panel));
+    for (int i = 0; i < n; ++i) {
+        auto& lp = lua_elems[i];
+        if (allocated[i] < lp.natural_height)
+            panels.push_back(std::move(lp.elem) | size(HEIGHT, EQUAL, allocated[i]));
+        else
+            panels.push_back(std::move(lp.elem));
     }
     return vbox(panels) | flex;
 }
