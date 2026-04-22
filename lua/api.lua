@@ -117,6 +117,23 @@ function btcui_show_search_button(show) end
 ---@param show boolean
 function btcui_show_quit_button(show) end
 
+--- Return a styled address cell value. The address is rendered with
+--- alternating bold groups of 4 characters (e.g. "bc1q ar0s rr7x …"),
+--- making it easier to scan visually. Pass the result as a cell value
+--- in Table:update() or Summary:set() wherever you would use a plain
+--- address string.
+---
+---   -- Example:
+---   address = btcui_address(utxo.address or "")
+---
+---@param addr string   Raw address string (empty string renders as "N/A")
+---@return StyledAddress
+function btcui_address(addr) end
+
+--- Opaque styled-address value returned by btcui_address().
+--- Pass it wherever a cell value is accepted.
+---@class StyledAddress
+
 ----------------------------------------------------------------------
 -- Timer handle
 ----------------------------------------------------------------------
@@ -223,13 +240,17 @@ function Summary:set(data) end
 -- Cell values
 ----------------------------------------------------------------------
 
---- Cell values in Table:update() can be plain values or styled:
+--- Cell values in Table:update() can be plain values, styled tables,
+--- or the result of btcui_address():
 ---
 ---   -- Plain value:
 ---   height = 890123
 ---
 ---   -- Styled value:
 ---   height = { value = 890123, color = "green", bold = true }
+---
+---   -- Formatted address (alternating bold groups of 4):
+---   address = btcui_address(utxo.address or "")
 ---
 --- Available colors: "red", "green", "yellow", "cyan", "gray"
 ---

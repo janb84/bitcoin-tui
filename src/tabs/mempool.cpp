@@ -7,6 +7,7 @@
 
 #include <ftxui/screen/terminal.hpp>
 
+#include "elements/address.hpp"
 #include "format.hpp"
 #include "render.hpp"
 #include "search.hpp"
@@ -344,15 +345,14 @@ Element MempoolTab::render(const AppState& snap) {
             [](int i, const auto& v, bool selected) {
                 std::ostringstream val_ss;
                 val_ss << std::fixed << std::setprecision(8) << v.value;
-                std::string label = val_ss.str() + " BTC";
-                if (!v.address.empty()) {
-                    std::string addr = ellipsize_middle(v.address, 60, 28, 28);
-                    label += "  " + addr;
-                } else if (!v.type.empty()) {
-                    label += "  [" + v.type + "]";
-                }
-                auto row = hbox(
-                    {text("  [" + std::to_string(i) + "] ") | color(Color::GrayDark), text(label)});
+                std::string label   = val_ss.str() + " BTC";
+                Element     addr_el = text("");
+                if (!v.address.empty())
+                    addr_el = hbox({text("  "), address_element(v.address)});
+                else if (!v.type.empty())
+                    addr_el = text("  [" + v.type + "]");
+                auto row = hbox({text("  [" + std::to_string(i) + "] ") | color(Color::GrayDark),
+                                 text(label), std::move(addr_el)});
                 if (selected)
                     row = std::move(row) | inverted;
                 return row;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -16,7 +17,11 @@ enum class ColumnType { String, Number, DateTime, Date, Time, TimeMS };
 
 std::optional<ColumnType> parse_column_type(const std::string& s);
 
-using CellData = std::variant<std::string, int64_t, double>;
+struct Address {
+    std::string value;
+    auto        operator<=>(const Address&) const = default;
+};
+using CellData = std::variant<std::string, int64_t, double, Address>;
 
 // Format a CellData value for display according to its column type.
 std::string format_cell(ColumnType type, const CellData& data, int decimals = -1);

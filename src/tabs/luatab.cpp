@@ -12,6 +12,7 @@
 #include <re2/re2.h>
 #include <sol/sol.hpp>
 
+#include "elements/address.hpp"
 #include "format.hpp"
 #include "luatable.hpp"
 #include "render.hpp"
@@ -259,10 +260,15 @@ CellData LuaScript::to_cell_data(ColumnType type, int decimals, const sol::objec
 CellValue LuaScript::to_cell_value(ColumnType type, int decimals, const sol::object& v) {
     CellValue cv;
     if (v.is<sol::table>()) {
-        sol::table sv = v;
-        cv.color      = sv.get_or<std::string>("color", "");
-        cv.bold       = sv.get_or("bold", false);
-        cv.data       = to_cell_data(type, decimals, sv["value"]);
+        sol::table sv   = v;
+        auto       addr = sv.get<sol::optional<std::string>>("__address");
+        if (addr) {
+            cv.data = Address{*addr};
+            return cv;
+        }
+        cv.color = sv.get_or<std::string>("color", "");
+        cv.bold  = sv.get_or("bold", false);
+        cv.data  = to_cell_data(type, decimals, sv["value"]);
     } else {
         cv.data = to_cell_data(type, decimals, v);
     }
@@ -435,6 +441,12 @@ void LuaTab::register_lua_api(LuaScript& script) {
         if (default_val)
             return *default_val;
         throw std::runtime_error("required tab option '" + key + "' not set");
+    };
+
+    lua_["btcui_address"] = [&lua_](const std::string& addr) -> sol::table {
+        sol::table t   = lua_.create_table();
+        t["__address"] = addr;
+        return t;
     };
 }
 
@@ -907,6 +919,18 @@ static Element apply_style(Element el, const CellValue& cv) {
     return el;
 }
 
+// Renders a cell value as an Element, using address_element for Address cells.
+static Element render_cell_element(const std::string& prefix, const CellValue& cv, ColumnType type,
+                                   int decimals) {
+    if (std::holds_alternative<Address>(cv.data)) {
+        auto el = address_element(std::get<Address>(cv.data).value);
+        if (!prefix.empty())
+            el = hbox({text(prefix), std::move(el)});
+        return apply_style(std::move(el), cv);
+    }
+    return apply_style(text(prefix + format_cell(type, cv.data, decimals)), cv);
+}
+
 Element LuaTab::render(const AppState& /*snap*/) {
     struct PanelInfo {
         Elements chrome;             // title, header+separator (rendered before data rows)
@@ -1062,9 +1086,10 @@ Element LuaTab::render(const AppState& /*snap*/) {
                             int pad = widths[vi] - static_cast<int>(val.size()) -
                                       static_cast<int>(prefix.size());
                             if (pad > 0)
-                                val = std::string(pad, ' ') + val;
+                                prefix += std::string(pad, ' ');
                         }
-                        auto el = apply_style(text(prefix + val), cv);
+                        auto el = render_cell_element(prefix, cv, cols[vis[vi]].type,
+                                                      cols[vis[vi]].decimals);
                         if (vi + 1 < vis.size() || ralign[vi])
                             el = el | size(WIDTH, EQUAL, widths[vi]);
                         else
@@ -1082,8 +1107,7 @@ Element LuaTab::render(const AppState& /*snap*/) {
             sum->access([&](const auto& values) {
                 for (size_t i = 0; i < flds.size(); ++i) {
                     std::string label = "  " + flds[i].header + " : ";
-                    std::string val   = format_cell(flds[i].type, values[i].data, flds[i].decimals);
-                    auto        el    = apply_style(text(val), values[i]);
+                    auto el = render_cell_element("", values[i], flds[i].type, flds[i].decimals);
                     rows.push_back(hbox({text(label) | color(Color::GrayDark), std::move(el)}));
                 }
             });

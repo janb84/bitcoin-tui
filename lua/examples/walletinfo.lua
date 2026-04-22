@@ -115,7 +115,7 @@ btcui_set_interval(REFRESH_INTERVAL, function()
             unspent_table:update(utxo.txid .. ":" .. utxo.vout, {
                 amount        = format_btc(utxo.amount),
                 confirmations = utxo.confirmations,
-                address       = utxo.address or "N/A",
+                address       = btcui_address(utxo.address),
             })
         end
         unspent_table:finish_refresh()
@@ -131,7 +131,7 @@ btcui_set_interval(REFRESH_INTERVAL, function()
                 category      = tx.category,
                 amount        = format_btc(tx.amount),
                 confirmations = tx.confirmations,
-                address       = tx.address or "N/A",
+                address       = btcui_address(tx.address),
             })
         end
         transactions_table:finish_refresh()

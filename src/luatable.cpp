@@ -22,6 +22,8 @@ std::optional<ColumnType> parse_column_type(const std::string& s) {
 }
 
 std::string format_cell(ColumnType type, const CellData& data, int decimals) {
+    if (std::holds_alternative<Address>(data))
+        return std::get<Address>(data).value;
     // Unset cells (default string) render as blank for numeric types
     if (std::holds_alternative<std::string>(data) && std::get<std::string>(data).empty() &&
         type != ColumnType::String) {
