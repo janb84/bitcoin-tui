@@ -454,7 +454,7 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
     return std::nullopt;
 }
 
-bool MempoolTab::handle_navigation(const Event& event) {
+bool MempoolTab::handle_focused_event(const Event& event) {
     bool has_overlay = search_data_.access([](const auto& sd) { return !sd.state.txid.empty(); });
     if (has_overlay)
         return false;

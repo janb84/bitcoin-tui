@@ -27,8 +27,8 @@ class MempoolTab : public Tab {
     ftxui::Element key_hints(const AppState& snap) const override;
     // Handles outputs/inputs sub-overlays; nullopt = not in overlay mode
     std::optional<bool> handle_tx_overlay(const ftxui::Event& event);
-    // Handles mempool block navigation; call only when tab_index == 1
-    bool handle_navigation(const ftxui::Event& event);
+    // Handles mempool block navigation
+    bool handle_focused_event(const ftxui::Event& event) override;
     // Handles io_selected arrow navigation for confirmed tx (normal mode)
     bool handle_io_nav(const ftxui::Event& event);
     // Handles Enter for tx block/io drill-down

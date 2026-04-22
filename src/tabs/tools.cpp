@@ -236,7 +236,7 @@ bool ToolsTab::handle_tools_input(const Event& event) {
     return false;
 }
 
-bool ToolsTab::handle_keys(const Event& event) {
+bool ToolsTab::handle_focused_event(const Event& event) {
     bool has_result_row{false};
     broadcast_state_.access([&](const auto& bs) { has_result_row = bs.has_result && bs.success; });
     int shutdown_idx = 1 + (has_result_row ? 1 : 0);

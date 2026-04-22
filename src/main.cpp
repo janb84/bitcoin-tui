@@ -632,9 +632,8 @@ int Application::run() const {
             return true;
         if (peers_tab.handle_ban_input(event))
             return true;
-        if (tab_index == 3 && peers_tab.handle_tab_events(event))
-            return true;
-        if (tab_index == 1 && mempool_tab.handle_navigation(event))
+        if (tab_index >= 0 && tab_index < static_cast<int>(tabs.size()) &&
+            tabs[tab_index]->handle_focused_event(event))
             return true;
 
         // Normal mode keys
@@ -644,8 +643,6 @@ int Application::run() const {
             screen.PostEvent(Event::Custom);
             return true;
         }
-        if (tab_index == 4 && tools_tab.handle_keys(event))
-            return true;
         if (mempool_tab.handle_io_nav(event))
             return true;
         if (mempool_tab.handle_enter(event))
