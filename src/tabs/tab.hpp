@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <ostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,9 +18,10 @@
 class Tab {
   public:
     Tab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-        std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
+        std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
+        std::ostream* debug_out = nullptr)
         : cfg_{std::move(cfg)}, auth_{auth}, screen_{screen}, running_{running}, state_{state},
-          refresh_secs_{refresh_secs} {}
+          refresh_secs_{refresh_secs}, debug_out_{debug_out} {}
     virtual ~Tab() = default;
 
     virtual std::string    name() const                         = 0;
@@ -35,6 +37,7 @@ class Tab {
     std::atomic<bool>&        running_;
     Guarded<AppState>&        state_;
     int                       refresh_secs_;
+    std::ostream*             debug_out_;
 
     FooterButton refresh_btn(const AppState& snap) const {
         return {snap.refreshing ? " \u21bb refreshing"

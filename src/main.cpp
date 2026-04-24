@@ -154,6 +154,9 @@ class Application {
     bool                     explicit_host = false;
     bool                     can_launch    = false;
     std::string              debug_log_file;
+    bool                     debug_enabled = false;
+    std::string              debug_file;
+    mutable std::ofstream    debug_out;
     std::vector<std::string> lua_tabs;
     std::vector<std::string> extra_rpcs;
 
@@ -245,6 +248,16 @@ int Application::configure(int argc, char* argv[]) {
         ->default_val(5)
         ->group("Display");
 
+    // Debug
+    auto* debug_flag =
+        app.add_flag("--debug", debug_enabled, "Enable debug output (requires --debug-file)")
+            ->group("Debug");
+    auto* debug_file_opt = app.add_option("--debug-file", debug_file,
+                                          "File to write debug output to (requires --debug)")
+                               ->group("Debug");
+    debug_flag->needs(debug_file_opt);
+    debug_file_opt->needs(debug_flag);
+
     // clang-format off
     app.footer(
         "\nKeyboard:\n"
@@ -320,6 +333,14 @@ int Application::configure(int argc, char* argv[]) {
         bitcoind_cmd = find_bitcoind();
         can_launch   = !bitcoind_cmd.empty();
     }
+
+    if (debug_enabled) {
+        debug_out.open(debug_file, std::ios::app);
+        if (!debug_out) {
+            std::fprintf(stderr, "bitcoin-tui: cannot open debug file: %s\n", debug_file.c_str());
+            return 1;
+        }
+    }
     return 0;
 }
 
@@ -371,9 +392,9 @@ int Application::run() const {
         }
         if (!options.contains("script") || options["script"].get<std::string>().empty())
             throw std::runtime_error("--tab: missing script path");
-        lua_tab_ptrs.push_back(std::make_unique<LuaTab>(cfg, auth, screen, running, state,
-                                                        refresh_secs, debug_log, std::move(options),
-                                                        extra_rpcs));
+        lua_tab_ptrs.push_back(std::make_unique<LuaTab>(
+            cfg, auth, screen, running, state, refresh_secs, debug_log, std::move(options),
+            extra_rpcs, debug_enabled ? &debug_out : nullptr));
     }
 
     std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
