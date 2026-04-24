@@ -11,6 +11,7 @@ All notable changes to bitcoin-tui are documented here.
 - **Lua footer buttons** - Lua scripts can register clickable footer actions with `btcui_add_footer_button(label, callback)`; `btcui_show_search_button(bool)` and `btcui_show_quit_button(bool)` let scripts hide the global search and quit buttons per-tab
 - **Config file support** - options can be set in a `config.toml` file (Linux: `$XDG_CONFIG_HOME/bitcoin-tui/` or `~/.config/bitcoin-tui/`; macOS: `~/Library/Application Support/bitcoin-tui/`; Windows: `%APPDATA%\bitcoin-tui\`); CLI flags override file values; path can be changed with `--config`
 - CLI11 replaces hand-rolled argument parsing; adds `--help` grouping, `--config` file support, and stricter validation of unknown flags
+- **Debug file output** — `--debug --debug-file <path>` writes internal debug data to a file (append mode); both flags must be used together
 
 ### Changed
 - FTXUI updated from v5.0.0 to v6.1.9

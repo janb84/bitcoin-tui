@@ -759,8 +759,8 @@ static std::set<std::string> make_allowlist(std::span<const std::string> extra) 
 LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
                std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
                std::string debug_log_path, json tab_options,
-               std::span<const std::string> extra_rpcs)
-    : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
+               std::span<const std::string> extra_rpcs, std::ostream* debug_out)
+    : Tab(std::move(cfg), auth, screen, running, state, refresh_secs, debug_out),
       debug_log_path_(std::move(debug_log_path)), tab_options_(std::move(tab_options)),
       rpc_allowlist_(make_allowlist(extra_rpcs)) {
     const std::string lua_script = tab_options_["script"].get<std::string>();
@@ -771,6 +771,9 @@ LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
     auto result = script->load(lua_script);
     if (!result.valid()) {
         sol::error err = result;
+        if (debug_out_)
+            *debug_out_ << "[lua init error] " << lua_script << ": " << err.what() << "\n"
+                        << std::flush;
         lua_tab_state_.update(
             [&](auto& st) { st.init_error = LuaError{lua_script, err.what(), Clock::now()}; });
         return;
@@ -788,6 +791,8 @@ std::string LuaTab::name() const {
 }
 
 void LuaTab::report_callback_error(int id, const std::string& source_id, const std::string& msg) {
+    if (debug_out_)
+        *debug_out_ << "[lua error] " << source_id << ": " << msg << "\n" << std::flush;
     lua_tab_state_.update(
         [&](auto& st) { st.callback_errors[id] = {source_id, msg, Clock::now()}; });
 }
