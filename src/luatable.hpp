@@ -95,12 +95,20 @@ class LuaTable : public LuaPanel {
         return rows_.access([](const auto& rd) { return rd.header_info; });
     }
 
+    // Row selection (UI thread writes, Lua thread reads via selected_key())
+    std::atomic<int>& selected_row() { return selected_row_; }
+    // Returns the key of the selected row as a string, or nullopt if nothing is selected.
+    std::optional<std::string> selected_key() const;
+    // Returns the formatted value of a named column in the selected row, or nullopt.
+    std::optional<std::string> selected_value(const std::string& column_name) const;
+
   private:
     const std::vector<ColumnDef> columns_;
     const std::string            title_;
     const bool                   no_header_;
     const size_t                 key_index_;
     Guarded<RowData>             rows_;
+    std::atomic<int>             selected_row_{-1};
 
     size_t col_index(const std::string& name) const;
 };

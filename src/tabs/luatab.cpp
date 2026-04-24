@@ -322,6 +322,20 @@ void LuaTab::register_lua_api(LuaScript& script) {
         &LuaTable::finish_refresh, "set_header_info",
         [](LuaTable& self, const sol::object& v) {
             self.set_header_info(LuaScript::to_cell_value(ColumnType::String, -1, v));
+        },
+        "selected_key",
+        [](LuaTable& self) -> sol::optional<std::string> {
+            auto k = self.selected_key();
+            if (!k)
+                return sol::nullopt;
+            return *k;
+        },
+        "selected_value",
+        [](LuaTable& self, const std::string& col) -> sol::optional<std::string> {
+            auto v = self.selected_value(col);
+            if (!v)
+                return sol::nullopt;
+            return *v;
         });
 
     lua_["btcui_watch_log"] = [&script](const std::string& pattern, sol::protected_function fn,
@@ -464,19 +478,32 @@ void LuaTab::register_lua_api(LuaScript& script) {
         return t;
     };
 
-    lua_["btcui_open_qr_overlay"] = [this](const std::string& data) {
+    lua_["btcui_open_qr_overlay"] = [this](const sol::object& arg) {
+        QrItems items;
+        if (arg.is<std::string>()) {
+            items.push_back({"", arg.as<std::string>()});
+        } else if (arg.is<sol::table>()) {
+            sol::table t = arg;
+            for (size_t i = 1; i <= t.size(); ++i) {
+                sol::object entry = t[i];
+                if (entry.is<std::string>()) {
+                    items.push_back({"", entry.as<std::string>()});
+                } else if (entry.is<sol::table>()) {
+                    sol::table  e     = entry;
+                    std::string label = e.get_or<std::string>("label", "");
+                    std::string data  = e.get_or<std::string>("data", "");
+                    items.push_back({std::move(label), std::move(data)});
+                }
+            }
+        }
+        if (items.empty())
+            return;
         lua_tab_state_.update([&](auto& st) {
             st.show_qr_overlay = true;
-            st.qr_items.push_back(QrItem{"", data});
+            st.qr_selected     = 0;
+            st.qr_items        = std::move(items);
         });
     };
-}
-
-void LuaTab::open_qr_overlay(const std::string& data) {
-    lua_tab_state_.update([&](auto& st) {
-        st.show_qr_overlay = true;
-        st.qr_items.push_back(QrItem{"", data});
-    });
 }
 
 void LuaTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>&  requests,
@@ -853,10 +880,22 @@ bool LuaTab::handle_focused_event(const Event& event) {
         if (event == Event::Escape) {
             lua_tab_state_.update([](auto& s) {
                 s.show_qr_overlay = false;
+                s.qr_selected     = 0;
                 s.qr_items.clear();
             });
             screen_.PostEvent(Event::Custom);
-            return true;
+        } else if (event == Event::ArrowLeft) {
+            lua_tab_state_.update([](auto& s) {
+                if (s.qr_selected > 0)
+                    --s.qr_selected;
+            });
+            screen_.PostEvent(Event::Custom);
+        } else if (event == Event::ArrowRight) {
+            lua_tab_state_.update([](auto& s) {
+                if (s.qr_selected < static_cast<int>(s.qr_items.size()) - 1)
+                    ++s.qr_selected;
+            });
+            screen_.PostEvent(Event::Custom);
         }
         return true;
     }
@@ -880,10 +919,10 @@ bool LuaTab::handle_focused_event(const Event& event) {
     int  fp        = focused_panel_.load();
     bool scrolling = panel_scrolling_.load();
 
-    // Find next/prev scrollable panel, or -1 if none
-    auto next_scrollable = [&](int from, int dir) -> int {
+    // Tables are always selectable; other panels only when scrollable.
+    auto next_selectable = [&](int from, int dir) -> int {
         for (int i = from + dir; i >= 0 && i < n; i += dir) {
-            if (panels[i]->scrollable)
+            if (std::dynamic_pointer_cast<LuaTable>(panels[i]->panel) || panels[i]->scrollable)
                 return i;
         }
         return -1;
@@ -891,34 +930,67 @@ bool LuaTab::handle_focused_event(const Event& event) {
 
     if (fp >= 0) {
         if (event == Event::Return) {
-            panel_scrolling_ = !scrolling;
+            bool entering    = !scrolling;
+            panel_scrolling_ = entering;
+            // When entering row-selection mode on a table, start at row 0.
+            if (entering && fp < n) {
+                if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panels[fp]->panel))
+                    if (tbl->selected_row().load() < 0)
+                        tbl->selected_row() = 0;
+            }
             screen_.PostEvent(Event::Custom);
             return true;
         }
         if (scrolling && fp < n) {
             auto& panel_render = panels[fp];
-            if (event == Event::ArrowDown) {
-                ++panel_render->scroll_offset;
+            if (event == Event::Escape) {
+                panel_scrolling_ = false;
+                if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panel_render->panel))
+                    tbl->selected_row() = -1;
                 screen_.PostEvent(Event::Custom);
                 return true;
             }
-            if (event == Event::ArrowUp) {
-                if (panel_render->scroll_offset > 0)
-                    --panel_render->scroll_offset;
-                screen_.PostEvent(Event::Custom);
-                return true;
+            if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panel_render->panel)) {
+                int count =
+                    static_cast<int>(tbl->access([](const auto& rows) { return rows.size(); }));
+                if (event == Event::ArrowDown) {
+                    int cur = tbl->selected_row().load();
+                    if (cur < count - 1)
+                        tbl->selected_row() = cur + 1;
+                    screen_.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::ArrowUp) {
+                    int cur = tbl->selected_row().load();
+                    if (cur > 0)
+                        tbl->selected_row() = cur - 1;
+                    screen_.PostEvent(Event::Custom);
+                    return true;
+                }
+            } else {
+                if (event == Event::ArrowDown) {
+                    ++panel_render->scroll_offset;
+                    screen_.PostEvent(Event::Custom);
+                    return true;
+                }
+                if (event == Event::ArrowUp) {
+                    if (panel_render->scroll_offset > 0)
+                        --panel_render->scroll_offset;
+                    screen_.PostEvent(Event::Custom);
+                    return true;
+                }
             }
             return false;
         }
         if (event == Event::ArrowDown) {
-            int next = next_scrollable(fp, 1);
+            int next = next_selectable(fp, 1);
             if (next >= 0)
                 focused_panel_ = next;
             screen_.PostEvent(Event::Custom);
             return true;
         }
         if (event == Event::ArrowUp) {
-            int prev = next_scrollable(fp, -1);
+            int prev = next_selectable(fp, -1);
             if (prev >= 0) {
                 focused_panel_ = prev;
             } else {
@@ -933,7 +1005,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
 
     // No panel highlighted — arrow keys enter panel-selection mode
     if (event == Event::ArrowDown) {
-        int first = next_scrollable(-1, 1);
+        int first = next_selectable(-1, 1);
         if (first >= 0)
             focused_panel_ = first;
         else
@@ -942,7 +1014,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
         return true;
     }
     if (event == Event::ArrowUp) {
-        int last = next_scrollable(n, -1);
+        int last = next_selectable(n, -1);
         if (last >= 0)
             focused_panel_ = last;
         else
@@ -959,6 +1031,7 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
                             [this] {
                                 lua_tab_state_.update([](auto& s) {
                                     s.show_qr_overlay = false;
+                                    s.qr_selected     = 0;
                                     s.qr_items.clear();
                                 });
                                 screen_.PostEvent(Event::Custom);
@@ -1042,8 +1115,9 @@ Element LuaTab::render(const AppState& /*snap*/) {
     };
 
     if (lua_tab_state_.access([](const auto& s) { return s.show_qr_overlay; })) {
-        QrItems items = lua_tab_state_.access([](const auto& s) { return s.qr_items; });
-        return dbox(qr_overlay_element(items));
+        auto [items, sel] = lua_tab_state_.access(
+            [](const auto& s) { return std::make_pair(s.qr_items, s.qr_selected); });
+        return dbox(qr_overlay_element(items, sel));
     }
 
     for (int pi = 0; pi < static_cast<int>(panels_vec.size()); ++pi) {
@@ -1166,9 +1240,12 @@ Element LuaTab::render(const AppState& /*snap*/) {
             int chrome_h = 2 + static_cast<int>(chrome.size());
 
             // Data rows
+            int      sel_row = tbl->selected_row().load();
             Elements data_rows;
             tbl->access([&](const auto& rows) {
+                int row_idx = 0;
                 for (const auto& row : rows) {
+                    bool     is_selected = (row_idx == sel_row);
                     Elements cells;
                     for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
                         const auto& cv = row.cells[vis[vi]];
@@ -1189,7 +1266,11 @@ Element LuaTab::render(const AppState& /*snap*/) {
                             el = el | flex;
                         cells.push_back(el);
                     }
-                    data_rows.push_back(hbox(cells));
+                    auto row_el = hbox(cells);
+                    if (is_selected)
+                        row_el = row_el | inverted;
+                    data_rows.push_back(std::move(row_el));
+                    ++row_idx;
                 }
             });
 
@@ -1328,6 +1409,18 @@ Element LuaTab::render(const AppState& /*snap*/) {
             offset = panels_vec[lp.panel_index]->scroll_offset;
         }
 
+        // Follow selected row: keep it within the visible window
+        if (lp.panel_index >= 0 && lp.panel_index < static_cast<int>(panels_vec.size())) {
+            if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panels_vec[lp.panel_index]->panel)) {
+                int sel = tbl->selected_row().load();
+                if (sel >= 0 && max_data_rows > 0) {
+                    if (sel < offset)
+                        offset = sel;
+                    else if (sel >= offset + max_data_rows)
+                        offset = sel - max_data_rows + 1;
+                }
+            }
+        }
         // Clamp scroll offset
         if (max_data_rows < total_rows) {
             offset = std::clamp(offset, 0, total_rows - max_data_rows);

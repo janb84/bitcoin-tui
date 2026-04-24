@@ -111,11 +111,21 @@ function btcui_error(msg) end
 ---@param key? string        Optional explicit keyboard shortcut (single character)
 function btcui_add_footer_button(label, callback, key) end
 
---- Open a QR code overlay showing the encoded data. The overlay covers
---- the tab content and replaces the footer with a single "[Esc] Close"
---- button. Press Esc (or click the footer button) to dismiss it.
---- The data string is encoded using QR error-correction level MEDIUM.
----@param data string   The string to encode as a QR code
+--- Open a QR code overlay. Accepts either a single string or a list of
+--- items for a tabbed overlay. The overlay replaces the footer with a
+--- single "[Esc] Close" button; press Esc to dismiss.
+--- QR codes use error-correction level MEDIUM.
+---
+---   -- Single QR code:
+---   btcui_open_qr_overlay("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq")
+---
+---   -- Tabbed (multiple QR codes):
+---   btcui_open_qr_overlay({
+---     { label = "Address", data = addr },
+---     { label = "TXID",    data = txid },
+---   })
+---
+---@param data string|{label:string, data:string}[]
 function btcui_open_qr_overlay(data) end
 
 --- Show or hide the global "/ search" button in the footer bar for this tab.
@@ -174,6 +184,20 @@ function Table:remove(key) end
 --- Return all current keys as an array of strings.
 ---@return string[]
 function Table:keys() end
+
+--- Return the key of the currently selected row as a string, or nil if
+--- no row is selected. Row selection is controlled by the user with the
+--- keyboard: ↓ to focus the panel, Enter to enter selection mode,
+--- ↑/↓ to move the selection, Esc to exit selection mode.
+---@return string|nil
+function Table:selected_key() end
+
+--- Return the formatted value of a named column in the currently selected
+--- row, or nil if no row is selected or the column does not exist.
+--- Address cells (created with btcui_address()) return the raw address string.
+---@param column string   Column name as defined in the columns table
+---@return string|nil
+function Table:selected_value(column) end
 
 --- Start a refresh cycle. Bumps the internal epoch counter.
 --- Subsequent update() calls stamp rows with the new epoch.

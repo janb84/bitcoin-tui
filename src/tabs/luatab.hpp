@@ -52,6 +52,7 @@ struct LuaTabState {
     bool                       show_quit   = true;
     // qr component
     bool                show_qr_overlay = false;
+    int                 qr_selected     = 0;
     std::vector<QrItem> qr_items;
 };
 
