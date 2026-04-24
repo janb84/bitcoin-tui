@@ -137,3 +137,12 @@ btcui_set_interval(REFRESH_INTERVAL, function()
         transactions_table:finish_refresh()
     end
 end)
+
+----------------------------------------------------------------------
+-- Footer buttons
+----------------------------------------------------------------------
+
+btcui_add_footer_button("[r] qr", function()
+    btcui_open_qr_overlay("test2")
+end)
+

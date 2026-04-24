@@ -38,6 +38,7 @@ static void ensure_terminal();
 #include "tabs/mempool.hpp"
 #include "tabs/network.hpp"
 #include "tabs/peers.hpp"
+#include "tabs/qrtest.hpp"
 #include "tabs/tools.hpp"
 
 // ============================================================================
@@ -368,6 +369,7 @@ int Application::run() const {
     ToolsTab     tools_tab(
         cfg, auth, screen, running, state, refresh_secs,
         [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
+    QrTestTab qrtest_tab(cfg, auth, screen, running, state, refresh_secs);
 
     std::string                          debug_log = debug_log_file.empty()
                                                          ? datadir + "/" + network_subdir(network) + "debug.log"
@@ -397,7 +399,8 @@ int Application::run() const {
             extra_rpcs, debug_enabled ? &debug_out : nullptr));
     }
 
-    std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
+    std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab,
+                              &peers_tab,     &tools_tab,   &qrtest_tab};
     for (auto& p : lua_tab_ptrs)
         tabs.push_back(p.get());
 

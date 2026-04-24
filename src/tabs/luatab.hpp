@@ -13,6 +13,7 @@
 
 #include <ftxui/dom/elements.hpp>
 
+#include "elements/qr_item.hpp"
 #include "guarded.hpp"
 #include "json.hpp"
 #include "luatable.hpp"
@@ -41,9 +42,17 @@ struct LuaTabState {
     std::map<int, LuaError> callback_errors; // keyed by timer/watch id
     std::vector<LuaError>   warnings;        // age out after 20s
     // footer buttons registered by Lua via btcui_add_footer_button()
-    std::vector<std::pair<int, std::string>> footer_btn_labels; // id → label
-    bool                                     show_search = true;
-    bool                                     show_quit   = true;
+    struct FooterBtnInfo {
+        int         id;
+        std::string label;
+        std::string key;
+    };
+    std::vector<FooterBtnInfo> footer_btn_labels;
+    bool                       show_search = true;
+    bool                       show_quit   = true;
+    // qr component
+    bool                show_qr_overlay = false;
+    std::vector<QrItem> qr_items;
 };
 
 class LuaScript;
@@ -71,6 +80,7 @@ class LuaTab : public Tab {
     void register_lua_api(LuaScript& script);
     void report_callback_error(int id, const std::string& source_id, const std::string& msg);
     void clear_callback_error(int id);
+    void open_qr_overlay(const std::string& data);
 
     const std::string                debug_log_path_;
     const json                       tab_options_;

@@ -103,9 +103,20 @@ function btcui_error(msg) end
 --- Register a clickable button in the footer bar. Can only be called
 --- during script loading (top-level code). The callback is invoked on
 --- the Lua thread when the button is clicked.
----@param label string     Button label text
----@param callback function  Called when the button is clicked
-function btcui_add_footer_button(label, callback) end
+--- An optional keyboard shortcut can be provided as the third argument.
+--- If omitted, the key is auto-extracted from the label when it contains
+--- a "[x]" pattern (e.g. "[r] Refresh" → key "r").
+---@param label string       Button label text (e.g. "[r] Refresh")
+---@param callback function  Called when the button is clicked or key is pressed
+---@param key? string        Optional explicit keyboard shortcut (single character)
+function btcui_add_footer_button(label, callback, key) end
+
+--- Open a QR code overlay showing the encoded data. The overlay covers
+--- the tab content and replaces the footer with a single "[Esc] Close"
+--- button. Press Esc (or click the footer button) to dismiss it.
+--- The data string is encoded using QR error-correction level MEDIUM.
+---@param data string   The string to encode as a QR code
+function btcui_open_qr_overlay(data) end
 
 --- Show or hide the global "/ search" button in the footer bar for this tab.
 --- Defaults to true. Can be called at any time (e.g. when an overlay is active).
