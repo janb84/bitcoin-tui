@@ -122,6 +122,7 @@ add_executable(bitcoin-tui
   src/tabs/tools.cpp
   src/luatable.cpp
   src/tabs/luatab.cpp
+  src/vendor/qrcodegen.cpp
 )
 
 # src/ is on the include path so rpc_client.hpp can find json.hpp

@@ -137,3 +137,27 @@ btcui_set_interval(REFRESH_INTERVAL, function()
         transactions_table:finish_refresh()
     end
 end)
+
+----------------------------------------------------------------------
+-- Footer buttons
+----------------------------------------------------------------------
+
+btcui_add_footer_button("[r] QR", function()
+    local addr = unspent_table:selected_value("address")
+    if addr and addr ~= "" then
+        btcui_open_qr_overlay(addr)
+        return
+    end
+
+    local tx_addr = transactions_table:selected_value("address")
+    local tx_txid = transactions_table:selected_value("txid")
+    if tx_txid and tx_txid ~= "" then
+        local items = {{ label = "TXID", data = tx_txid }}
+        if tx_addr and tx_addr ~= "" then
+            table.insert(items, { label = "Address", data = tx_addr })
+        end
+        btcui_open_qr_overlay(items)
+        return
+    end
+end)
+

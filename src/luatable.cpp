@@ -180,3 +180,41 @@ std::vector<std::string> LuaTable::keys() const {
         return result;
     });
 }
+
+std::optional<std::string> LuaTable::selected_key() const {
+    int idx = selected_row_.load();
+    return rows_.access([&](const auto& rd) -> std::optional<std::string> {
+        if (idx < 0 || idx >= static_cast<int>(rd.rows.size()))
+            return std::nullopt;
+        auto it = rd.rows.begin();
+        std::advance(it, idx);
+        return format_cell(columns_[key_index_].type, it->cells[key_index_].data);
+    });
+}
+
+std::optional<std::string> LuaTable::selected_value(const std::string& column_name) const {
+    int idx = selected_row_.load();
+    // Find column index by name
+    size_t col_idx = columns_.size();
+    for (size_t i = 0; i < columns_.size(); ++i) {
+        if (columns_[i].name == column_name) {
+            col_idx = i;
+            break;
+        }
+    }
+    if (col_idx == columns_.size())
+        return std::nullopt;
+    return rows_.access([&](const auto& rd) -> std::optional<std::string> {
+        if (idx < 0 || idx >= static_cast<int>(rd.rows.size()))
+            return std::nullopt;
+        auto it = rd.rows.begin();
+        std::advance(it, idx);
+        if (col_idx >= it->cells.size())
+            return std::nullopt;
+        // For Address cells, return the raw address string
+        const auto& data = it->cells[col_idx].data;
+        if (const auto* addr = std::get_if<Address>(&data))
+            return addr->value;
+        return format_cell(columns_[col_idx].type, data);
+    });
+}
