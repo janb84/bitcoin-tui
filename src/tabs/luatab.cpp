@@ -425,9 +425,9 @@ void LuaTab::register_lua_api(LuaScript& script) {
         lua_tab_state_.update([&](auto& st) { st.lua_status = hint; });
     };
 
-    lua_["btcui_add_footer_button"] = [&script, this](const std::string&         label,
-                                                      sol::protected_function    fn,
-                                                      sol::optional<std::string> key) {
+    lua_["btcui_add_footer_button"] = [&script, this](const std::string&                label,
+                                                      sol::protected_function           fn,
+                                                      const sol::optional<std::string>& key) {
         std::string k = key.value_or("");
         if (k.empty()) {
             // Auto-extract key from "[x]" pattern in label
