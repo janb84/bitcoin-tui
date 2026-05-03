@@ -6,7 +6,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 
-#include "elements/qr_item.hpp"
+#include "components/qr_item.hpp"
 #include "render.hpp"
 #include "vendor/qrcodegen.hpp"
 

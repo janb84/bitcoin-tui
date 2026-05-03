@@ -10,7 +10,7 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
-#include "elements/footer_bar.hpp"
+#include "components/footer_bar.hpp"
 #include "guarded.hpp"
 #include "rpc_client.hpp"
 #include "state.hpp"
