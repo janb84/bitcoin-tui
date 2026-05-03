@@ -12,9 +12,9 @@
 #include <re2/re2.h>
 #include <sol/sol.hpp>
 
-#include "elements/address.hpp"
-#include "elements/qr_item.hpp"
-#include "elements/qr_overlay.hpp"
+#include "components/address.hpp"
+#include "components/qr_item.hpp"
+#include "components/qr_overlay.hpp"
 #include "format.hpp"
 #include "luatable.hpp"
 #include "render.hpp"

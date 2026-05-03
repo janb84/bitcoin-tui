@@ -26,7 +26,7 @@ static void ensure_terminal();
 #include <ftxui/screen/color.hpp>
 
 #include "bitcoind.hpp"
-#include "elements/footer_bar.hpp"
+#include "components/footer_bar.hpp"
 #include "format.hpp"
 #include "guarded.hpp"
 #include "poll.hpp"

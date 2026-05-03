@@ -7,7 +7,7 @@
 
 #include <ftxui/screen/terminal.hpp>
 
-#include "elements/address.hpp"
+#include "components/address.hpp"
 #include "format.hpp"
 #include "render.hpp"
 #include "search.hpp"

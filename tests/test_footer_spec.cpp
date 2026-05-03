@@ -1,4 +1,4 @@
-#include "elements/footer_spec.hpp"
+#include "components/footer_spec.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

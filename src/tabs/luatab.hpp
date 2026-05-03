@@ -13,7 +13,7 @@
 
 #include <ftxui/dom/elements.hpp>
 
-#include "elements/qr_item.hpp"
+#include "components/qr_item.hpp"
 #include "guarded.hpp"
 #include "json.hpp"
 #include "luatable.hpp"
