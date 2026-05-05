@@ -305,7 +305,8 @@ function Summary:set(data) end
 ---
 --- Mempool:
 ---   getmempoolinfo, getrawmempool, getmempoolentry,
----   getmempoolancestors, getmempooldescendants
+---   getmempoolancestors, getmempooldescendants,
+---   getmempoolcluster, getmempoolfeeratediagram
 ---
 --- Network:
 ---   getpeerinfo, getnetworkinfo, getnettotals,
