@@ -25,12 +25,14 @@ static const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
     "getbestblockhash",      "getblock",          "getblockchaininfo",
     "getblockcount",         "getblockhash",      "getblockheader",
     "getblockstats",         "getchaintips",      "getconnectioncount",
-    "getdeploymentinfo",     "getindexinfo",      "getmempoolancestors",
-    "getmempooldescendants", "getmempoolentry",   "getmempoolinfo",
-    "getmininginfo",         "getnettotals",      "getnetworkhashps",
-    "getnetworkinfo",        "getnodeaddresses",  "getpeerinfo",
-    "getrawmempool",         "getrawtransaction", "gettxout",
-    "gettxoutsetinfo",       "logging",           "uptime",
+    "getdeploymentinfo",         "getindexinfo",      "getmempoolancestors",
+    "getmempoolcluster",         "getmempooldescendants",
+    "getmempoolentry",           "getmempoolfeeratediagram",
+    "getmempoolinfo",            "getmininginfo",     "getnettotals",
+    "getnetworkhashps",          "getnetworkinfo",    "getnodeaddresses",
+    "getpeerinfo",               "getrawmempool",     "getrawtransaction",
+    "gettxout",                  "gettxoutsetinfo",   "logging",
+    "uptime",
 };
 
 struct RpcRequest {
