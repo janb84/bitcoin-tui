@@ -75,6 +75,15 @@ interfaces::Mining* RpcClient::mining_ipc()
 #endif
 }
 
+interfaces::Chain* RpcClient::chain_ipc()
+{
+#ifdef WITH_IPC
+    return ipc_ ? ipc_->chain() : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // base64 encoder (RFC 4648)
 // ---------------------------------------------------------------------------

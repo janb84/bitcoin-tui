@@ -5,10 +5,13 @@
 #include "ipc_client.hpp"
 
 #include "interfaces/init.h"
+#include "interfaces/chain.h"
 #include "interfaces/mining.h"
 #include "interfaces/rpc.h"
 #include "ipc/capnp/init.capnp.h"
 #include "ipc/capnp/init.capnp.proxy.h"
+#include "ipc/capnp/chain.capnp.h"
+#include "ipc/capnp/chain.capnp.proxy.h"
 #include "ipc/capnp/mining.capnp.h"
 #include "ipc/capnp/mining.capnp.proxy.h"
 #include "ipc/capnp/rpc.capnp.h"
@@ -73,6 +76,7 @@ struct IpcClient::Impl {
     // Lazily created on first call; persists until shutdown.
     std::unique_ptr<interfaces::Rpc> rpc;
     std::unique_ptr<interfaces::Mining> mining;
+    std::unique_ptr<interfaces::Chain> chain;
 
     Impl(const std::string& socket_path)
     {
@@ -96,6 +100,7 @@ struct IpcClient::Impl {
     ~Impl()
     {
         // Destroy clients on the loop thread before shutting it down.
+        chain.reset();
         mining.reset();
         rpc.reset();
         init.reset();
@@ -133,6 +138,18 @@ struct IpcClient::Impl {
             }
         }
         return mining.get();
+    }
+
+    interfaces::Chain* get_chain()
+    {
+        if (!chain) {
+            try {
+                chain = init->makeChain();
+            } catch (...) {
+                chain.reset();
+            }
+        }
+        return chain.get();
     }
 };
 
@@ -181,4 +198,9 @@ json IpcClient::call_wallet(const std::string& wallet,
 interfaces::Mining* IpcClient::mining()
 {
     return m_impl->get_mining();
+}
+
+interfaces::Chain* IpcClient::chain()
+{
+    return m_impl->get_chain();
 }

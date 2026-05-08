@@ -12,7 +12,7 @@
 #include <string>
 
 namespace mp { class EventLoop; }
-namespace interfaces { class Init; class Mining; class Rpc; struct BlockRef; }
+namespace interfaces { class Chain; class Init; class Mining; class Rpc; struct BlockRef; }
 
 // Connects to a bitcoin-node IPC unix socket and exposes a JSON-RPC API
 // matching the subset of `RpcClient` used by bitcoin-tui.
@@ -42,6 +42,11 @@ public:
     // Typed access to the Mining interface — currently used for tip-change
     // notifications. Returns nullptr if the node didn't expose Mining.
     interfaces::Mining* mining();
+
+    // Typed access to the Chain interface — exposes the subset of methods
+    // listed in src/interfaces/chain.h. Returns nullptr if the node didn't
+    // expose Chain.
+    interfaces::Chain* chain();
 
 private:
     // Hidden so callers don't need to include any libmultiprocess headers.

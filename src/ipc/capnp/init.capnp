@@ -4,10 +4,10 @@
 
 # IDs and ordinals match Bitcoin Core's src/ipc/capnp/init.capnp so this
 # client is wire-compatible with an unmodified bitcoin-node IPC server.
-# Only `makeRpc @4` is actually called by bitcoin-tui; the other ordinals
-# return placeholder `Unused` capabilities so that Cap'n Proto's
-# "ordinals must be sequential" requirement is satisfied without dragging
-# in echo/mining/chain types.
+# `makeRpc @4`, `makeMining @3`, and `makeChain @5` return real interfaces;
+# the remaining slots return placeholder `Unused` capabilities so that
+# Cap'n Proto's "ordinals must be sequential" requirement is satisfied
+# without dragging in echo types.
 
 @0xf2c5cfa319406aa6;
 
@@ -20,6 +20,7 @@ $Proxy.includeTypes("ipc/capnp/init-types.h");
 
 using Rpc = import "rpc.capnp";
 using Mining = import "mining.capnp";
+using Chain = import "chain.capnp";
 
 interface Unused $Proxy.wrap("interfaces::Unused") {
     destroy @0 (context :Proxy.Context) -> ();
@@ -31,5 +32,5 @@ interface Init $Proxy.wrap("interfaces::Init") {
     makeMiningOld2 @2 () -> ();
     makeMining     @3 (context :Proxy.Context) -> (result :Mining.Mining);
     makeRpc        @4 (context :Proxy.Context) -> (result :Rpc.Rpc);
-    makeChain      @5 (context :Proxy.Context) -> (result :Unused);
+    makeChain      @5 (context :Proxy.Context) -> (result :Chain.Chain);
 }
