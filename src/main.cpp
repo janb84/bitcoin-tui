@@ -465,14 +465,6 @@ int Application::run() const {
                 left.push_back(text(snap.transport) |
                                color(snap.transport == "IPC" ? Color::Cyan : Color::Yellow) |
                                bold);
-                if (snap.mining_typed || snap.chain_typed) {
-                    std::string typed = " (typed: ";
-                    bool first = true;
-                    if (snap.mining_typed) { typed += "Mining"; first = false; }
-                    if (snap.chain_typed)  { typed += first ? "Chain" : ",Chain"; }
-                    typed += ")";
-                    left.push_back(text(typed) | color(Color::Cyan));
-                }
             }
             left.push_back(text("  Last update: " + snap.last_update) | color(Color::GrayDark));
             status_left = hbox(left);
