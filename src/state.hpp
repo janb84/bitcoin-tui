@@ -92,6 +92,10 @@ struct AppState {
     std::string error_message;
     bool        connected  = false;
     bool        refreshing = false;
+    // "IPC" when calls are routed through the libmultiprocess unix socket,
+    // "HTTP" when going over HTTP(S) JSON-RPC, empty before the poll thread
+    // has finished its first connection attempt.
+    std::string transport;
 
     // Private broadcast queue (Bitcoin Core PR #29415)
     std::vector<std::string> privbcast_txids;

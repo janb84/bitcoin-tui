@@ -181,6 +181,7 @@ class Application {
     std::string              network      = "main";
     std::string              cookie_file;
     std::string              datadir;
+    std::string              ipc_connect; // overrides default <datadir>/<network>/node.sock
     bool                     explicit_creds = false;
     std::string              bitcoind_cmd;
     bool                     explicit_host = false;
@@ -252,6 +253,12 @@ int Application::configure(int argc, char* argv[]) {
         ->group("Authentication");
     app.add_option("-d,--datadir", datadir, "Bitcoin data directory for cookie lookup")
         ->group("Authentication");
+
+    // IPC
+    app.add_option("--ipcconnect", ipc_connect,
+                   "Connect to bitcoin-node IPC unix socket at this path "
+                   "(default: <datadir>/<network>/node.sock when present; falls back to HTTP RPC)")
+        ->group("Connection");
 
     // Node
     app.add_option("--bitcoind", bitcoind_cmd, "Path to bitcoind binary")->group("Node");
@@ -467,12 +474,19 @@ int Application::run() const {
                 text(" " + snap.error_message) | color(Color::Red),
             });
         } else {
-            status_left = hbox({
-                text(" "),
-                snap.connected ? text("\u25cf CONNECTED") | color(Color::Green) | bold
-                               : text("\u25cb CONNECTING\u2026") | color(Color::Yellow) | bold,
-                text("  Last update: " + snap.last_update) | color(Color::GrayDark),
-            });
+            Elements left;
+            left.push_back(text(" "));
+            left.push_back(snap.connected
+                               ? text("\u25cf CONNECTED") | color(Color::Green) | bold
+                               : text("\u25cb CONNECTING\u2026") | color(Color::Yellow) | bold);
+            if (!snap.transport.empty()) {
+                left.push_back(text("  via "));
+                left.push_back(text(snap.transport) |
+                               color(snap.transport == "IPC" ? Color::Cyan : Color::Yellow) |
+                               bold);
+            }
+            left.push_back(text("  Last update: " + snap.last_update) | color(Color::GrayDark));
+            status_left = hbox(left);
         }
 
         // Connection overlay (shown when disconnected)
@@ -485,6 +499,15 @@ int Application::run() const {
                       text(cfg.host + ":" + std::to_string(cfg.port)) | color(Color::White)}));
             conn_rows.push_back(hbox({text(" Datadir : ") | color(Color::GrayDark),
                                       text(datadir) | color(Color::White)}));
+            {
+                std::string s = ipc_connect.empty() ? ipc_socket_path(network, datadir)
+                                                    : ipc_connect;
+                conn_rows.push_back(
+                    hbox({text(" IPC sock: ") | color(Color::GrayDark),
+                          text(s) | color(Color::White),
+                          text(snap.transport == "IPC" ? "  (connected)" : "  (not in use)") |
+                              color(snap.transport == "IPC" ? Color::Green : Color::GrayDark)}));
+            }
             conn_rows.push_back(
                 hbox({text(" Auth    : ") | color(Color::GrayDark),
                       text(explicit_creds ? auth.get().user + ":<hidden>"
@@ -728,7 +751,12 @@ int Application::run() const {
         RpcClient rpc(cfg, auth);
         // Auto-detect a libmultiprocess IPC socket. If the node was launched
         // with `-ipcbind=unix`, route all RPC over the socket instead of HTTP.
-        rpc.try_use_ipc(ipc_socket_path(network, datadir));
+        // --ipcconnect overrides the default <datadir>/<network>/node.sock path.
+        const std::string sock = ipc_connect.empty()
+                                     ? ipc_socket_path(network, datadir)
+                                     : ipc_connect;
+        rpc.try_use_ipc(sock);
+        state.update([&](auto& s) { s.transport = rpc.using_ipc() ? "IPC" : "HTTP"; });
 
         state.update([](auto& s) { s.refreshing = true; });
         screen.PostEvent(Event::Custom);
@@ -739,10 +767,11 @@ int Application::run() const {
         screen.PostEvent(Event::Custom);
 
         while (running) {
-            // Wait either for refresh_secs to elapse, or — when typed Mining
-            // IPC is available — for the node to push a new chain tip
-            // notification, whichever comes first. We poll in 1s slices so
-            // shutdown remains responsive.
+            // When typed Mining IPC is available we trust the node's
+            // tip-change push notifications and skip the periodic refresh
+            // entirely — block indefinitely in waitTipChanged() (sliced into
+            // 1s chunks so shutdown stays responsive). Without IPC, fall
+            // back to a fixed-interval sleep.
 #ifdef WITH_IPC
             interfaces::Mining* mining = rpc.mining_ipc();
 #else
@@ -756,7 +785,7 @@ int Application::run() const {
                 std::string current_hex = state.access([](const auto& s) { return s.bestblockhash; });
                 uint256 current_tip = hex_to_uint256(current_hex).value_or(uint256{});
                 bool tip_changed = false;
-                for (int i = 0; i < refresh_secs && running && !tip_changed; ++i) {
+                while (running && !tip_changed) {
                     try {
                         auto next = mining->waitTipChanged(current_tip, MillisecondsDouble{1000});
                         if (next && next->hash != current_tip) tip_changed = true;
@@ -782,7 +811,13 @@ int Application::run() const {
                         try {
                             apply_cookie(a, path);
                             rpc = RpcClient(cfg, a);
-                            rpc.try_use_ipc(ipc_socket_path(network, datadir));
+                            const std::string s = ipc_connect.empty()
+                                                      ? ipc_socket_path(network, datadir)
+                                                      : ipc_connect;
+                            rpc.try_use_ipc(s);
+                            state.update([&](auto& st) {
+                                st.transport = rpc.using_ipc() ? "IPC" : "HTTP";
+                            });
                         } catch (...) { // NOLINT(bugprone-empty-catch)
                         }
                     });
