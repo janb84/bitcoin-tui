@@ -34,7 +34,13 @@ Element DashboardTab::render(const AppState& s) {
             }),
             label_value("  IBD         : ", s.ibd ? "yes" : "no",
                         s.ibd ? Color::Yellow : Color::Green),
-            label_value("  Pruned      : ", s.pruned ? "yes" : "no"),
+            label_value("  Pruned      : ",
+                        s.pruned ? (s.prune_height > 0
+                                        ? "yes (height " + std::to_string(s.prune_height) + ")"
+                                        : std::string{"yes"})
+                                 : std::string{"no"}),
+            label_value("  Assumed-vld : ", s.assumed_valid ? "yes" : "no",
+                        s.assumed_valid ? Color::Yellow : Color::Green),
         });
 
     // Network section

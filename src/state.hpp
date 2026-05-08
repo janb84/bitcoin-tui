@@ -52,6 +52,13 @@ struct AppState {
     double      difficulty = 0.0;
     double      progress   = 0.0;
     bool        pruned     = false;
+    // Lowest stored block when pruning is active; 0 when not pruning.
+    int64_t     prune_height = 0;
+    // True when the active chainstate is using an assumed-valid snapshot.
+    bool        assumed_valid = false;
+    // True when the node reports it's on a test chain (testnet*/signet/regtest).
+    // Sourced from Mining.isTestChain() over typed IPC; mirrors `chain != "main"`.
+    bool        test_chain = false;
     bool        ibd        = false;
     std::string bestblockhash;
 

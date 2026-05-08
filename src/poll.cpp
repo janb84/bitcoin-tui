@@ -5,6 +5,7 @@
 
 #ifdef WITH_IPC
 #include "interfaces/chain.h"
+#include "interfaces/mining.h"
 #endif
 
 // ============================================================================
@@ -117,17 +118,43 @@ void poll_rpc(RpcClient& rpc, Guarded<AppState>& state,
                 const bool                typed_pruned = chain->havePruned();
                 const bool                typed_ibd    = chain->isInitialBlockDownload();
                 const std::optional<int>  typed_height = chain->getHeight();
+                const std::optional<int>  typed_prune  = chain->getPruneHeight();
+                const bool                typed_assume = chain->hasAssumedValidChain();
+                // guessVerificationProgress needs the current tip hash; only
+                // call it once the JSON poll has produced a hex hash to feed
+                // it (skipped silently on the first poll if absent or if the
+                // hash isn't decodable).
+                std::optional<double> typed_progress;
+                const std::string     tip_hex = state.access([](const auto& s) { return s.bestblockhash; });
+                if (auto tip = hex_to_uint256(tip_hex); tip && !tip->IsNull()) {
+                    try { typed_progress = chain->guessVerificationProgress(*tip); } catch (...) {}
+                }
                 state.update([&](auto& s) {
-                    s.pruned      = typed_pruned;
-                    s.ibd         = typed_ibd;
-                    if (typed_height) s.blocks = *typed_height;
-                    s.chain_typed = true;
+                    s.pruned        = typed_pruned;
+                    s.ibd           = typed_ibd;
+                    if (typed_height)   s.blocks        = *typed_height;
+                    s.prune_height  = typed_prune.value_or(0);
+                    s.assumed_valid = typed_assume;
+                    if (typed_progress) s.progress      = *typed_progress;
+                    s.chain_typed   = true;
                 });
             } catch (...) {
                 state.update([](auto& s) { s.chain_typed = false; });
             }
         } else {
             state.update([](auto& s) { s.chain_typed = false; });
+        }
+        // Mining.isTestChain() is a single typed boolean we can use as a
+        // cross-check on the JSON-reported `chain` name. Stored in its own
+        // AppState field so the UI can light up a "TESTNET" badge without
+        // string-matching the chain name.
+        if (auto* mining = rpc.mining_ipc()) {
+            try {
+                const bool typed_test = mining->isTestChain();
+                state.update([&](auto& s) { s.test_chain = typed_test; });
+            } catch (...) {
+                // Leave previous value in place — better than racing it to false.
+            }
         }
 #endif
 
