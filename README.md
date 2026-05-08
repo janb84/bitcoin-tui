@@ -83,8 +83,14 @@ bitcoin-node -ipcbind=unix [-testnet4|-signet|...]
 
 When IPC is active, chain-tip updates are pushed to bitcoin-tui via
 `Mining.waitTipChanged()` instead of being polled, so new blocks show up
-instantly. If the socket is missing, bitcoin-tui silently falls back to HTTP
-cookie auth.
+instantly and `--refresh` becomes irrelevant for tip-driven views. If the
+socket is missing, bitcoin-tui silently falls back to HTTP cookie auth.
+
+The status bar shows `via IPC` (cyan) or `via HTTP` (yellow) so you can tell
+at a glance which transport is in use; the connection overlay (shown when
+disconnected) reports the exact socket path it tried.
+
+Pass `--ipcconnect <path>` to override the auto-detected socket location.
 
 ## Tests
 
@@ -102,6 +108,8 @@ bitcoin-tui [options]
 Connection:
   -h, --host <host>      RPC host             (default: 127.0.0.1)
   -p, --port <port>      RPC port             (default: 8332)
+      --ipcconnect <p>   bitcoin-node IPC unix socket
+                         (default: <datadir>/<network>/node.sock; falls back to HTTP)
 
 Authentication (cookie auth is used by default):
   -c, --cookie <path>    Path to .cookie file (auto-detected if omitted)
