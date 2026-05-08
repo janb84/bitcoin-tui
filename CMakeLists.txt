@@ -109,6 +109,48 @@ if(WIN32)
   target_link_libraries(bitcoind_obj PUBLIC ws2_32)
 endif()
 
+# IPC support via libmultiprocess (Cap'n Proto over a unix socket).
+# Disabled on Windows until libmultiprocess gains Windows IPC support.
+option(WITH_IPC "Build with IPC support (requires Cap'n Proto)" ON)
+if(WIN32)
+  set(WITH_IPC OFF)
+endif()
+if(WITH_IPC)
+  find_package(CapnProto 1.0 QUIET NO_MODULE)
+  if(NOT CapnProto_FOUND)
+    message(WARNING "Cap'n Proto >= 1.0 not found; building without IPC support.")
+    set(WITH_IPC OFF)
+  endif()
+endif()
+if(WITH_IPC)
+  # Build libmultiprocess as part of this project; it provides the
+  # Libmultiprocess::multiprocess library and Libmultiprocess::mpgen tool,
+  # and registers the MP_INCLUDE_DIR global property used by
+  # target_capnp_sources().
+  add_subdirectory(src/ipc/libmultiprocess EXCLUDE_FROM_ALL)
+  include(src/ipc/libmultiprocess/cmake/TargetCapnpSources.cmake)
+
+  add_library(ipc_client_obj OBJECT src/ipc_client.cpp)
+  target_include_directories(ipc_client_obj PUBLIC src/)
+  target_include_directories(ipc_client_obj PUBLIC
+    "${CMAKE_CURRENT_BINARY_DIR}/src"
+  )
+  target_link_libraries(ipc_client_obj PUBLIC Libmultiprocess::multiprocess)
+  target_compile_definitions(ipc_client_obj PUBLIC WITH_IPC=1)
+  # Generate proxy code from the capnp schemas. Add the generated .c++ files
+  # to ipc_client_obj so the static dispatch tables are linked into the binary.
+  target_capnp_sources(ipc_client_obj "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    src/ipc/capnp/rpc.capnp
+    src/ipc/capnp/init.capnp)
+  # The generated headers are produced relative to ${CMAKE_CURRENT_SOURCE_DIR}
+  # (the CMake source dir of the call), so put that on the include path so
+  # users of ipc_client_obj can include them as <ipc/capnp/init.capnp.h> etc.
+  target_include_directories(ipc_client_obj PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+  # rpc_client routes to IpcClient when WITH_IPC is defined; propagate the
+  # define + headers + linkage so it can call IpcClient.
+  target_link_libraries(rpc_client_obj PUBLIC ipc_client_obj)
+endif()
+
 add_executable(bitcoin-tui
   src/main.cpp
   src/render.cpp
@@ -148,6 +190,10 @@ target_link_libraries(bitcoin-tui PRIVATE
   sol2
   CLI11::CLI11
 )
+if(WITH_IPC)
+  target_compile_definitions(bitcoin-tui PRIVATE WITH_IPC=1)
+  target_link_libraries(bitcoin-tui PRIVATE ipc_client_obj)
+endif()
 
 install(TARGETS bitcoin-tui RUNTIME DESTINATION bin COMPONENT runtime)
 
@@ -165,3 +211,4 @@ FetchContent_MakeAvailable(Catch2)
 
 enable_testing()
 add_subdirectory(tests)
+
