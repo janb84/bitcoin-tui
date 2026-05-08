@@ -15,6 +15,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <optional>
+#include <string>
 
 // 32-byte hash. Bitcoin Core's full uint256 is far more featureful, but the
 // libmultiprocess `Data` adapter only needs `data()`, `size()`, `begin()`,
@@ -92,5 +94,26 @@ struct BlockRef
 };
 
 } // namespace interfaces
+
+// Parse a 64-char hex hash (display order, MSB first) into a uint256
+// (internal little-endian byte order). Returns nullopt on malformed input.
+inline std::optional<uint256> hex_to_uint256(const std::string& hex)
+{
+    if (hex.size() != 64) return std::nullopt;
+    uint256 out;
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+        if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+        return -1;
+    };
+    for (std::size_t i = 0; i < uint256::WIDTH; ++i) {
+        const int hi = nibble(hex[2 * i]);
+        const int lo = nibble(hex[2 * i + 1]);
+        if (hi < 0 || lo < 0) return std::nullopt;
+        out.data()[uint256::WIDTH - 1 - i] = static_cast<unsigned char>((hi << 4) | lo);
+    }
+    return out;
+}
 
 #endif // BITCOIN_TUI_INTERFACES_TYPES_H

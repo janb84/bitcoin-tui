@@ -123,26 +123,7 @@ static std::string ipc_socket_path(const std::string& network, const std::string
 }
 
 #ifdef WITH_IPC
-// Parse a 64-char hex hash (display order, MSB first) into a uint256
-// (internal little-endian byte order).
-static std::optional<uint256> hex_to_uint256(const std::string& hex)
-{
-    if (hex.size() != 64) return std::nullopt;
-    uint256 out;
-    auto nibble = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return 10 + c - 'a';
-        if (c >= 'A' && c <= 'F') return 10 + c - 'A';
-        return -1;
-    };
-    for (size_t i = 0; i < 32; ++i) {
-        const int hi = nibble(hex[2 * i]);
-        const int lo = nibble(hex[2 * i + 1]);
-        if (hi < 0 || lo < 0) return std::nullopt;
-        out.data()[31 - i] = static_cast<unsigned char>((hi << 4) | lo);
-    }
-    return out;
-}
+// hex_to_uint256 is provided by interfaces/types.h.
 #endif
 
 static void apply_cookie(RpcAuth& auth, const std::string& path) {
