@@ -37,6 +37,24 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 - CMake 3.22+
 - Internet access at configure time (CMake fetches FTXUI v6.1.9 and Catch2 v3.7.1 via FetchContent)
 - Bitcoin (Core) node with RPC enabled
+- **Cap'n Proto >= 1.0** (optional, on by default — enables IPC transport to a `bitcoin-node`
+  process started with `-ipcbind=unix`). Disable with `-DWITH_IPC=OFF`.
+
+### Installing Cap'n Proto
+
+| OS                 | Package                                       |
+| ------------------ | --------------------------------------------- |
+| Debian / Ubuntu    | `apt install capnproto libcapnp-dev`          |
+| Fedora             | `dnf install capnproto capnproto-devel`       |
+| Arch / Manjaro     | `pacman -S capnproto`                         |
+| Alpine             | `apk add capnproto-dev`                       |
+| FreeBSD            | `pkg install capnproto`                       |
+| macOS (Homebrew)   | `brew install capnp`                          |
+| macOS (MacPorts)   | `port install capnproto`                      |
+
+If Cap'n Proto isn't found, the build automatically falls back to HTTP-only RPC and
+prints a warning at configure time. To force the build to skip IPC even when Cap'n
+Proto is installed, pass `-DWITH_IPC=OFF`.
 
 ## Build
 
@@ -46,6 +64,27 @@ cmake --build build -j$(nproc)
 ```
 
 Binary is output to `build/bin/bitcoin-tui`.
+
+If Cap'n Proto is installed in a non-standard prefix, point CMake at it:
+
+```sh
+cmake -B build -DCMAKE_PREFIX_PATH=/opt/capnproto
+```
+
+## IPC mode (optional)
+
+When built with IPC support, bitcoin-tui auto-detects a `node.sock` socket inside
+the data directory (`<datadir>/<network>/node.sock`) and routes RPC traffic over
+libmultiprocess + Cap'n Proto instead of HTTP. Run the multiprocess node with:
+
+```sh
+bitcoin-node -ipcbind=unix [-testnet4|-signet|...]
+```
+
+When IPC is active, chain-tip updates are pushed to bitcoin-tui via
+`Mining.waitTipChanged()` instead of being polled, so new blocks show up
+instantly. If the socket is missing, bitcoin-tui silently falls back to HTTP
+cookie auth.
 
 ## Tests
 
