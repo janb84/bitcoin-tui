@@ -96,6 +96,16 @@ struct AppState {
     // "HTTP" when going over HTTP(S) JSON-RPC, empty before the poll thread
     // has finished its first connection attempt.
     std::string transport;
+    // True when the typed interfaces::Mining IPC capability is being used
+    // (waitTipChanged() etc.). Implies transport == "IPC".
+    bool mining_typed = false;
+    // True when the typed interfaces::Chain IPC capability is being used
+    // (havePruned, isInitialBlockDownload, getHeight ...). Implies
+    // transport == "IPC". When true, the values written by the JSON-RPC
+    // poll for `pruned`, `ibd`, and `blocks` are immediately overwritten
+    // by the corresponding typed Chain calls so the UI reflects the typed
+    // path end-to-end.
+    bool chain_typed = false;
 
     // Private broadcast queue (Bitcoin Core PR #29415)
     std::vector<std::string> privbcast_txids;

@@ -3,6 +3,10 @@
 #include "format.hpp"
 #include "poll.hpp"
 
+#ifdef WITH_IPC
+#include "interfaces/chain.h"
+#endif
+
 // ============================================================================
 // RPC polling
 // ============================================================================
@@ -99,6 +103,33 @@ void poll_rpc(RpcClient& rpc, Guarded<AppState>& state,
             s.error_message.clear();
             s.last_update = now_string();
         });
+
+#ifdef WITH_IPC
+        // Cross-check a few booleans (and the tip height) via the typed
+        // Chain IPC capability when available. Values *should* match what
+        // getblockchaininfo returned above; this exercises the typed path
+        // end-to-end (proof-of-concept) and lets the UI advertise that
+        // Chain methods are flowing as native capnp calls rather than as
+        // JSON-over-IPC. Wrapped in try/catch because nothing else fails
+        // if the node didn't expose Chain.
+        if (auto* chain = rpc.chain_ipc()) {
+            try {
+                const bool                typed_pruned = chain->havePruned();
+                const bool                typed_ibd    = chain->isInitialBlockDownload();
+                const std::optional<int>  typed_height = chain->getHeight();
+                state.update([&](auto& s) {
+                    s.pruned      = typed_pruned;
+                    s.ibd         = typed_ibd;
+                    if (typed_height) s.blocks = *typed_height;
+                    s.chain_typed = true;
+                });
+            } catch (...) {
+                state.update([](auto& s) { s.chain_typed = false; });
+            }
+        } else {
+            state.update([](auto& s) { s.chain_typed = false; });
+        }
+#endif
 
         // Private broadcast queue (Bitcoin Core PR #29415 — skipped on older nodes)
         try {
