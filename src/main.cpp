@@ -39,6 +39,10 @@ static void ensure_terminal();
 #include "tabs/network.hpp"
 #include "tabs/peers.hpp"
 #include "tabs/tools.hpp"
+#ifdef WITH_IPC
+#include "interfaces/mining.h"
+#include "interfaces/types.h"
+#endif
 
 // ============================================================================
 // Cookie authentication helpers
@@ -117,6 +121,29 @@ static std::string cookie_path(const std::string& network, const std::string& da
 static std::string ipc_socket_path(const std::string& network, const std::string& datadir) {
     return datadir + "/" + network_subdir(network) + "node.sock";
 }
+
+#ifdef WITH_IPC
+// Parse a 64-char hex hash (display order, MSB first) into a uint256
+// (internal little-endian byte order).
+static std::optional<uint256> hex_to_uint256(const std::string& hex)
+{
+    if (hex.size() != 64) return std::nullopt;
+    uint256 out;
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+        if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+        return -1;
+    };
+    for (size_t i = 0; i < 32; ++i) {
+        const int hi = nibble(hex[2 * i]);
+        const int lo = nibble(hex[2 * i + 1]);
+        if (hi < 0 || lo < 0) return std::nullopt;
+        out.data()[31 - i] = static_cast<unsigned char>((hi << 4) | lo);
+    }
+    return out;
+}
+#endif
 
 static void apply_cookie(RpcAuth& auth, const std::string& path) {
     std::ifstream f(path);
@@ -712,8 +739,34 @@ int Application::run() const {
         screen.PostEvent(Event::Custom);
 
         while (running) {
-            for (int i = 0; i < refresh_secs * 10 && running; ++i)
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // Wait either for refresh_secs to elapse, or — when typed Mining
+            // IPC is available — for the node to push a new chain tip
+            // notification, whichever comes first. We poll in 1s slices so
+            // shutdown remains responsive.
+#ifdef WITH_IPC
+            interfaces::Mining* mining = rpc.mining_ipc();
+#else
+            void* mining = nullptr;
+#endif
+            if (!mining) {
+                for (int i = 0; i < refresh_secs * 10 && running; ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            } else {
+#ifdef WITH_IPC
+                std::string current_hex = state.access([](const auto& s) { return s.bestblockhash; });
+                uint256 current_tip = hex_to_uint256(current_hex).value_or(uint256{});
+                bool tip_changed = false;
+                for (int i = 0; i < refresh_secs && running && !tip_changed; ++i) {
+                    try {
+                        auto next = mining->waitTipChanged(current_tip, MillisecondsDouble{1000});
+                        if (next && next->hash != current_tip) tip_changed = true;
+                    } catch (...) {
+                        // IPC went away — fall back to a regular sleep.
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                    }
+                }
+#endif
+            }
             if (!running)
                 break;
 
