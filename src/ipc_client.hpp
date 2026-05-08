@@ -8,10 +8,11 @@
 #include "json.hpp"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace mp { class EventLoop; }
-namespace interfaces { class Init; class Rpc; }
+namespace interfaces { class Init; class Mining; class Rpc; struct BlockRef; }
 
 // Connects to a bitcoin-node IPC unix socket and exposes a JSON-RPC API
 // matching the subset of `RpcClient` used by bitcoin-tui.
@@ -37,6 +38,10 @@ public:
     json call_wallet(const std::string& wallet,
                      const std::string& method,
                      const json& params);
+
+    // Typed access to the Mining interface — currently used for tip-change
+    // notifications. Returns nullptr if the node didn't expose Mining.
+    interfaces::Mining* mining();
 
 private:
     // Hidden so callers don't need to include any libmultiprocess headers.

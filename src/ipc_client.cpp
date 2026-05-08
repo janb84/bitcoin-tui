@@ -5,9 +5,12 @@
 #include "ipc_client.hpp"
 
 #include "interfaces/init.h"
+#include "interfaces/mining.h"
 #include "interfaces/rpc.h"
 #include "ipc/capnp/init.capnp.h"
 #include "ipc/capnp/init.capnp.proxy.h"
+#include "ipc/capnp/mining.capnp.h"
+#include "ipc/capnp/mining.capnp.proxy.h"
 #include "ipc/capnp/rpc.capnp.h"
 #include "ipc/capnp/rpc.capnp.proxy.h"
 
@@ -69,6 +72,7 @@ struct IpcClient::Impl {
     std::unique_ptr<interfaces::Init> init;
     // Lazily created on first call; persists until shutdown.
     std::unique_ptr<interfaces::Rpc> rpc;
+    std::unique_ptr<interfaces::Mining> mining;
 
     Impl(const std::string& socket_path)
     {
@@ -92,6 +96,7 @@ struct IpcClient::Impl {
     ~Impl()
     {
         // Destroy clients on the loop thread before shutting it down.
+        mining.reset();
         rpc.reset();
         init.reset();
         shutdown_loop();
@@ -116,6 +121,18 @@ struct IpcClient::Impl {
             if (!rpc) throw std::runtime_error("bitcoin-node did not return an Rpc interface");
         }
         return *rpc;
+    }
+
+    interfaces::Mining* get_mining()
+    {
+        if (!mining) {
+            try {
+                mining = init->makeMining();
+            } catch (...) {
+                mining.reset();
+            }
+        }
+        return mining.get();
     }
 };
 
@@ -159,4 +176,9 @@ json IpcClient::call_wallet(const std::string& wallet,
                             const json& params)
 {
     return do_call(m_impl->get_rpc(), "/wallet/" + wallet, method, params);
+}
+
+interfaces::Mining* IpcClient::mining()
+{
+    return m_impl->get_mining();
 }

@@ -66,6 +66,15 @@ bool RpcClient::try_use_ipc(const std::string& socket_path) {
 
 bool RpcClient::using_ipc() const noexcept { return ipc_ != nullptr; }
 
+interfaces::Mining* RpcClient::mining_ipc()
+{
+#ifdef WITH_IPC
+    return ipc_ ? ipc_->mining() : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // base64 encoder (RFC 4648)
 // ---------------------------------------------------------------------------

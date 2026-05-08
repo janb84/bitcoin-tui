@@ -6,6 +6,7 @@
 #include <string>
 
 class IpcClient;
+namespace interfaces { class Mining; }
 
 class RpcError : public std::runtime_error {
   public:
@@ -42,6 +43,10 @@ class RpcClient {
 
     // True if calls are currently being routed over IPC.
     bool using_ipc() const noexcept;
+
+    // Returns the typed Mining IPC interface, or nullptr if IPC is not in
+    // use or the node didn't expose Mining. Used for waitTipChanged().
+    interfaces::Mining* mining_ipc();
 
     json call(const std::string& method, const json& params = json::array());
     json call_wallet(const std::string& wallet, const std::string& method,

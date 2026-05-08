@@ -8,6 +8,7 @@
 // Pull in the proxy-types headers for every capnp interface returned by
 // Init's factory methods so the generated proxy code for Init has access to
 // the right CustomBuildField / CustomReadField overloads.
+#include <ipc/capnp/mining.capnp.proxy-types.h>
 #include <ipc/capnp/rpc.capnp.proxy-types.h>
 
 #include <mp/type-context.h>

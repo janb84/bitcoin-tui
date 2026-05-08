@@ -19,6 +19,7 @@ $Proxy.include("interfaces/init.h");
 $Proxy.includeTypes("ipc/capnp/init-types.h");
 
 using Rpc = import "rpc.capnp";
+using Mining = import "mining.capnp";
 
 interface Unused $Proxy.wrap("interfaces::Unused") {
     destroy @0 (context :Proxy.Context) -> ();
@@ -28,7 +29,7 @@ interface Init $Proxy.wrap("interfaces::Init") {
     construct @0 (threadMap: Proxy.ThreadMap) -> (threadMap :Proxy.ThreadMap);
     makeEcho       @1 (context :Proxy.Context) -> (result :Unused);
     makeMiningOld2 @2 () -> ();
-    makeMining     @3 (context :Proxy.Context) -> (result :Unused);
+    makeMining     @3 (context :Proxy.Context) -> (result :Mining.Mining);
     makeRpc        @4 (context :Proxy.Context) -> (result :Rpc.Rpc);
     makeChain      @5 (context :Proxy.Context) -> (result :Unused);
 }
