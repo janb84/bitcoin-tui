@@ -80,6 +80,21 @@ struct IpcClient::Impl {
 
     Impl(const std::string& socket_path)
     {
+        // Connect the unix socket *before* spinning up the EventLoop. This
+        // avoids two failure modes:
+        //   1. Socket file missing (-ipcbind not used): stat would succeed
+        //      only if a stale socket file is left over, but ::connect would
+        //      then fail with ECONNREFUSED.
+        //   2. ConnectUnix throwing for any reason after the loop is running
+        //      but before any EventLoopRef is constructed: mp::EventLoop::loop()
+        //      blocks on a read from m_post_fd that is only written when a
+        //      client's reference count drops — with no client ever created,
+        //      nothing wakes the loop and loop_thread.join() hangs forever,
+        //      freezing the entire UI on the HTTP-only path.
+        // Doing the connect synchronously up front means a failure throws
+        // before any thread/loop exists, and we fall back to HTTP cleanly.
+        const int fd = ConnectUnix(socket_path);
+
         std::promise<mp::EventLoop*> ready;
         loop_thread = std::thread([&] {
             mp::EventLoop owned("bitcoin-tui-ipc", LogPrint);
@@ -88,10 +103,10 @@ struct IpcClient::Impl {
         });
         loop = ready.get_future().get();
         try {
-            const int fd = ConnectUnix(socket_path);
             init = mp::ConnectStream<ipc::capnp::messages::Init>(*loop, fd);
         } catch (...) {
-            // Tear the loop down so loop_thread can join, then rethrow.
+            // ConnectStream owns the fd on success; on failure we've already
+            // got an EventLoopRef inside, so shutdown_loop's join is safe.
             shutdown_loop();
             throw;
         }
