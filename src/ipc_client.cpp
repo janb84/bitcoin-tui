@@ -180,7 +180,13 @@ static json do_call(interfaces::Rpc& rpc,
         }
         throw std::runtime_error(msg);
     }
-    return response.contains("result") ? response["result"] : json{};
+    // Return the full JSON-RPC envelope ({id, result, error}) so callers can
+    // do `rpc.call(...)["result"]` exactly like with the HTTP path. Returning
+    // an unwrapped result here would break every existing call site (and
+    // silently: nlohmann's operator[] on the missing "result" key auto-creates
+    // a null, then .value("blocks", 0) throws "operator[string] on non-object"
+    // — which surfaces as a "Connection Failed" overlay even though IPC is up).
+    return response;
 }
 
 json IpcClient::call(const std::string& method, const json& params)
