@@ -92,6 +92,9 @@ disconnected) reports the exact socket path it tried.
 
 Pass `--ipcconnect <path>` to override the auto-detected socket location.
 
+For a complete breakdown of which AppState field is fetched via typed
+IPC vs JSON-over-IPC vs HTTP, see [doc/ipc-coverage.md](doc/ipc-coverage.md).
+
 ## Tests
 
 ```sh
