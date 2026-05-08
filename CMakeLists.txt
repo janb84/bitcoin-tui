@@ -142,6 +142,8 @@ if(WITH_IPC)
   target_capnp_sources(ipc_client_obj "${CMAKE_CURRENT_SOURCE_DIR}/src"
     src/ipc/capnp/rpc.capnp
     src/ipc/capnp/mining.capnp
+    src/ipc/capnp/handler.capnp
+    src/ipc/capnp/chain.capnp
     src/ipc/capnp/init.capnp)
   # The generated headers are produced relative to ${CMAKE_CURRENT_SOURCE_DIR}
   # (the CMake source dir of the call), so put that on the include path so
