@@ -19,6 +19,9 @@ target_link_libraries(bitcoin-tui-tests PRIVATE
   Catch2::Catch2WithMain
   Threads::Threads
 )
+if(WITH_IPC)
+  target_link_libraries(bitcoin-tui-tests PRIVATE ipc_client_obj)
+endif()
 add_test(NAME bitcoin-tui-tests COMMAND bitcoin-tui-tests)
 
 add_executable(test_cli test_cli.cpp)

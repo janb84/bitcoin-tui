@@ -1,5 +1,9 @@
 #include "rpc_client.hpp"
 
+#ifdef WITH_IPC
+#include "ipc_client.hpp"
+#endif
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -40,6 +44,27 @@ static std::string safe_strerror(int errnum) {
 
 RpcClient::RpcClient(RpcConfig config, RpcAuth auth)
     : config_(std::move(config)), auth_(std::move(auth)) {}
+
+RpcClient::~RpcClient() = default;
+RpcClient::RpcClient(RpcClient&&) noexcept = default;
+RpcClient& RpcClient::operator=(RpcClient&&) noexcept = default;
+
+bool RpcClient::try_use_ipc(const std::string& socket_path) {
+#ifdef WITH_IPC
+    try {
+        ipc_ = std::make_unique<IpcClient>(socket_path);
+        return true;
+    } catch (const std::exception&) {
+        ipc_.reset();
+        return false;
+    }
+#else
+    (void)socket_path;
+    return false;
+#endif
+}
+
+bool RpcClient::using_ipc() const noexcept { return ipc_ != nullptr; }
 
 // ---------------------------------------------------------------------------
 // base64 encoder (RFC 4648)
@@ -225,6 +250,9 @@ std::string RpcClient::http_post(const std::string& endpoint, const std::string&
 // JSON-RPC call
 // ---------------------------------------------------------------------------
 json RpcClient::call(const std::string& method, const json& params) {
+#ifdef WITH_IPC
+    if (ipc_) return ipc_->call(method, params);
+#endif
     return call("/", method, params);
 }
 
@@ -244,6 +272,9 @@ static std::string uri_encode(const std::string& s) {
 
 json RpcClient::call_wallet(const std::string& wallet, const std::string& method,
                             const json& params) {
+#ifdef WITH_IPC
+    if (ipc_) return ipc_->call_wallet(wallet, method, params);
+#endif
     return call("/wallet/" + uri_encode(wallet), method, params);
 }
 

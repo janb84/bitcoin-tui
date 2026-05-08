@@ -113,6 +113,11 @@ static std::string cookie_path(const std::string& network, const std::string& da
     return datadir + "/" + network_subdir(network) + ".cookie";
 }
 
+// Default unix socket path written by `bitcoin-node -ipcbind=unix`.
+static std::string ipc_socket_path(const std::string& network, const std::string& datadir) {
+    return datadir + "/" + network_subdir(network) + "node.sock";
+}
+
 static void apply_cookie(RpcAuth& auth, const std::string& path) {
     std::ifstream f(path);
     if (!f)
@@ -694,6 +699,9 @@ int Application::run() const {
     // Background polling thread
     std::thread poll_thread([&] {
         RpcClient rpc(cfg, auth);
+        // Auto-detect a libmultiprocess IPC socket. If the node was launched
+        // with `-ipcbind=unix`, route all RPC over the socket instead of HTTP.
+        rpc.try_use_ipc(ipc_socket_path(network, datadir));
 
         state.update([](auto& s) { s.refreshing = true; });
         screen.PostEvent(Event::Custom);
@@ -721,6 +729,7 @@ int Application::run() const {
                         try {
                             apply_cookie(a, path);
                             rpc = RpcClient(cfg, a);
+                            rpc.try_use_ipc(ipc_socket_path(network, datadir));
                         } catch (...) { // NOLINT(bugprone-empty-catch)
                         }
                     });
