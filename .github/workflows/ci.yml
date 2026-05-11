@@ -7,6 +7,16 @@ on:
     branches: [main]
 
 jobs:
+  subtree-check:
+    name: Subtree check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify libmultiprocess subtree
+        run: ./tests/lint/git-subtree-check.sh src/ipc/libmultiprocess
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
