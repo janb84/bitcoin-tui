@@ -37,12 +37,16 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 - CMake 3.22+
 - Internet access at configure time (CMake fetches FTXUI v6.1.9 and Catch2 v3.7.1 via FetchContent)
 - Bitcoin (Core) node with RPC enabled
+- [Cap'n Proto](https://capnproto.org/) >= 1.0 (`brew install capnp` / `apt install capnproto`) for the IPC transport. Required by default; pass `-DWITH_IPC=OFF` at configure time to skip it (the TUI then falls back to time-based polling and the `test_ipc` suite is omitted). IPC is forced off on Windows pending [bitcoin-core/libmultiprocess#231](https://github.com/bitcoin-core/libmultiprocess/pull/231).
 
 ## Build
 
 ```sh
 cmake -B build
 cmake --build build -j$(nproc)
+
+# Build without IPC support (no Cap'n Proto required)
+cmake -B build -DWITH_IPC=OFF
 ```
 
 Binary is output to `build/bin/bitcoin-tui`.
@@ -78,6 +82,16 @@ Network:
 
 Launch:
       --bitcoind <path>  Path to bitcoind binary (default: found via PATH)
+
+Node (IPC):
+      --ipcconnect <path>  Connect to bitcoin-node via a Cap'n Proto IPC
+                           socket. Defaults to <datadir>/<net>/node.sock if
+                           present; pass an explicit path to override, or
+                           'off' to disable. When connected, the poll loop
+                           wakes immediately on new tips via
+                           Mining.waitTipChanged instead of waiting for
+                           --refresh, and an `IPC` badge appears in the
+                           footer.
 
 Display:
   -r, --refresh <secs>   Refresh interval     (default: 5)
@@ -128,6 +142,34 @@ rpcpassword=hunter2
 ```
 
 Then pass `-u alice -P hunter2` on the command line.
+
+## IPC (Cap'n Proto, optional)
+
+When `bitcoin-node` is launched with `-ipcbind=unix`, it exposes a typed
+Cap'n Proto socket at `<datadir>/<network>/node.sock`. `bitcoin-tui` can
+attach to that socket in addition to JSON-RPC and use it to wake the poll
+loop the moment a new tip arrives, rather than waiting up to `--refresh`
+seconds. JSON-RPC over HTTP is still used for everything else.
+
+```sh
+# bitcoin-node side (testnet4)
+bitcoin-node -testnet4 -ipcbind=unix -server=1
+
+# bitcoin-tui side: socket auto-detected from --datadir + network
+./build/bin/bitcoin-tui --testnet4
+
+# Or point at the socket explicitly
+./build/bin/bitcoin-tui --ipcconnect ~/Library/Application\ Support/Bitcoin/testnet4/node.sock
+
+# Disable even if the socket exists
+./build/bin/bitcoin-tui --ipcconnect off
+```
+
+The footer shows an `IPC` badge when the typed transport is active. v31.0
+of Bitcoin Core only exposes the `Mining` interface over IPC, which is all
+`bitcoin-tui` needs for tip-change notifications. v32 will additionally
+expose JSON-RPC over the same socket via
+[bitcoin/bitcoin#32297](https://github.com/bitcoin/bitcoin/pull/32297).
 
 ## License
 
