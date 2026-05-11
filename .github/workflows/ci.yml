@@ -28,30 +28,47 @@ jobs:
             os: ubuntu-24.04
             cc: gcc
             cxx: g++
+            cmake_flags: -DWITH_IPC=ON
+            install_capnp: apt
 
           - name: Linux · Clang
             os: ubuntu-24.04
             cc: clang
             cxx: clang++
+            cmake_flags: -DWITH_IPC=ON
+            install_capnp: apt
 
           - name: macOS · Apple Clang
             os: macos-latest
             cc: clang
             cxx: clang++
+            cmake_flags: -DWITH_IPC=ON
+            install_capnp: brew
 
           - name: Windows · MSVC
             os: windows-latest
+            # IPC is forced off on Windows pending Windows support in
+            # libmultiprocess: https://github.com/bitcoin-core/libmultiprocess/pull/231
+            cmake_flags: -DWITH_IPC=OFF
             build_flags: --config Release
             test_flags: -C Release
 
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install Cap'n Proto (apt)
+        if: matrix.install_capnp == 'apt'
+        run: sudo apt-get update && sudo apt-get install -y capnproto libcapnp-dev
+
+      - name: Install Cap'n Proto (brew)
+        if: matrix.install_capnp == 'brew'
+        run: brew install capnp
+
       - name: Configure
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_flags }}
 
       - name: Build
         run: cmake --build build --parallel ${{ matrix.build_flags }}
