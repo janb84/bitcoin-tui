@@ -40,6 +40,10 @@ static void ensure_terminal();
 #include "tabs/peers.hpp"
 #include "tabs/tools.hpp"
 
+#ifdef WITH_IPC
+#include "ipc_client.hpp"
+#endif
+
 // ============================================================================
 // Cookie authentication helpers
 // ============================================================================
@@ -113,6 +117,12 @@ static std::string cookie_path(const std::string& network, const std::string& da
     return datadir + "/" + network_subdir(network) + ".cookie";
 }
 
+// Default unix socket path for bitcoin-node's `-ipcbind=unix`. Mirrors
+// upstream's GetBindAddrUnix() for the no-explicit-path case.
+static std::string default_ipc_socket(const std::string& network, const std::string& datadir) {
+    return datadir + "/" + network_subdir(network) + "node.sock";
+}
+
 static void apply_cookie(RpcAuth& auth, const std::string& path) {
     std::ifstream f(path);
     if (!f)
@@ -159,6 +169,10 @@ class Application {
     mutable std::ofstream    debug_out;
     std::vector<std::string> lua_tabs;
     std::vector<std::string> extra_rpcs;
+
+    // IPC: empty = auto-detect (try default `<datadir>/<net>/node.sock`),
+    // explicit string = override path, "0" or "off" = disable.
+    std::string              ipc_connect;
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -224,6 +238,10 @@ int Application::configure(int argc, char* argv[]) {
     // Node
     app.add_option("--bitcoind", bitcoind_cmd, "Path to bitcoind binary")->group("Node");
     app.add_option("--debuglog", debug_log_file, "Path to debug.log")->group("Node");
+    app.add_option("--ipcconnect", ipc_connect,
+                   "Connect to bitcoin-node IPC socket "
+                   "(default: <datadir>/<net>/node.sock if present; pass 'off' to disable)")
+        ->group("Node");
 
     // Network
     bool use_testnet{false}, use_testnet4{false}, use_regtest{false}, use_signet{false};
@@ -439,6 +457,10 @@ int Application::run() const {
                 text(" "),
                 snap.connected ? text("\u25cf CONNECTED") | color(Color::Green) | bold
                                : text("\u25cb CONNECTING\u2026") | color(Color::Yellow) | bold,
+                snap.ipc_connected
+                    ? hbox({text("  "),
+                            text(" IPC ") | bgcolor(Color::Blue) | color(Color::White) | bold})
+                    : text(""),
                 text("  Last update: " + snap.last_update) | color(Color::GrayDark),
             });
         }
@@ -691,6 +713,46 @@ int Application::run() const {
 
     auto wake_screen = [&] { screen.PostEvent(Event::Custom); };
 
+    // Resolve the IPC socket path: explicit --ipcconnect wins, otherwise try
+    // the default `<datadir>/<net>/node.sock` if the file exists. Empty
+    // string means "no IPC, fall back to time-based polling".
+    std::string ipc_socket;
+#ifdef WITH_IPC
+    {
+        std::string ic = ipc_connect;
+        if (ic == "off" || ic == "0" || ic == "false") {
+            ipc_socket.clear();
+        } else if (!ic.empty()) {
+            ipc_socket = std::move(ic);
+        } else {
+            std::string candidate = default_ipc_socket(network, datadir);
+            std::error_code ec;
+            if (std::filesystem::exists(candidate, ec)) {
+                ipc_socket = std::move(candidate);
+            }
+        }
+    }
+
+    // Construct IPC up front (before any thread that uses it) so we can call
+    // interrupt() from the main thread on shutdown without racing the poll
+    // thread's construction.
+    std::unique_ptr<IpcClient> ipc;
+    if (!ipc_socket.empty()) {
+        try {
+            ipc = std::make_unique<IpcClient>(ipc_socket);
+            state.update([&](auto& s) {
+                s.ipc_connected   = true;
+                s.ipc_socket_path = ipc_socket;
+            });
+        } catch (const std::exception& e) {
+            if (debug_enabled && debug_out) {
+                debug_out << "[ipc] connect failed: " << e.what() << "\n";
+                debug_out.flush();
+            }
+        }
+    }
+#endif
+
     // Background polling thread
     std::thread poll_thread([&] {
         RpcClient rpc(cfg, auth);
@@ -704,8 +766,49 @@ int Application::run() const {
         screen.PostEvent(Event::Custom);
 
         while (running) {
-            for (int i = 0; i < refresh_secs * 10 && running; ++i)
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#ifdef WITH_IPC
+            // With IPC available, block on Mining.waitTipChanged so the next
+            // poll fires the moment a new tip arrives — instead of waiting
+            // out the full refresh interval. We still use refresh_secs as
+            // the timeout so non-tip data (mempool, peers, network) refreshes
+            // on the user's chosen cadence even if no new block lands.
+            if (ipc) {
+                std::string current_tip = state.access(
+                    [](const auto& s) { return s.bestblockhash; });
+                if (debug_enabled && debug_out) {
+                    debug_out << "[ipc] waitTipChanged current_tip='"
+                              << current_tip << "' (len=" << current_tip.size() << ")\n";
+                    debug_out.flush();
+                }
+                try {
+                    auto r = ipc->wait_tip_changed(
+                        current_tip, std::chrono::seconds(refresh_secs));
+                    if (debug_enabled && debug_out) {
+                        debug_out << "[ipc] waitTipChanged returned "
+                                  << (r ? *r : std::string{"(nullopt)"}) << "\n";
+                        debug_out.flush();
+                    }
+                } catch (const std::exception& e) {
+                    // Drop the IPC client on any error and fall through to
+                    // the time-based path; subsequent loops poll at the
+                    // refresh interval like the IPC-less build.
+                    if (debug_enabled && debug_out) {
+                        debug_out << "[ipc] waitTipChanged failed: " << e.what() << "\n";
+                        debug_out.flush();
+                    }
+                    // Don't drop the client — the typed Mining proxy can
+                    // still recover on the next call. Just sleep a bit
+                    // before the next attempt to avoid a hot loop on a
+                    // persistently broken connection.
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+            }
+            if (!ipc)
+#endif
+            {
+                for (int i = 0; i < refresh_secs * 10 && running; ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
             if (!running)
                 break;
 
@@ -757,6 +860,12 @@ int Application::run() const {
     screen.Loop(event_handler);
 
     running = false;
+#ifdef WITH_IPC
+    // Wake the poll thread out of any in-flight Mining.waitTipChanged so it
+    // can observe `running == false` promptly instead of waiting out the
+    // full refresh_secs timeout.
+    if (ipc) ipc->interrupt();
+#endif
     for (auto tab : tabs) {
         tab->join();
     }

@@ -93,6 +93,13 @@ struct AppState {
     bool        connected  = false;
     bool        refreshing = false;
 
+    // Whether the background poll thread holds an active IPC connection to
+    // bitcoin-node (for Mining.waitTipChanged wake-up). All JSON-RPC traffic
+    // still goes over HTTP — this only governs the poll-loop timing and the
+    // transport indicator in the footer.
+    bool        ipc_connected = false;
+    std::string ipc_socket_path;
+
     // Private broadcast queue (Bitcoin Core PR #29415)
     std::vector<std::string> privbcast_txids;
 };
