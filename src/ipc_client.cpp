@@ -5,8 +5,11 @@
 #include "ipc_client.hpp"
 
 #include "interfaces/init.h"
+#include "interfaces/mining.h"
 #include "ipc/capnp/init.capnp.h"
 #include "ipc/capnp/init.capnp.proxy.h"
+#include "ipc/capnp/mining.capnp.h"
+#include "ipc/capnp/mining.capnp.proxy.h"
 
 #include <mp/proxy-io.h>
 #include <mp/util.h>
@@ -62,8 +65,11 @@ struct IpcClient::Impl {
     std::thread loop_thread;
     mp::EventLoop* loop{nullptr};
 
-    // Owns the connection to the bitcoin-node socket.
+    // Owns the connection to the bitcoin-node socket; tied to `init`.
     std::unique_ptr<interfaces::Init> init;
+    // Eagerly created in the ctor as part of the version probe; reused
+    // later for typed Mining accessors.
+    std::unique_ptr<interfaces::Mining> mining;
 
     explicit Impl(const std::string& socket_path)
     {
@@ -88,11 +94,37 @@ struct IpcClient::Impl {
             shutdown_loop();
             throw;
         }
+        // Probe the server's wire version by eagerly fetching the Mining
+        // capability. v30.x exposes Mining at Init.makeMining ordinal 2
+        // and we call ordinal 3, which does not exist on v30 and faults at
+        // the wire level with `MethodNotImplemented; methodId = 3`. v31.0+
+        // accepts the call. Round-tripping init->makeMining() is enough on
+        // its own to detect the mismatch — no follow-up probe on the
+        // returned Mining capability is needed.
+        //
+        // Surface any failure as a friendly runtime_error so the caller
+        // (main.cpp) can log it and fall back to time-based polling over
+        // JSON-RPC.
+        try {
+            mining = init->makeMining();
+            if (!mining) {
+                throw std::runtime_error("server did not return a Mining capability");
+            }
+        } catch (const std::exception& e) {
+            // Tear down on the loop thread before joining.
+            mining.reset();
+            init.reset();
+            shutdown_loop();
+            throw std::runtime_error(
+                std::string{"bitcoin-node IPC server is older than v31.0 "
+                            "(or otherwise incompatible): "} + e.what());
+        }
     }
 
     ~Impl()
     {
         // Destroy clients on the loop thread before shutting it down.
+        mining.reset();
         init.reset();
         shutdown_loop();
     }

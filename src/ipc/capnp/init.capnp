@@ -4,10 +4,11 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 # Wire-compatible subset of Bitcoin Core's src/ipc/capnp/init.capnp as
-# shipped in v31.0. Preserves the interface ID (@0xf2c5cfa319406aa6) so
-# this client can connect to an unmodified v31.0 bitcoin-node IPC server.
-# Factory methods (makeMining, ...) are added in follow-up commits as
-# bitcoin-tui starts to actually use them.
+# shipped in v31.0. Preserves the interface ID (@0xf2c5cfa319406aa6) and
+# the @1/@2/@3 ordinals so this client can talk to an unmodified v31.0
+# bitcoin-node IPC server. `makeEcho @1` is declared as a placeholder
+# `Unused` capability so we don't need to import echo.capnp; only
+# `makeMining @3` is actually used.
 
 @0xf2c5cfa319406aa6;
 
@@ -18,6 +19,15 @@ using Proxy = import "/mp/proxy.capnp";
 $Proxy.include("interfaces/init.h");
 $Proxy.includeTypes("ipc/capnp/init-types.h");
 
+using Mining = import "mining.capnp";
+
+interface Unused $Proxy.wrap("interfaces::Unused") {
+    destroy @0 (context :Proxy.Context) -> ();
+}
+
 interface Init $Proxy.wrap("interfaces::Init") {
-    construct @0 (threadMap: Proxy.ThreadMap) -> (threadMap :Proxy.ThreadMap);
+    construct      @0 (threadMap: Proxy.ThreadMap) -> (threadMap :Proxy.ThreadMap);
+    makeEcho       @1 (context :Proxy.Context) -> (result :Unused);
+    makeMiningOld2 @2 () -> ();
+    makeMining     @3 (context :Proxy.Context) -> (result :Mining.Mining);
 }

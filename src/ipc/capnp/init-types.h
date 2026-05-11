@@ -5,9 +5,10 @@
 #ifndef BITCOIN_TUI_IPC_CAPNP_INIT_TYPES_H
 #define BITCOIN_TUI_IPC_CAPNP_INIT_TYPES_H
 
-// Pull in only the proxy-types helpers Init's current schema needs.
-// More headers will be added here as Init grows factory methods that
-// return additional capnp interfaces.
+// Pull in the proxy-types headers for every capnp interface returned by
+// Init's factory methods so the generated proxy code for Init has access
+// to the right CustomBuildField / CustomReadField overloads.
+#include <ipc/capnp/mining.capnp.proxy-types.h>
 
 #include <mp/type-context.h>
 #include <mp/type-decay.h>

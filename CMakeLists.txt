@@ -142,6 +142,8 @@ if(WITH_IPC)
   target_compile_definitions(ipc_client_obj PUBLIC WITH_IPC=1)
   # Generate proxy code from the capnp schemas.
   target_capnp_sources(ipc_client_obj "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    src/ipc/capnp/common.capnp
+    src/ipc/capnp/mining.capnp
     src/ipc/capnp/init.capnp)
   # The generated headers are produced relative to ${CMAKE_CURRENT_SOURCE_DIR}
   # (the CMake source dir of the call), so put that on the include path so
