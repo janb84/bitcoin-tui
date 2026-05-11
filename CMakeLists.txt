@@ -103,6 +103,52 @@ if(WIN32)
   target_link_libraries(rpc_client_obj PUBLIC ws2_32)
 endif()
 
+# IPC support via libmultiprocess (Cap'n Proto over a unix socket).
+# Disabled on Windows pending bitcoin-core/libmultiprocess#231
+# (https://github.com/bitcoin-core/libmultiprocess/pull/231), which adds
+# Windows IPC support to libmultiprocess.
+#
+# This commit only sets up the connection plumbing — IpcClient opens the
+# socket and holds the Init capability. Typed accessors that bitcoin-tui
+# actually uses (Mining.waitTipChanged, ...) are added in follow-up
+# commits. v32 of bitcoin-node will additionally expose JSON-RPC over the
+# same IPC socket via bitcoin/bitcoin#32297
+# (https://github.com/bitcoin/bitcoin/pull/32297).
+option(WITH_IPC "Build with IPC support (requires Cap'n Proto)" ON)
+if(WIN32)
+  set(WITH_IPC OFF)
+endif()
+if(WITH_IPC)
+  # REQUIRED: if WITH_IPC is on (the default on non-Windows) and Cap'n
+  # Proto is missing, fail the configure step rather than silently
+  # producing a binary without IPC support — that would also silently
+  # skip the test_ipc coverage. Pass -DWITH_IPC=OFF to opt out.
+  find_package(CapnProto 1.0 REQUIRED NO_MODULE)
+endif()
+if(WITH_IPC)
+  # Build libmultiprocess as part of this project; it provides the
+  # Libmultiprocess::multiprocess library and Libmultiprocess::mpgen tool,
+  # and registers the MP_INCLUDE_DIR global property used by
+  # target_capnp_sources().
+  add_subdirectory(src/ipc/libmultiprocess EXCLUDE_FROM_ALL)
+  include(src/ipc/libmultiprocess/cmake/TargetCapnpSources.cmake)
+
+  add_library(ipc_client_obj OBJECT src/ipc_client.cpp)
+  target_include_directories(ipc_client_obj PUBLIC src/)
+  target_include_directories(ipc_client_obj PUBLIC
+    "${CMAKE_CURRENT_BINARY_DIR}/src"
+  )
+  target_link_libraries(ipc_client_obj PUBLIC Libmultiprocess::multiprocess)
+  target_compile_definitions(ipc_client_obj PUBLIC WITH_IPC=1)
+  # Generate proxy code from the capnp schemas.
+  target_capnp_sources(ipc_client_obj "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    src/ipc/capnp/init.capnp)
+  # The generated headers are produced relative to ${CMAKE_CURRENT_SOURCE_DIR}
+  # (the CMake source dir of the call), so put that on the include path so
+  # users of ipc_client_obj can include them as <ipc/capnp/init.capnp.h> etc.
+  target_include_directories(ipc_client_obj PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
 add_library(bitcoind_obj OBJECT src/bitcoind.cpp)
 target_include_directories(bitcoind_obj PUBLIC src/)
 if(WIN32)
@@ -148,6 +194,11 @@ target_link_libraries(bitcoin-tui PRIVATE
   sol2
   CLI11::CLI11
 )
+
+if(WITH_IPC)
+  target_compile_definitions(bitcoin-tui PRIVATE WITH_IPC=1)
+  target_link_libraries(bitcoin-tui PRIVATE ipc_client_obj)
+endif()
 
 install(TARGETS bitcoin-tui RUNTIME DESTINATION bin COMPONENT runtime)
 

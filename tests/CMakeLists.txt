@@ -29,3 +29,18 @@ add_test(NAME test_cli COMMAND test_cli)
 set_tests_properties(test_cli PROPERTIES
     ENVIRONMENT "BITCOIN_TUI_BINARY=$<TARGET_FILE:bitcoin-tui>"
 )
+
+# IPC client tests. Built and registered with ctest only when WITH_IPC is on.
+if(WITH_IPC)
+    add_executable(test_ipc test_ipc.cpp)
+    target_link_libraries(test_ipc PRIVATE
+        ipc_client_obj
+        Catch2::Catch2WithMain
+        Threads::Threads
+    )
+    target_include_directories(test_ipc PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/
+        ${PROJECT_SOURCE_DIR}/tests/
+    )
+    add_test(NAME test_ipc COMMAND test_ipc)
+endif()
