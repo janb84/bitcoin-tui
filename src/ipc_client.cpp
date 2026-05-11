@@ -6,10 +6,12 @@
 
 #include "interfaces/init.h"
 #include "interfaces/mining.h"
+#include "interfaces/types.h"
 #include "ipc/capnp/init.capnp.h"
 #include "ipc/capnp/init.capnp.proxy.h"
 #include "ipc/capnp/mining.capnp.h"
 #include "ipc/capnp/mining.capnp.proxy.h"
+#include "util/strencodings.h"
 
 #include <mp/proxy-io.h>
 #include <mp/util.h>
@@ -134,9 +136,52 @@ struct IpcClient::Impl {
         if (loop_thread.joinable()) loop_thread.join();
         loop = nullptr;
     }
+
+    interfaces::Mining& get_mining()
+    {
+        if (!mining) {
+            // Should not happen — the constructor eagerly creates the
+            // Mining proxy as part of the v31 probe.
+            throw std::runtime_error("Mining proxy unexpectedly null");
+        }
+        return *mining;
+    }
 };
 
 IpcClient::IpcClient(const std::string& socket_path)
     : m_impl(std::make_unique<Impl>(socket_path)) {}
 
 IpcClient::~IpcClient() = default;
+
+std::optional<std::string> IpcClient::wait_tip_changed(
+    const std::string& current_tip_hex,
+    std::chrono::milliseconds timeout)
+{
+    interfaces::Mining& mining = m_impl->get_mining();
+
+    interfaces::uint256 current_tip;
+    if (!current_tip_hex.empty()) {
+        const auto bytes = util::TryParseHashHex(current_tip_hex);
+        if (bytes && bytes->size() == interfaces::uint256::WIDTH) {
+            current_tip = interfaces::uint256(bytes->data(), bytes->data() + bytes->size());
+        }
+        // Malformed hex -> leave current_tip as all-zero, server will
+        // return immediately with the actual tip.
+    }
+
+    const interfaces::MillisecondsDouble t{
+        static_cast<double>(timeout.count())};
+    const interfaces::BlockRef tip = mining.waitTipChanged(current_tip, t);
+    if (tip.hash.IsNull()) return std::nullopt;
+    return util::HashHexStr(std::span<const uint8_t>{tip.hash});
+}
+
+void IpcClient::interrupt()
+{
+    if (!m_impl->mining) return;
+    try {
+        m_impl->mining->interrupt();
+    } catch (...) {
+        // Swallow: interrupt is best-effort during shutdown.
+    }
+}
