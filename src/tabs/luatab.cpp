@@ -24,17 +24,37 @@ using Clock     = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
 static const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
-    "decoderawtransaction",  "decodescript",      "estimatesmartfee",
-    "getbestblockhash",      "getblock",          "getblockchaininfo",
-    "getblockcount",         "getblockhash",      "getblockheader",
-    "getblockstats",         "getchaintips",      "getconnectioncount",
-    "getdeploymentinfo",         "getindexinfo",      "getmempoolancestors",
-    "getmempoolcluster",         "getmempooldescendants",
-    "getmempoolentry",           "getmempoolfeeratediagram",
-    "getmempoolinfo",            "getmininginfo",     "getnettotals",
-    "getnetworkhashps",          "getnetworkinfo",    "getnodeaddresses",
-    "getpeerinfo",               "getrawmempool",     "getrawtransaction",
-    "gettxout",                  "gettxoutsetinfo",   "logging",
+    "decoderawtransaction",
+    "decodescript",
+    "estimatesmartfee",
+    "getbestblockhash",
+    "getblock",
+    "getblockchaininfo",
+    "getblockcount",
+    "getblockhash",
+    "getblockheader",
+    "getblockstats",
+    "getchaintips",
+    "getconnectioncount",
+    "getdeploymentinfo",
+    "getindexinfo",
+    "getmempoolancestors",
+    "getmempoolcluster",
+    "getmempooldescendants",
+    "getmempoolentry",
+    "getmempoolfeeratediagram",
+    "getmempoolinfo",
+    "getmininginfo",
+    "getnettotals",
+    "getnetworkhashps",
+    "getnetworkinfo",
+    "getnodeaddresses",
+    "getpeerinfo",
+    "getrawmempool",
+    "getrawtransaction",
+    "gettxout",
+    "gettxoutsetinfo",
+    "logging",
     "uptime",
 };
 
@@ -463,6 +483,13 @@ void LuaTab::register_lua_api(LuaScript& script) {
 
     lua_["btcui_set_name"] = [this](const std::string& name) {
         lua_tab_state_.update([&](auto& st) { st.tab_name = name; });
+    };
+
+    lua_["btcui_screen_size"] = [this](sol::this_state ts) -> sol::variadic_results {
+        sol::variadic_results vr;
+        vr.push_back({ts, sol::in_place, screen_.dimx()});
+        vr.push_back({ts, sol::in_place, screen_.dimy()});
+        return vr;
     };
 
     lua_["btcui_option"] = [this](sol::this_state ts, const std::string& key,

@@ -9,8 +9,10 @@
 btcui_set_name("Feerate")
 
 local REFRESH     = tonumber(btcui_option("refresh", 5))
-local PLOT_WIDTH  = tonumber(btcui_option("width", 80))
+-- width=0 (default) auto-scales to the terminal width; any positive value pins it.
+local FIXED_WIDTH = tonumber(btcui_option("width", 0))
 local PLOT_HEIGHT = tonumber(btcui_option("height", 14))
+local PLOT_WIDTH  = FIXED_WIDTH > 0 and FIXED_WIDTH or 80
 local BLOCK_WU    = 4000000  -- 4 MWU = one block
 
 ----------------------------------------------------------------------
@@ -151,6 +153,14 @@ end
 local warned_no_rpc = false
 
 local function refresh()
+    -- Resize the plot to fill the terminal width unless the user pinned it.
+    -- Subtract the panel border (2), the table column's left-gutter (1), and
+    -- the Y-axis label area (AXIS_PAD).
+    if FIXED_WIDTH <= 0 then
+        local sw = btcui_screen_size()
+        PLOT_WIDTH = math.max(20, sw - AXIS_PAD - 3)
+    end
+
     local info = btcui_rpc("getmempoolinfo")
     if info then
         mempool_summary:set({
