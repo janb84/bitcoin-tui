@@ -304,3 +304,9 @@ end
 local timer = btcui_set_interval(REFRESH, refresh)
 
 btcui_add_footer_button(" ↺ refresh", function() btcui_wake(timer) end)
+
+-- Re-run refresh() immediately when the terminal is resized so the plot
+-- adapts to the new width without waiting for the next periodic tick.
+if FIXED_WIDTH <= 0 then
+    btcui_on_resize(function() btcui_wake(timer) end)
+end
