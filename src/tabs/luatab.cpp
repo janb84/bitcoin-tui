@@ -24,17 +24,37 @@ using Clock     = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
 static const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
-    "decoderawtransaction",  "decodescript",      "estimatesmartfee",
-    "getbestblockhash",      "getblock",          "getblockchaininfo",
-    "getblockcount",         "getblockhash",      "getblockheader",
-    "getblockstats",         "getchaintips",      "getconnectioncount",
-    "getdeploymentinfo",         "getindexinfo",      "getmempoolancestors",
-    "getmempoolcluster",         "getmempooldescendants",
-    "getmempoolentry",           "getmempoolfeeratediagram",
-    "getmempoolinfo",            "getmininginfo",     "getnettotals",
-    "getnetworkhashps",          "getnetworkinfo",    "getnodeaddresses",
-    "getpeerinfo",               "getrawmempool",     "getrawtransaction",
-    "gettxout",                  "gettxoutsetinfo",   "logging",
+    "decoderawtransaction",
+    "decodescript",
+    "estimatesmartfee",
+    "getbestblockhash",
+    "getblock",
+    "getblockchaininfo",
+    "getblockcount",
+    "getblockhash",
+    "getblockheader",
+    "getblockstats",
+    "getchaintips",
+    "getconnectioncount",
+    "getdeploymentinfo",
+    "getindexinfo",
+    "getmempoolancestors",
+    "getmempoolcluster",
+    "getmempooldescendants",
+    "getmempoolentry",
+    "getmempoolfeeratediagram",
+    "getmempoolinfo",
+    "getmininginfo",
+    "getnettotals",
+    "getnetworkhashps",
+    "getnetworkinfo",
+    "getnodeaddresses",
+    "getpeerinfo",
+    "getrawmempool",
+    "getrawtransaction",
+    "gettxout",
+    "gettxoutsetinfo",
+    "logging",
     "uptime",
 };
 
@@ -137,7 +157,9 @@ class LuaScript {
     }
 
   public:
-    std::ostream* debug_out = nullptr;
+    std::ostream*           debug_out = nullptr;
+    sol::protected_function on_resize_fn_;
+    std::string             on_resize_src_;
 
   private:
     sol::state                             lua_;
@@ -465,6 +487,18 @@ void LuaTab::register_lua_api(LuaScript& script) {
         lua_tab_state_.update([&](auto& st) { st.tab_name = name; });
     };
 
+    lua_["btcui_screen_size"] = [this](sol::this_state ts) -> sol::variadic_results {
+        sol::variadic_results vr;
+        vr.push_back({ts, sol::in_place, screen_.dimx()});
+        vr.push_back({ts, sol::in_place, screen_.dimy()});
+        return vr;
+    };
+
+    lua_["btcui_on_resize"] = [&script](sol::protected_function fn) {
+        script.on_resize_src_ = lua_source_id(fn.lua_state());
+        script.on_resize_fn_  = std::move(fn);
+    };
+
     lua_["btcui_option"] = [this](sol::this_state ts, const std::string& key,
                                   sol::optional<sol::object> default_val) -> sol::object {
         if (tab_options_.contains(key))
@@ -665,6 +699,17 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                     clear_callback_error(btn_id);
                 }
                 break;
+            }
+        }
+
+        // 0b. Fire resize callback if the UI reported a size change
+        if (resize_pending_.exchange(false) && script->on_resize_fn_.valid()) {
+            auto result = script->on_resize_fn_(screen_.dimx(), screen_.dimy());
+            if (!result.valid()) {
+                sol::error err = result;
+                report_callback_error(-1, script->on_resize_src_, err.what());
+            } else {
+                clear_callback_error(-1);
             }
         }
 
@@ -1095,6 +1140,13 @@ static Element render_cell_element(const std::string& prefix, const CellValue& c
 }
 
 Element LuaTab::render(const AppState& /*snap*/) {
+    int dx     = screen_.dimx();
+    int dy     = screen_.dimy();
+    int prev_x = last_dimx_.exchange(dx);
+    int prev_y = last_dimy_.exchange(dy);
+    if ((prev_x != 0 || prev_y != 0) && (prev_x != dx || prev_y != dy))
+        resize_pending_.store(true);
+
     struct PanelInfo {
         Elements chrome;             // title, header+separator (rendered before data rows)
         Elements data_rows;          // scrollable content

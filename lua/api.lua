@@ -138,6 +138,26 @@ function btcui_show_search_button(show) end
 ---@param show boolean
 function btcui_show_quit_button(show) end
 
+--- Return the current terminal dimensions in cells (width, height).
+--- The value reflects the most recent render and updates as the user
+--- resizes the terminal. Useful for sizing plots or laying out
+--- variable-width content. Pair with btcui_on_resize() to react to
+--- changes immediately instead of on the next refresh tick.
+---@return integer width
+---@return integer height
+function btcui_screen_size() end
+
+--- Register a callback that fires whenever the terminal is resized.
+--- The callback receives the new (width, height). Only one handler
+--- can be registered — a second call replaces the previous one.
+--- A common pattern is to wake a refresh timer:
+---
+---   local timer = btcui_set_interval(5, refresh)
+---   btcui_on_resize(function(w, h) btcui_wake(timer) end)
+---
+---@param callback fun(width: integer, height: integer)
+function btcui_on_resize(callback) end
+
 --- Return a styled address cell value. The address is rendered with
 --- alternating bold groups of 4 characters (e.g. "bc1q ar0s rr7x …"),
 --- making it easier to scan visually. Pass the result as a cell value

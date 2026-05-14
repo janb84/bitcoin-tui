@@ -7,7 +7,7 @@ All notable changes to bitcoin-tui are documented here.
 ### Added
 - **Mouse support** - click tabs to switch between them
 - **Clickable footer bar** - footer hints are now rendered as a dedicated mouse-aware footer bar; click refresh/search/quit and tab-specific actions directly
-- **Lua scripting** - load custom tabs from Lua scripts with `--tab <path.lua>`; scripts can call a configurable set of RPC methods (allowlisted with `--allow-rpc`); optional debug log via `--debuglog`; bundled example: slow-block monitor tab
+- **Lua scripting** - load custom tabs from Lua scripts with `--tab <path.lua>`; scripts can call a configurable set of RPC methods (allowlisted with `--allow-rpc`); optional debug log via `--debuglog`; bundled examples: slow-block monitor, wallet info, feerate diagram
 - **Lua footer buttons** - Lua scripts can register clickable footer actions with `btcui_add_footer_button(label, callback)`; `btcui_show_search_button(bool)` and `btcui_show_quit_button(bool)` let scripts hide the global search and quit buttons per-tab
 - **Config file support** - options can be set in a `config.toml` file (Linux: `$XDG_CONFIG_HOME/bitcoin-tui/` or `~/.config/bitcoin-tui/`; macOS: `~/Library/Application Support/bitcoin-tui/`; Windows: `%APPDATA%\bitcoin-tui\`); CLI flags override file values; path can be changed with `--config` -
 - CLI11 replaces hand-rolled argument parsing; adds `--help` grouping, `--config` file support, and stricter validation of unknown flags
@@ -15,10 +15,21 @@ All notable changes to bitcoin-tui are documented here.
 - **Lua footer button keyboard shortcuts** - `btcui_add_footer_button` now auto-extracts the keyboard shortcut from `[x]` patterns in the label (e.g. `"[r] QR"` binds the `r` key automatically); an explicit key can also be passed as the optional third argument
 - **QR code overlay** - `btcui_open_qr_overlay(data)` opens a full-screen QR overlay; accepts a plain address string or a list of `{label, data}` items for a tabbed overlay; `left arrow/ right arrow` arrow keys switch between tabs; 
 - **Lua table row selection** - users can select a row in any Lua table panel by pressing `arrow down` to focus the panel, `Enter` to enter selection mode, `arrow up / arrow down` to move the selection, and `Esc` to exit selection mode; selected row is highlighted; `Table:selected_key()` returns the key of the selected row and `Table:selected_value(column)` returns the formatted value of any column in that row, enabling Lua callbacks to act on the user's selection
+- **testnet4 support** - `--testnet4` shortcut for connecting to the testnet4 network
+- **Windows support** - native MSVC build target with bundled application icon, automatic detection of the default Windows bitcoin data directory, and a dedicated console window when launched from Explorer
+- **Lua scrollable tables** - large Lua tables can now be scrolled when they exceed the available panel height
+- **Lua summary panels** - Lua scripts can render compact key/value summary panels alongside tables
+- **Lua untitled panels** - panels in Lua tabs can omit a title for a cleaner layout
+- **Lua address element** - styled address rendering element exposed to the Lua API
+- **Lua wallet RPC selection** - `btcui_rpc_wallet(name)` directs subsequent RPC calls at a specific named wallet
+- **Lua script options** - `btcui_option(name)` reads CLI/config-file values passed through to scripts
+- **Lua timestamp formats** - multiple timestamp formats now exposed to Lua scripts
 
 ### Changed
 - FTXUI updated from v5.0.0 to v6.1.9
 - Footer hints are unified across tabs: context-sensitive actions now appear in one shared footer bar instead of each tab rendering its own status text
+- FetchContent dependencies are now pinned by SHA256 hash for reproducibility
+
 
 ## [0.8.3] - 2026-04-11
 

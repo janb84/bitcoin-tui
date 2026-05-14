@@ -90,5 +90,8 @@ class LuaTab : public Tab {
     std::atomic<int>                 focused_panel_{-1};
     std::atomic<bool>                panel_scrolling_{false};
     mutable Guarded<std::deque<int>> btn_click_queue_;
+    std::atomic<bool>                resize_pending_{false};
+    std::atomic<int>                 last_dimx_{0};
+    std::atomic<int>                 last_dimy_{0};
     std::thread                      lua_thread_;
 };
