@@ -527,7 +527,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
         sol::table t = lua_.create_table();
         t["__gauge"] = frac;
         if (opts) {
-            sol::table o = *opts;
+            const sol::table& o = *opts;
             if (auto prefix = o.get<sol::optional<std::string>>("prefix"))
                 t["prefix"] = *prefix;
             if (auto col = o.get<sol::optional<std::string>>("color"))
