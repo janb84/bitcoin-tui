@@ -21,7 +21,14 @@ struct Address {
     std::string value;
     auto        operator<=>(const Address&) const = default;
 };
-using CellData = std::variant<std::string, int64_t, double, Address>;
+// A progress-bar cell. frac is in [0, 1]; prefix is optional bold text shown
+// before the bar (e.g. "1.2 MB / 300 MB"). Rendered via gauge_element().
+struct Gauge {
+    double      frac = 0.0;
+    std::string prefix;
+    auto        operator<=>(const Gauge&) const = default;
+};
+using CellData = std::variant<std::string, int64_t, double, Address, Gauge>;
 
 // Format a CellData value for display according to its column type.
 std::string format_cell(ColumnType type, const CellData& data, int decimals = -1);
@@ -115,12 +122,15 @@ class LuaTable : public LuaPanel {
 
 class LuaSummary : public LuaPanel {
   public:
-    LuaSummary(std::vector<ColumnDef> fields, std::string title = {});
+    LuaSummary(std::vector<ColumnDef> fields, std::string title = {}, bool new_row = false);
 
     void set(const std::map<std::string, CellValue>& values);
 
     const std::vector<ColumnDef>& fields() const { return fields_; }
     const std::string&            title() const override { return title_; }
+    // When true, this summary starts a fresh side-by-side row instead of
+    // joining the run of preceding summaries.
+    bool new_row() const { return new_row_; }
 
     template <typename F> auto access(F&& f) const {
         return values_.access([&](const auto& v) { return f(v); });
@@ -129,6 +139,7 @@ class LuaSummary : public LuaPanel {
   private:
     const std::vector<ColumnDef>    fields_;
     const std::string               title_;
+    const bool                      new_row_;
     Guarded<std::vector<CellValue>> values_;
 
     size_t field_index(const std::string& name) const;

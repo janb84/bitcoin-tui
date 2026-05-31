@@ -175,6 +175,26 @@ function btcui_address(addr) end
 --- Pass it wherever a cell value is accepted.
 ---@class StyledAddress
 
+--- Return a progress-bar cell value. The bar fills its column and shows a
+--- trailing percentage; frac is clamped to [0, 1]. Pass the result as a cell
+--- value in Table:update() or Summary:set() wherever you would use a value.
+--- Options:
+---   color   string   Bar/percentage color (default: "cyan")
+---   prefix  string   Bold label drawn before the bar (e.g. "1.2 MB / 300 MB")
+---
+---   -- Example:
+---   sync = btcui_gauge(0.99, { color = "green" })
+---   mem  = btcui_gauge(used / max, { color = "yellow", prefix = "12 MB / 300 MB" })
+---
+---@param frac number      Fraction in [0, 1]
+---@param opts? { color?: string, prefix?: string }
+---@return StyledGauge
+function btcui_gauge(frac, opts) end
+
+--- Opaque styled-gauge value returned by btcui_gauge().
+--- Pass it wherever a cell value is accepted.
+---@class StyledGauge
+
 ----------------------------------------------------------------------
 -- Timer handle
 ----------------------------------------------------------------------
@@ -253,8 +273,10 @@ function Summary:set(data) end
 ----------------------------------------------------------------------
 
 ---@class SummaryOpts
----@field title?  string       Section title (default: "Summary")
----@field fields  FieldDef[]   Field definitions
+---@field title?    string       Section title (default: "Summary")
+---@field new_row?  boolean      Start a new side-by-side row instead of joining
+---                              the run of preceding summaries (default: false)
+---@field fields    FieldDef[]   Field definitions
 
 ---@class FieldDef
 ---@field name      string   Field identifier, used as key in set() data tables.

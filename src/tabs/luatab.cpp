@@ -13,6 +13,7 @@
 #include <sol/sol.hpp>
 
 #include "components/address.hpp"
+#include "components/gauge.hpp"
 #include "components/qr_item.hpp"
 #include "components/qr_overlay.hpp"
 #include "format.hpp"
@@ -296,6 +297,12 @@ CellValue LuaScript::to_cell_value(ColumnType type, int decimals, const sol::obj
             cv.data = Address{*addr};
             return cv;
         }
+        auto gfrac = sv.get<sol::optional<double>>("__gauge");
+        if (gfrac) {
+            cv.color = sv.get_or<std::string>("color", "");
+            cv.data  = Gauge{*gfrac, sv.get_or<std::string>("prefix", "")};
+            return cv;
+        }
         cv.color = sv.get_or<std::string>("color", "");
         cv.bold  = sv.get_or("bold", false);
         cv.data  = to_cell_data(type, decimals, sv["value"]);
@@ -438,8 +445,9 @@ void LuaTab::register_lua_api(LuaScript& script) {
         for (auto& f : fields)
             f.header.resize(max_label, ' ');
 
-        std::string title = opts.get_or("title", std::string{});
-        auto        sum   = std::make_shared<LuaSummary>(std::move(fields), std::move(title));
+        std::string title   = opts.get_or("title", std::string{});
+        bool        new_row = opts.get_or("new_row", false);
+        auto sum = std::make_shared<LuaSummary>(std::move(fields), std::move(title), new_row);
         lua_tab_state_.update(
             [&](auto& st) { st.lua_panels.push_back(std::make_shared<LuaPanelRender>(sum)); });
         return sum;
@@ -511,6 +519,20 @@ void LuaTab::register_lua_api(LuaScript& script) {
     lua_["btcui_address"] = [&lua_](const std::string& addr) -> sol::table {
         sol::table t   = lua_.create_table();
         t["__address"] = addr;
+        return t;
+    };
+
+    lua_["btcui_gauge"] = [&lua_](double                           frac,
+                                  const sol::optional<sol::table>& opts) -> sol::table {
+        sol::table t = lua_.create_table();
+        t["__gauge"] = frac;
+        if (opts) {
+            sol::table o = *opts;
+            if (auto prefix = o.get<sol::optional<std::string>>("prefix"))
+                t["prefix"] = *prefix;
+            if (auto col = o.get<sol::optional<std::string>>("color"))
+                t["color"] = *col;
+        }
         return t;
     };
 
@@ -1109,25 +1131,31 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
     return FooterSpec{std::move(btns), st.show_search, st.show_quit};
 }
 
+// Map a Lua color name to an FTXUI color, falling back when unset/unknown.
+static Color color_from_name(const std::string& name, Color fallback) {
+    if (name == "red")
+        return Color::Red;
+    if (name == "green")
+        return Color::Green;
+    if (name == "yellow")
+        return Color::Yellow;
+    if (name == "cyan")
+        return Color::Cyan;
+    if (name == "gray")
+        return Color::GrayDark;
+    return fallback;
+}
+
 static Element apply_style(Element el, const CellValue& cv) {
-    if (!cv.color.empty()) {
-        if (cv.color == "red")
-            el = el | color(Color::Red);
-        else if (cv.color == "green")
-            el = el | color(Color::Green);
-        else if (cv.color == "yellow")
-            el = el | color(Color::Yellow);
-        else if (cv.color == "cyan")
-            el = el | color(Color::Cyan);
-        else if (cv.color == "gray")
-            el = el | color(Color::GrayDark);
-    }
+    if (!cv.color.empty())
+        el = el | color(color_from_name(cv.color, Color::Default));
     if (cv.bold)
         el = el | ftxui::bold;
     return el;
 }
 
-// Renders a cell value as an Element, using address_element for Address cells.
+// Renders a cell value as an Element. Address cells use address_element();
+// Gauge cells use gauge_element(); everything else is formatted text.
 static Element render_cell_element(const std::string& prefix, const CellValue& cv, ColumnType type,
                                    int decimals) {
     if (std::holds_alternative<Address>(cv.data)) {
@@ -1135,6 +1163,10 @@ static Element render_cell_element(const std::string& prefix, const CellValue& c
         if (!prefix.empty())
             el = hbox({text(prefix), std::move(el)});
         return apply_style(std::move(el), cv);
+    }
+    if (std::holds_alternative<Gauge>(cv.data)) {
+        const auto& g = std::get<Gauge>(cv.data);
+        return gauge_element(g.frac, color_from_name(cv.color, Color::Cyan), g.prefix);
     }
     return apply_style(text(prefix + format_cell(type, cv.data, decimals)), cv);
 }
@@ -1330,6 +1362,8 @@ Element LuaTab::render(const AppState& /*snap*/) {
 
             lua_elems.push_back({std::move(chrome), std::move(data_rows), chrome_h, pi});
         } else if (auto sum = std::dynamic_pointer_cast<LuaSummary>(panel)) {
+            if (sum->new_row())
+                flush_summaries();
             const auto& flds = sum->fields();
             Elements    rows;
             sum->access([&](const auto& values) {
