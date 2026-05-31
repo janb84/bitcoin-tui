@@ -22,5 +22,8 @@ inline ftxui::Element gauge_element(double frac, ftxui::Color bar_color,
     }
     parts.push_back(gauge(f) | flex | color(bar_color));
     parts.push_back(text(" " + std::to_string(pct) + "%") | bold | color(bar_color));
-    return hbox(std::move(parts));
+    // xflex so the component grows to fill its parent's width; without it the
+    // surrounding hbox sizes us to natural width and the inner gauge collapses
+    // to ~1 cell (100% shows a single block, smaller values show nothing).
+    return hbox(std::move(parts)) | xflex;
 }
