@@ -21,6 +21,9 @@ All notable changes to bitcoin-tui are documented here.
 - **Lua summary panels** - Lua scripts can render compact key/value summary panels alongside tables
 - **Lua untitled panels** - panels in Lua tabs can omit a title for a cleaner layout
 - **Lua address element** - styled address rendering element exposed to the Lua API
+- **Lua gauge element** - `btcui_gauge(frac, {color, prefix})` renders a progress bar cell (with trailing percentage) usable in any table or summary; backed by a reusable `gauge_element` component shared with the built-in Dashboard's mempool meter
+- **Lua summary layout** - `btcui_summary({new_row = true})` breaks the side-by-side run of consecutive summaries, starting a new full-width row
+- **Dashboard example** - `lua/examples/dashboard.lua` ports the built-in Dashboard tab to Lua, demonstrating the 2+1 summary layout and gauges
 - **Lua wallet RPC selection** - `btcui_rpc_wallet(name)` directs subsequent RPC calls at a specific named wallet
 - **Lua script options** - `btcui_option(name)` reads CLI/config-file values passed through to scripts
 - **Lua timestamp formats** - multiple timestamp formats now exposed to Lua scripts

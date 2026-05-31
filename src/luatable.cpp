@@ -2,6 +2,7 @@
 
 #include "format.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 
@@ -24,6 +25,10 @@ std::optional<ColumnType> parse_column_type(const std::string& s) {
 std::string format_cell(ColumnType type, const CellData& data, int decimals) {
     if (std::holds_alternative<Address>(data))
         return std::get<Address>(data).value;
+    if (std::holds_alternative<Gauge>(data)) {
+        int pct = static_cast<int>(std::clamp(std::get<Gauge>(data).frac, 0.0, 1.0) * 100);
+        return std::to_string(pct) + "%";
+    }
     // Unset cells (default string) render as blank for numeric types
     if (std::holds_alternative<std::string>(data) && std::get<std::string>(data).empty() &&
         type != ColumnType::String) {
@@ -146,8 +151,8 @@ void LuaTable::set_header_info(CellValue info) {
 
 // --- LuaSummary ---
 
-LuaSummary::LuaSummary(std::vector<ColumnDef> fields, std::string title)
-    : fields_(std::move(fields)), title_(std::move(title)),
+LuaSummary::LuaSummary(std::vector<ColumnDef> fields, std::string title, bool new_row)
+    : fields_(std::move(fields)), title_(std::move(title)), new_row_(new_row),
       values_(std::vector<CellValue>(fields_.size())) {}
 
 size_t LuaSummary::field_index(const std::string& name) const {

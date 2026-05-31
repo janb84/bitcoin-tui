@@ -5,6 +5,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 
+#include "components/gauge.hpp"
 #include "format.hpp"
 #include "render.hpp"
 
@@ -78,11 +79,8 @@ Element mempool_stats_box(const AppState& s) {
             label_value("  Min relay fee   : ", fmt_satsvb(s.mempool_min_fee)),
             hbox({
                 text("  Memory usage    : ") | color(Color::GrayDark),
-                text(fmt_bytes(s.mempool_usage) + " / " + fmt_bytes(s.mempool_max)) | bold,
-                text("  "),
-                gauge(static_cast<float>(usage_frac)) | flex | color(usage_color),
-                text(" " + std::to_string(static_cast<int>(usage_frac * 100)) + "%  ") | bold |
-                    color(usage_color),
+                gauge_element(usage_frac, usage_color,
+                              fmt_bytes(s.mempool_usage) + " / " + fmt_bytes(s.mempool_max)),
             }),
         });
 }
