@@ -1,5 +1,6 @@
 #include "luatab.hpp"
 
+#include <charconv>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include <ftxui/component/event.hpp>
+#include <ftxui/component/mouse.hpp>
 #include <re2/re2.h>
 #include <sol/sol.hpp>
 
@@ -169,7 +171,10 @@ class LuaScript {
   public:
     std::ostream*           debug_out = nullptr;
     std::string             on_resize_src_;
-    sol::protected_function on_resize_fn_; // references `lua_` so must be declared after it
+    sol::protected_function on_resize_fn_;     // references `lua_` so must be declared after it
+    sol::protected_function input_confirm_fn_; // set by btcui_text_input, called on Enter/Esc
+    std::string             on_select_src_;
+    sol::protected_function on_select_fn_; // set by btcui_on_select, called on row activate
 };
 
 LuaScript::LuaScript() {
@@ -314,6 +319,263 @@ CellValue LuaScript::to_cell_value(ColumnType type, int decimals, const sol::obj
 
 CellData LuaScript::to_key(LuaTable& self, const sol::object& v) {
     return to_cell_data(self.key_type(), -1, v);
+}
+
+// ============================================================================
+// Config file helpers (for btcui_config_path / btcui_config_read / btcui_config_write)
+// ============================================================================
+
+static std::string config_dir_path() {
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata)
+        return std::string(appdata) + "\\bitcoin-tui";
+#elif defined(__APPLE__)
+    const char* home = std::getenv("HOME");
+    if (home)
+        return std::string(home) + "/Library/Application Support/bitcoin-tui";
+#else
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    if (xdg && xdg[0] != '\0')
+        return std::string(xdg) + "/bitcoin-tui";
+    const char* home = std::getenv("HOME");
+    if (home)
+        return std::string(home) + "/.config/bitcoin-tui";
+#endif
+    return "";
+}
+
+static std::string config_file_path() {
+    std::string dir = config_dir_path();
+    if (dir.empty())
+        return "";
+    return dir + static_cast<char>(std::filesystem::path::preferred_separator) + "config.toml";
+}
+
+// Parse a TOML inline array: ["a", "b", "c"] → vector of strings
+static std::vector<std::string> parse_toml_array(const std::string& s) {
+    std::vector<std::string> result;
+    size_t                   i = 0;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '['))
+        ++i;
+    while (i < s.size()) {
+        while (i < s.size() && (s[i] == ' ' || s[i] == ','))
+            ++i;
+        if (i >= s.size() || s[i] == ']')
+            break;
+        if (s[i] == '"') {
+            ++i;
+            std::string val;
+            while (i < s.size() && s[i] != '"') {
+                if (s[i] == '\\' && i + 1 < s.size())
+                    ++i;
+                val += s[i++];
+            }
+            if (i < s.size())
+                ++i; // skip closing "
+            result.push_back(val);
+        } else {
+            size_t end = i;
+            while (end < s.size() && s[end] != ',' && s[end] != ']' && s[end] != ' ')
+                ++end;
+            if (end > i)
+                result.push_back(s.substr(i, end - i));
+            i = end;
+        }
+    }
+    return result;
+}
+
+// Strip surrounding whitespace and quotes from a TOML scalar value
+static std::string parse_toml_scalar(std::string s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    size_t b = s.find_last_not_of(" \t\r\n");
+    if (a == std::string::npos)
+        return "";
+    s = s.substr(a, b - a + 1);
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+        s = s.substr(1, s.size() - 2);
+    return s;
+}
+
+// Read config.toml into a Lua table {tabs, allow_rpc, refresh, host, port}
+static sol::table read_config_table(sol::state& lua) {
+    sol::table t   = lua.create_table();
+    t["tabs"]      = lua.create_table();
+    t["allow_rpc"] = lua.create_table();
+    t["refresh"]   = 5;
+    t["host"]      = std::string("127.0.0.1");
+    t["port"]      = 8332;
+    t["exists"]    = false;
+
+    std::ifstream f(config_file_path());
+    if (!f)
+        return t;
+
+    t["exists"] = true;
+
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty() || line[0] == ';' || line[0] == '#')
+            continue;
+        auto eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string key = line.substr(0, eq);
+        {
+            size_t ks = key.find_first_not_of(" \t");
+            size_t ke = key.find_last_not_of(" \t");
+            key       = (ks == std::string::npos) ? "" : key.substr(ks, ke - ks + 1);
+        }
+        std::string val = line.substr(eq + 1);
+        {
+            size_t vs = val.find_first_not_of(" \t");
+            if (vs != std::string::npos)
+                val = val.substr(vs);
+        }
+
+        if (key == "tab") {
+            sol::table tabs = lua.create_table();
+            if (!val.empty() && val[0] == '[') {
+                for (const auto& s : parse_toml_array(val))
+                    tabs.add(s);
+            } else {
+                auto sv = parse_toml_scalar(val);
+                if (!sv.empty())
+                    tabs.add(sv);
+            }
+            t["tabs"] = tabs;
+        } else if (key == "allow-rpc") {
+            sol::table rpcs = lua.create_table();
+            if (!val.empty() && val[0] == '[') {
+                for (const auto& s : parse_toml_array(val))
+                    rpcs.add(s);
+            } else {
+                auto sv = parse_toml_scalar(val);
+                if (!sv.empty())
+                    rpcs.add(sv);
+            }
+            t["allow_rpc"] = rpcs;
+        } else if (key == "refresh") {
+            int v = 5;
+            if (std::from_chars(val.data(), val.data() + val.size(), v).ec == std::errc{})
+                t["refresh"] = v;
+        } else if (key == "host") {
+            t["host"] = parse_toml_scalar(val);
+        } else if (key == "port") {
+            int v = 8332;
+            if (std::from_chars(val.data(), val.data() + val.size(), v).ec == std::errc{})
+                t["port"] = v;
+        }
+    }
+    return t;
+}
+
+// Serialize a Lua string array as a TOML inline array
+static std::string toml_array(const sol::table& tbl) {
+    std::string s = "[";
+    for (size_t i = 1; i <= tbl.size(); ++i) {
+        if (i > 1)
+            s += ", ";
+        std::string v = tbl.get<std::string>(i);
+        std::string esc;
+        for (char c : v) {
+            if (c == '\\' || c == '"')
+                esc += '\\';
+            esc += c;
+        }
+        s += "\"" + esc + "\"";
+    }
+    s += "]";
+    return s;
+}
+
+// Write config.toml, preserving unknown keys and updating tab/allow-rpc/refresh
+static bool write_config_table(const sol::table& cfg) {
+    std::string path = config_file_path();
+    if (path.empty())
+        return false;
+
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+
+    std::vector<std::string> existing;
+    {
+        std::ifstream f(path);
+        std::string   line;
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            existing.push_back(line);
+        }
+    }
+
+    const std::set<std::string> managed = {"tab", "allow-rpc", "refresh"};
+    std::set<std::string>       written;
+
+    auto emit_key = [&](const std::string& key) -> std::string {
+        if (key == "tab") {
+            sol::optional<sol::table> tabs = cfg.get<sol::optional<sol::table>>("tabs");
+            if (tabs && tabs->size() > 0)
+                return "tab = " + toml_array(*tabs);
+            return "";
+        }
+        if (key == "allow-rpc") {
+            sol::optional<sol::table> rpcs = cfg.get<sol::optional<sol::table>>("allow_rpc");
+            if (rpcs && rpcs->size() > 0)
+                return "allow-rpc = " + toml_array(*rpcs);
+            return "";
+        }
+        if (key == "refresh") {
+            sol::optional<int> r = cfg.get<sol::optional<int>>("refresh");
+            if (r)
+                return "refresh = " + std::to_string(*r);
+        }
+        return "";
+    };
+
+    std::vector<std::string> out;
+    for (const auto& line : existing) {
+        if (line.empty() || line[0] == ';' || line[0] == '#') {
+            out.push_back(line);
+            continue;
+        }
+        auto eq = line.find('=');
+        if (eq == std::string::npos) {
+            out.push_back(line);
+            continue;
+        }
+        std::string key = line.substr(0, eq);
+        {
+            size_t ks = key.find_first_not_of(" \t");
+            size_t ke = key.find_last_not_of(" \t");
+            key       = (ks == std::string::npos) ? "" : key.substr(ks, ke - ks + 1);
+        }
+        if (managed.count(key) && !written.count(key)) {
+            written.insert(key);
+            auto replacement = emit_key(key);
+            if (!replacement.empty())
+                out.push_back(replacement);
+        } else {
+            out.push_back(line);
+        }
+    }
+
+    for (const auto& key : managed) {
+        if (written.count(key))
+            continue;
+        auto line = emit_key(key);
+        if (!line.empty())
+            out.push_back(line);
+    }
+
+    std::ofstream f(path);
+    if (!f)
+        return false;
+    for (const auto& line : out)
+        f << line << "\n";
+    return true;
 }
 
 void LuaTab::register_lua_api(LuaScript& script) {
@@ -507,6 +769,11 @@ void LuaTab::register_lua_api(LuaScript& script) {
         script.on_resize_fn_  = std::move(fn);
     };
 
+    lua_["btcui_on_select"] = [&script](sol::protected_function fn) {
+        script.on_select_src_ = lua_source_id(fn.lua_state());
+        script.on_select_fn_  = std::move(fn);
+    };
+
     lua_["btcui_option"] = [this](sol::this_state ts, const std::string& key,
                                   sol::optional<sol::object> default_val) -> sol::object {
         if (tab_options_.contains(key))
@@ -534,6 +801,60 @@ void LuaTab::register_lua_api(LuaScript& script) {
                 t["color"] = *col;
         }
         return t;
+    };
+
+    lua_["btcui_script_dir"] = [this]() -> std::string {
+        if (!tab_options_.contains("script"))
+            return "";
+        return std::filesystem::path(tab_options_["script"].get<std::string>())
+            .parent_path()
+            .string();
+    };
+
+    lua_["btcui_list_files"] = [&lua_](const std::string& dir) -> sol::table {
+        sol::table      result = lua_.create_table();
+        std::error_code ec;
+        if (!std::filesystem::is_directory(dir, ec))
+            return result;
+        std::vector<std::pair<std::string, std::string>> entries; // {name, path}
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (entry.path().extension() == ".lua")
+                entries.emplace_back(entry.path().stem().string(), entry.path().string());
+        }
+        std::sort(entries.begin(), entries.end());
+        for (auto& [name, path] : entries) {
+            sol::table item = lua_.create_table();
+            item["name"]    = name;
+            item["path"]    = path;
+            result.add(item);
+        }
+        return result;
+    };
+
+    lua_["btcui_config_path"] = []() -> std::string { return config_file_path(); };
+
+    lua_["btcui_config_read"] = [&lua_]() -> sol::table { return read_config_table(lua_); };
+
+    lua_["btcui_config_write"] = [](const sol::table& cfg) -> bool {
+        return write_config_table(cfg);
+    };
+
+    lua_["btcui_text_input"] = [this, &script](const std::string&      label,
+                                               const std::string&      default_val,
+                                               sol::protected_function on_confirm) {
+        script.input_confirm_fn_ = std::move(on_confirm);
+        lua_tab_state_.update([&](auto& st) {
+            st.input_overlay.active = true;
+            st.input_overlay.label  = label;
+            st.input_overlay.buffer = default_val;
+            st.input_overlay.cursor = static_cast<int>(default_val.size());
+        });
+        screen_.PostEvent(ftxui::Event::Custom);
+    };
+
+    lua_["btcui_reload_tabs"] = [this]() {
+        if (reload_request_fn_)
+            reload_request_fn_();
     };
 
     lua_["btcui_open_qr_overlay"] = [this](const sol::object& arg) {
@@ -566,15 +887,16 @@ void LuaTab::register_lua_api(LuaScript& script) {
 
 void LuaTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>&  requests,
                            WaitableGuarded<std::deque<RpcResponse>>& responses) {
-    while (running_) {
-        auto req = requests.access_when([&](auto& q) { return !q.empty() || !running_; },
-                                        [](auto& q) -> std::optional<RpcRequest> {
-                                            if (q.empty())
-                                                return std::nullopt;
-                                            auto r = std::move(q.front());
-                                            q.pop_front();
-                                            return r;
-                                        });
+    while (running_ && !stopped_) {
+        auto req =
+            requests.access_when([&](auto& q) { return !q.empty() || !running_ || stopped_; },
+                                 [](auto& q) -> std::optional<RpcRequest> {
+                                     if (q.empty())
+                                         return std::nullopt;
+                                     auto r = std::move(q.front());
+                                     q.pop_front();
+                                     return r;
+                                 });
         if (!req)
             continue;
 
@@ -689,7 +1011,7 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
     };
 
     std::string line;
-    while (running_) {
+    while (running_ && !stopped_) {
         // 0. Dispatch footer button clicks posted from the UI thread
         auto clicks = btn_click_queue_.update([](auto& q) { return std::exchange(q, {}); });
         if (debug_out_)
@@ -732,6 +1054,41 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                 report_callback_error(-1, script->on_resize_src_, err.what());
             } else {
                 clear_callback_error(-1);
+            }
+        }
+
+        // 0c. Dispatch text-input confirm/cancel results from the UI thread
+        {
+            auto results = input_result_queue_.update([](auto& q) { return std::exchange(q, {}); });
+            for (auto& res : results) {
+                if (script->input_confirm_fn_.valid()) {
+                    sol::protected_function fn = std::move(script->input_confirm_fn_);
+                    script->input_confirm_fn_  = sol::protected_function{};
+                    sol::protected_function_result r =
+                        res.has_value() ? fn(*res) : fn(sol::lua_nil);
+                    if (!r.valid()) {
+                        sol::error err = r;
+                        report_callback_error(-2, "text_input", err.what());
+                    } else {
+                        clear_callback_error(-2);
+                    }
+                }
+            }
+        }
+
+        // 0d. Dispatch row-activation (Enter / mouse click) selected keys
+        {
+            auto keys = select_queue_.update([](auto& q) { return std::exchange(q, {}); });
+            for (auto& key : keys) {
+                if (script->on_select_fn_.valid()) {
+                    auto r = script->on_select_fn_(key);
+                    if (!r.valid()) {
+                        sol::error err = r;
+                        report_callback_error(-3, script->on_select_src_, err.what());
+                    } else {
+                        clear_callback_error(-3);
+                    }
+                }
             }
         }
 
@@ -887,9 +1244,10 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
         responses.wait_until(deadline, [](auto& q) { return !q.empty(); });
     }
 
-    // Shutdown: wake rpc thread so it sees !running_
+    // Shutdown: wake rpc thread so it sees !running_ (or stopped_)
     requests.notify();
     rpc_thread.join();
+    thread_done_.store(true);
 }
 
 static std::set<std::string> make_allowlist(std::span<const std::string> extra) {
@@ -933,6 +1291,22 @@ std::string LuaTab::name() const {
     return lua_tab_state_.access([](const auto& s) { return s.tab_name; });
 }
 
+std::string LuaTab::script_path() const {
+    if (tab_options_.contains("script"))
+        return tab_options_["script"].get<std::string>();
+    return "";
+}
+
+void LuaTab::set_reload_callback(std::function<void()> fn) { reload_request_fn_ = std::move(fn); }
+
+void LuaTab::stop() {
+    stopped_.store(true);
+    // The lua thread polls at a ≤1s cadence (responses.wait_until cap), so it
+    // observes stopped_ and exits without needing an explicit wake.
+}
+
+bool LuaTab::finished() const { return thread_done_.load(); }
+
 void LuaTab::report_callback_error(int id, const std::string& source_id, const std::string& msg) {
     if (debug_out_)
         *debug_out_ << "[lua error] " << source_id << ": " << msg << "\n" << std::flush;
@@ -945,6 +1319,78 @@ void LuaTab::clear_callback_error(int id) {
 }
 
 bool LuaTab::handle_focused_event(const Event& event) {
+    // Text input overlay — must be checked before QR overlay and tab navigation
+    if (lua_tab_state_.access([](const auto& s) { return s.input_overlay.active; })) {
+        if (event == Event::Escape) {
+            lua_tab_state_.update([](auto& s) {
+                s.input_overlay.active = false;
+                s.input_overlay.buffer.clear();
+            });
+            input_result_queue_.update([](auto& q) { q.push_back(std::nullopt); });
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        if (event == Event::Return) {
+            std::string val =
+                lua_tab_state_.access([](const auto& s) { return s.input_overlay.buffer; });
+            lua_tab_state_.update([](auto& s) {
+                s.input_overlay.active = false;
+                s.input_overlay.buffer.clear();
+            });
+            input_result_queue_.update([&val](auto& q) { q.push_back(std::move(val)); });
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        if (event == Event::Backspace) {
+            lua_tab_state_.update([](auto& s) {
+                if (s.input_overlay.cursor > 0) {
+                    s.input_overlay.buffer.erase(s.input_overlay.cursor - 1, 1);
+                    --s.input_overlay.cursor;
+                }
+            });
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        if (event == Event::ArrowLeft) {
+            lua_tab_state_.update([](auto& s) {
+                if (s.input_overlay.cursor > 0)
+                    --s.input_overlay.cursor;
+            });
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        if (event == Event::ArrowRight) {
+            lua_tab_state_.update([](auto& s) {
+                if (s.input_overlay.cursor < static_cast<int>(s.input_overlay.buffer.size()))
+                    ++s.input_overlay.cursor;
+            });
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        if (event == Event::Home) {
+            lua_tab_state_.update([](auto& s) { s.input_overlay.cursor = 0; });
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        if (event == Event::End) {
+            lua_tab_state_.update([](auto& s) {
+                s.input_overlay.cursor = static_cast<int>(s.input_overlay.buffer.size());
+            });
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        if (event.is_character()) {
+            std::string ch = event.character();
+            lua_tab_state_.update([&ch](auto& s) {
+                s.input_overlay.buffer.insert(s.input_overlay.cursor, ch);
+                s.input_overlay.cursor += static_cast<int>(ch.size());
+            });
+            screen_.PostEvent(Event::Custom);
+            return true;
+        }
+        return true; // consume all events while input overlay is active
+    }
+
     if (lua_tab_state_.access([](const auto& s) { return s.show_qr_overlay; })) {
         if (event == Event::Escape) {
             lua_tab_state_.update([](auto& s) {
@@ -980,6 +1426,36 @@ bool LuaTab::handle_focused_event(const Event& event) {
         }
     }
 
+    // Mouse: a left-click selects a table row; a second click on the already-
+    // selected row activates it (fires btcui_on_select) — mirroring the keyboard
+    // flow where the first Enter selects and the second activates.
+    if (event.is_mouse()) {
+        auto& me = const_cast<Event&>(event).mouse();
+        if (me.button == Mouse::Left && me.motion == Mouse::Pressed) {
+            auto mpanels = lua_tab_state_.access([](const auto& s) { return s.lua_panels; });
+            for (int pi = 0; pi < static_cast<int>(mpanels.size()); ++pi) {
+                auto tbl = std::dynamic_pointer_cast<LuaTable>(mpanels[pi]->panel);
+                if (!tbl)
+                    continue;
+                int row_idx = mpanels[pi]->row_hits.hit(me.x, me.y);
+                if (row_idx < 0)
+                    continue;
+                bool already_selected = (focused_panel_.load() == pi && panel_scrolling_.load() &&
+                                         tbl->selected_row().load() == row_idx);
+                focused_panel_        = pi;
+                panel_scrolling_      = true;
+                tbl->selected_row()   = row_idx;
+                if (already_selected) {
+                    if (auto key = tbl->selected_key())
+                        select_queue_.update([&](auto& q) { q.push_back(*key); });
+                }
+                screen_.PostEvent(Event::Custom);
+                return true;
+            }
+        }
+        return false;
+    }
+
     auto panels = lua_tab_state_.access([](const auto& s) { return s.lua_panels; });
     int  n      = static_cast<int>(panels.size());
     if (n == 0)
@@ -999,6 +1475,18 @@ bool LuaTab::handle_focused_event(const Event& event) {
 
     if (fp >= 0) {
         if (event == Event::Return) {
+            // Already selecting a row on a table → Enter activates it (fires
+            // btcui_on_select) and keeps selection mode, so the user can act
+            // on several rows in a row.
+            if (scrolling && fp < n) {
+                if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panels[fp]->panel)) {
+                    if (auto key = tbl->selected_key()) {
+                        select_queue_.update([&](auto& q) { q.push_back(*key); });
+                        screen_.PostEvent(Event::Custom);
+                        return true;
+                    }
+                }
+            }
             bool entering    = !scrolling;
             panel_scrolling_ = entering;
             // When entering row-selection mode on a table, start at row 0.
@@ -1095,6 +1583,32 @@ bool LuaTab::handle_focused_event(const Event& event) {
 }
 
 FooterSpec LuaTab::footer_buttons(const AppState& snap) {
+    if (lua_tab_state_.access([](const auto& s) { return s.input_overlay.active; })) {
+        return FooterSpec{
+            {{{"[Enter] Confirm",
+               [this] {
+                   std::string val =
+                       lua_tab_state_.access([](const auto& s) { return s.input_overlay.buffer; });
+                   lua_tab_state_.update([](auto& s) {
+                       s.input_overlay.active = false;
+                       s.input_overlay.buffer.clear();
+                   });
+                   input_result_queue_.update([&val](auto& q) { q.push_back(std::move(val)); });
+                   screen_.PostEvent(ftxui::Event::Custom);
+               }},
+              {"[Esc] Cancel",
+               [this] {
+                   lua_tab_state_.update([](auto& s) {
+                       s.input_overlay.active = false;
+                       s.input_overlay.buffer.clear();
+                   });
+                   input_result_queue_.update([](auto& q) { q.push_back(std::nullopt); });
+                   screen_.PostEvent(ftxui::Event::Custom);
+               }}}},
+            false,
+            false};
+    }
+
     if (lua_tab_state_.access([](const auto& s) { return s.show_qr_overlay; })) {
         return FooterSpec{{{"[Esc] Close",
                             [this] {
@@ -1204,6 +1718,34 @@ Element LuaTab::render(const AppState& /*snap*/) {
         auto [items, sel] = lua_tab_state_.access(
             [](const auto& s) { return std::make_pair(s.qr_items, s.qr_selected); });
         return dbox(qr_overlay_element(items, sel));
+    }
+
+    if (lua_tab_state_.access([](const auto& s) { return s.input_overlay.active; })) {
+        struct IOSnap {
+            std::string label;
+            std::string buffer;
+            int         cursor;
+        };
+        auto io    = lua_tab_state_.access([](const auto& s) {
+            return IOSnap{s.input_overlay.label, s.input_overlay.buffer, s.input_overlay.cursor};
+        });
+        int  width = std::max(52, static_cast<int>(io.label.size()) + 6);
+
+        std::string before = io.buffer.substr(0, io.cursor);
+        std::string at     = io.cursor < static_cast<int>(io.buffer.size())
+                                 ? io.buffer.substr(io.cursor, 1)
+                                 : std::string(" ");
+        std::string after =
+            io.cursor < static_cast<int>(io.buffer.size()) ? io.buffer.substr(io.cursor + 1) : "";
+
+        Elements dialog_rows;
+        dialog_rows.push_back(hbox({text(" "), text(io.label) | color(Color::White), filler()}));
+        dialog_rows.push_back(separator());
+        dialog_rows.push_back(
+            hbox({text(" "), text(before), text(at) | inverted, text(after), filler()}) |
+            color(Color::White));
+
+        return center_overlay(build_titled_panel(" Input ", "", std::move(dialog_rows), width));
     }
 
     for (int pi = 0; pi < static_cast<int>(panels_vec.size()); ++pi) {
@@ -1479,7 +2021,10 @@ Element LuaTab::render(const AppState& /*snap*/) {
         auto& lp = lua_elems[i];
 
         if (lp.data_rows.empty()) {
-            // Summary group — no scrolling, just use chrome as-is
+            // Summary group, or a table with no rows — clear any stale hitboxes so
+            // a mouse click can't land on a row that's no longer there.
+            if (lp.panel_index >= 0 && lp.panel_index < static_cast<int>(panels_vec.size()))
+                panels_vec[lp.panel_index]->row_hits.clear();
             Elements content(std::move(lp.chrome));
             auto     elem = vbox(std::move(content));
             if (allocated[i] < nat_height(lp))
@@ -1524,8 +2069,18 @@ Element LuaTab::render(const AppState& /*snap*/) {
 
         Elements content(std::move(lp.chrome));
         int      end = std::min(offset + max_data_rows, total_rows);
+        // Capture per-row screen rectangles so the mouse can hit-test rows.
+        LuaPanelRender* pr =
+            (lp.panel_index >= 0 && lp.panel_index < static_cast<int>(panels_vec.size()))
+                ? panels_vec[lp.panel_index].get()
+                : nullptr;
+        if (pr)
+            pr->row_hits.clear();
         for (int r = offset; r < end; ++r) {
-            content.push_back(std::move(lp.data_rows[r]));
+            if (pr)
+                content.push_back(pr->row_hits.track(std::move(lp.data_rows[r]), r));
+            else
+                content.push_back(std::move(lp.data_rows[r]));
         }
 
         bool is_focused = (lp.panel_index >= 0 && lp.panel_index == fp);

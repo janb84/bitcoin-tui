@@ -158,6 +158,19 @@ function btcui_screen_size() end
 ---@param callback fun(width: integer, height: integer)
 function btcui_on_resize(callback) end
 
+--- Register a callback that fires when a table row is activated — either by
+--- pressing Enter while the row is selected, or by clicking the row with the
+--- mouse. The callback receives the activated row's key (as a string). Row
+--- selection mode stays active, so several rows can be activated in sequence.
+--- Only one handler can be registered — a second call replaces the previous one.
+---
+---   btcui_on_select(function(key)
+---     -- act on the row identified by `key`
+---   end)
+---
+---@param callback fun(key: string)
+function btcui_on_select(callback) end
+
 --- Return a styled address cell value. The address is rendered with
 --- alternating bold groups of 4 characters (e.g. "bc1q ar0s rr7x …"),
 --- making it easier to scan visually. Pass the result as a cell value
@@ -303,6 +316,80 @@ function Summary:set(data) end
 ---@field header    string   Header text. Use \n for multi-line. Empty string hides the column.
 ---@field type?     string   "string" (default), "number", or a time format.
 ---@field decimals? integer  Fixed decimal places for number columns (-1 = auto).
+
+----------------------------------------------------------------------
+-- Settings / config helpers
+----------------------------------------------------------------------
+
+--- Return the directory that contains the currently running Lua script.
+--- Useful for locating sibling scripts or data files. Returns "" when the
+--- script path is unavailable.
+---@return string
+function btcui_script_dir() end
+
+--- List all .lua files in the given directory. Returns an array of
+--- {name, path} tables sorted alphabetically by name, where `name` is
+--- the filename stem (no extension) and `path` is the absolute path.
+--- Returns an empty array when the directory does not exist.
+---@param dir string   Absolute path to the directory to scan
+---@return {name: string, path: string}[]
+function btcui_list_files(dir) end
+
+--- Return the absolute path to the bitcoin-tui config file (config.toml),
+--- or an empty string when the platform config directory cannot be determined.
+---@return string
+function btcui_config_path() end
+
+--- Read config.toml and return the relevant fields as a Lua table.
+--- Returns defaults when the file does not exist or a field is absent.
+--- Table shape:
+---   exists     boolean    true when config.toml was found and read; false when using defaults
+---   tabs       string[]   list of --tab specs  (e.g. {"script.lua", "other.lua,opt=v"})
+---   allow_rpc  string[]   extra RPC method names added via --allow-rpc
+---   refresh    integer    refresh interval in seconds (default: 5)
+---   host       string     RPC host (default: "127.0.0.1")
+---   port       integer    RPC port (default: 8332)
+---@return { exists: boolean, tabs: string[], allow_rpc: string[], refresh: integer, host: string, port: integer }
+function btcui_config_read() end
+
+--- Write config.toml, updating the managed keys (tabs, allow_rpc, refresh)
+--- while preserving all other settings (host, port, credentials, etc.).
+--- Creates the config directory if it does not exist.
+--- Returns true on success, false when the file cannot be written.
+---
+--- Table shape (same as btcui_config_read()):
+---   tabs       string[]   new list of --tab specs
+---   allow_rpc  string[]   extra RPC methods (optional)
+---   refresh    integer    refresh interval (optional)
+---
+--- After writing, call btcui_reload_tabs() to apply tab changes live (no
+--- restart needed). Other settings (refresh, allow_rpc) still take effect on
+--- the next restart.
+---@param cfg { tabs: string[], allow_rpc?: string[], refresh?: integer }
+---@return boolean
+function btcui_config_write(cfg) end
+
+--- Re-read config.toml and reconcile the running Lua tabs with its `tab` list:
+--- newly added tabs are loaded, removed tabs are unloaded, and surviving tabs
+--- keep their state. Auto-injected tabs (e.g. Settings) are never removed.
+--- Typically called right after btcui_config_write() to apply changes live.
+--- Safe to call from footer-button and timer callbacks.
+function btcui_reload_tabs() end
+
+--- Show a modal text-input overlay. The callback receives the entered string on
+--- confirm (Enter), or nil when the user cancels (Esc). Can be called from
+--- footer-button callbacks and timer callbacks (not from coroutines mid-RPC).
+--- Only one input overlay can be active at a time; a second call replaces it.
+---
+---   btcui_text_input("Script path:", "", function(path)
+---     if path == nil then return end   -- cancelled
+---     -- use path …
+---   end)
+---
+---@param label     string     Prompt text shown above the input field
+---@param default   string     Pre-filled value (use "" for an empty field)
+---@param on_confirm fun(value: string|nil)  Called with the typed string or nil
+function btcui_text_input(label, default, on_confirm) end
 
 --- Column types:
 ---   "string"    — displayed as-is, left-aligned
