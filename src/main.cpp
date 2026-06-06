@@ -204,10 +204,10 @@ int Application::configure(int argc, char* argv[]) {
     auto* host_opt = app.add_option("-h,--host", cfg.host, "RPC host")
                          ->default_val("127.0.0.1")
                          ->group("Connection");
-    app.add_option("-p,--port", cfg.port, "RPC port")
-        ->default_val(8332)
-        ->check(CLI::Range(1, 65535))
-        ->group("Connection");
+    auto* port_opt = app.add_option("-p,--port", cfg.port, "RPC port")
+                         ->default_val(8332)
+                         ->check(CLI::Range(1, 65535))
+                         ->group("Connection");
 
     // Authentication (cookie auth is used by default)
     std::string user_str, pass_str;
@@ -283,23 +283,28 @@ int Application::configure(int argc, char* argv[]) {
     }
 
     // Apply network selection
+    bool use_default_port = (port_opt->count() == 0);
     if (use_testnet + use_testnet4 + use_regtest + use_signet > 1) {
         std::fprintf(
             stderr,
             "bitcoin-tui: only one of --testnet, --testnet4, --regtest, --signet allowed\n");
         return 1;
     } else if (use_testnet) {
-        cfg.port = 18332;
-        network  = "testnet3";
+        if (use_default_port)
+            cfg.port = 18332;
+        network = "testnet3";
     } else if (use_testnet4) {
-        cfg.port = 48332;
-        network  = "testnet4";
+        if (use_default_port)
+            cfg.port = 48332;
+        network = "testnet4";
     } else if (use_regtest) {
-        cfg.port = 18443;
-        network  = "regtest";
+        if (use_default_port)
+            cfg.port = 18443;
+        network = "regtest";
     } else if (use_signet) {
-        cfg.port = 38332;
-        network  = "signet";
+        if (use_default_port)
+            cfg.port = 38332;
+        network = "signet";
     }
 
     // Apply credentials
