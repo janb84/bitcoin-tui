@@ -1,4 +1,5 @@
 #include "footer_bar.hpp"
+#include "hit_list.hpp"
 #include <ftxui/component/component_base.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/mouse.hpp>
@@ -14,7 +15,7 @@ class FooterBarBase : public ComponentBase {
     std::function<void()>       on_search_;
     std::function<void()>       on_quit_;
 
-    std::vector<Box>          boxes_;
+    components::HitList       hits_;
     std::vector<FooterButton> btns_;
     int                       hovered_ = -1;
 
@@ -40,14 +41,16 @@ class FooterBarBase : public ComponentBase {
         if (spec.show_quit)
             btns_.push_back({" [q] quit ", on_quit_});
 
-        boxes_.assign(btns_.size(), Box{});
+        hits_.clear();
         Elements elems;
         for (int i = 0; i < static_cast<int>(btns_.size()); ++i) {
             const auto& b = btns_[i];
             Color       c = b.yellow ? Color::Yellow : Color::GrayDark;
             if (b.on_click && i == hovered_)
                 c = Color::White;
-            elems.push_back(text(b.label) | color(c) | reflect(boxes_[i]));
+            Element e = text(b.label) | color(c);
+            // Only clickable buttons are hit-tested, so hit() returns a clickable index.
+            elems.push_back(b.on_click ? hits_.track(std::move(e), i) : std::move(e));
         }
         return hbox(std::move(elems));
     }
@@ -55,19 +58,11 @@ class FooterBarBase : public ComponentBase {
     bool OnEvent(Event event) override {
         if (!event.is_mouse())
             return false;
-        auto& me = const_cast<Event&>(event);
-        int   mx = me.mouse().x, my = me.mouse().y;
-        int   new_hov = -1;
-        for (int i = 0; i < static_cast<int>(boxes_.size()); ++i) {
-            if (btns_[i].on_click && boxes_[i].Contain(mx, my)) {
-                new_hov = i;
-                break;
-            }
-        }
-        hovered_ = new_hov;
-        if (me.mouse().button == Mouse::Left && me.mouse().motion == Mouse::Released &&
-            new_hov >= 0) {
-            btns_[new_hov].on_click();
+        auto& me  = const_cast<Event&>(event);
+        int   idx = hits_.hit(me.mouse().x, me.mouse().y);
+        hovered_  = idx;
+        if (me.mouse().button == Mouse::Left && me.mouse().motion == Mouse::Released && idx >= 0) {
+            btns_[idx].on_click();
             return true;
         }
         return false;
