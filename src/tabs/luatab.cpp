@@ -157,11 +157,6 @@ class LuaScript {
         warnings_.push_back({std::move(source_id), std::move(msg), Clock::now()});
     }
 
-  public:
-    std::ostream*           debug_out = nullptr;
-    sol::protected_function on_resize_fn_;
-    std::string             on_resize_src_;
-
   private:
     sol::state                             lua_;
     std::vector<std::unique_ptr<LogWatch>> log_watches_;
@@ -170,6 +165,11 @@ class LuaScript {
     int                                    next_callback_id_ = 0;
     std::map<int, PendingCoroutine>        pending_;
     std::vector<LuaError>                  warnings_;
+
+  public:
+    std::ostream*           debug_out = nullptr;
+    std::string             on_resize_src_;
+    sol::protected_function on_resize_fn_; // references `lua_` so must be declared after it
 };
 
 LuaScript::LuaScript() {
