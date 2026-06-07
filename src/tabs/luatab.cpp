@@ -12,7 +12,14 @@
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/mouse.hpp>
 #include <re2/re2.h>
-#include <sol/sol.hpp>
+
+extern "C" {
+#include "lauxlib.h"
+#include "lua.h"
+#include "lualib.h"
+}
+#include <LuaBridge/LuaBridge.h>
+#include <LuaBridge/Vector.h>
 
 #include "components/address.hpp"
 #include "components/gauge.hpp"
@@ -89,13 +96,13 @@ std::string lua_source_id(lua_State* L) {
 }
 
 struct LogWatch {
-    int                     id;
-    RE2                     pattern;
-    int                     ngroups;
-    int64_t                 backlog_bytes;
-    sol::protected_function callback;
-    std::string             source_id;
-    LogWatch(int id, const std::string& pat, sol::protected_function fn, std::string src,
+    int               id;
+    RE2               pattern;
+    int               ngroups;
+    int64_t           backlog_bytes;
+    luabridge::LuaRef callback;
+    std::string       source_id;
+    LogWatch(int id, const std::string& pat, luabridge::LuaRef fn, std::string src,
              int64_t backlog = 0)
         : id(id), pattern(pat), ngroups(pattern.NumberOfCapturingGroups()),
           backlog_bytes(std::max(int64_t{0}, backlog)), callback(std::move(fn)),
@@ -107,52 +114,131 @@ struct TimerHandle {
 };
 
 struct LuaTimer {
-    int                     id;
-    Clock::duration         interval;
-    sol::protected_function callback;
-    std::string             source_id;
+    int               id;
+    Clock::duration   interval;
+    luabridge::LuaRef callback;
+    std::string       source_id;
 };
 
+// A timer callback that yielded an RPC and is waiting for its response. The Lua
+// coroutine runs on its own `lua_State* co`, kept alive by a registry ref
+// (luaL_ref) since LuaBridge has no coroutine wrapper — see resume_coro().
 struct PendingCoroutine {
-    sol::thread    lua_thread;
-    sol::coroutine coro;
-    LuaTimer       timer;
-    bool           wake_pending = false;
+    lua_State* co         = nullptr;
+    int        thread_ref = LUA_NOREF;
+    LuaTimer   timer;
+    bool       wake_pending = false;
 };
 
 } // namespace
 
 struct LuaFooterBtn {
-    int                     id;
-    std::string             label;
-    std::string             key; // optional keyboard shortcut, e.g. "r"
-    sol::protected_function fn;
+    int               id;
+    std::string       label;
+    std::string       key; // optional keyboard shortcut, e.g. "r"
+    luabridge::LuaRef fn;
 };
+
+// ── Raw-C-API marshalling helpers ──────────────────────────────────────────
+// LuaBridge handles function registration and value capture (LuaRef), but the
+// JSON<->Lua conversion and coroutine plumbing use the raw C API directly.
+
+namespace lb = luabridge;
+
+// Read a string field from a Lua table ref, returning `def` when absent/non-string.
+inline std::string field_or(const lb::LuaRef& t, const char* key, std::string def) {
+    if (!t.isTable())
+        return def;
+    lb::LuaRef v = t[key];
+    if (v.isString())
+        return v.unsafe_cast<std::string>();
+    return def;
+}
+
+inline bool field_or(const lb::LuaRef& t, const char* key, bool def) {
+    if (!t.isTable())
+        return def;
+    lb::LuaRef v = t[key];
+    if (v.isBool())
+        return v.unsafe_cast<bool>();
+    return def;
+}
+
+inline int field_or(const lb::LuaRef& t, const char* key, int def) {
+    if (!t.isTable())
+        return def;
+    lb::LuaRef v = t[key];
+    if (v.isNumber())
+        return v.unsafe_cast<int>();
+    return def;
+}
+
+// Push a json value onto L's stack as the equivalent Lua value.
+static void push_json(lua_State* L, const json& j) {
+    if (j.is_bool())
+        lua_pushboolean(L, j.get<bool>());
+    else if (j.is_number_integer())
+        lua_pushinteger(L, static_cast<lua_Integer>(j.get<int64_t>()));
+    else if (j.is_number_float())
+        lua_pushnumber(L, j.get<double>());
+    else if (j.is_string()) {
+        auto s = j.get<std::string>();
+        lua_pushlstring(L, s.data(), s.size());
+    } else if (j.is_array()) {
+        lua_createtable(L, static_cast<int>(j.size()), 0);
+        for (size_t i = 0; i < j.size(); ++i) {
+            push_json(L, j[i]);
+            lua_rawseti(L, -2, static_cast<lua_Integer>(i) + 1);
+        }
+    } else if (j.is_object()) {
+        lua_createtable(L, 0, static_cast<int>(j.size()));
+        for (auto& [k, v] : j.items()) {
+            push_json(L, v);
+            lua_setfield(L, -2, k.c_str());
+        }
+    } else {
+        lua_pushnil(L);
+    }
+}
 
 class LuaScript {
   public:
     LuaScript();
+    ~LuaScript() {
+        // Every LuaRef below anchors a value in the Lua registry and calls
+        // luaL_unref on the state when destroyed. They must be released BEFORE
+        // lua_close(L_), or that unref runs on a freed state (use-after-free).
+        log_watches_.clear();
+        timers_.clear();
+        footer_btns_.clear();
+        pending_.clear();
+        on_resize_fn_.reset();
+        input_confirm_fn_.reset();
+        on_select_fn_.reset();
+        if (L_)
+            lua_close(L_);
+    }
+    LuaScript(const LuaScript&)            = delete;
+    LuaScript& operator=(const LuaScript&) = delete;
 
-    sol::protected_function_result load(const std::string& script_path);
+    // Returns an error message on failure to load/run the script, or nullopt on success.
+    std::optional<std::string> load(const std::string& script_path);
 
-    sol::state&                             lua() { return lua_; }
+    lua_State*                              lua() { return L_; }
     std::vector<std::unique_ptr<LogWatch>>& log_watches() { return log_watches_; }
     std::map<TimePoint, LuaTimer>&          timers() { return timers_; }
     std::vector<LuaFooterBtn>&              footer_btns() { return footer_btns_; }
 
-    void        add_log_watch(const std::string& pattern, sol::protected_function fn,
-                              std::string source_id, int64_t backlog);
-    TimerHandle add_timer(Clock::duration interval, sol::protected_function fn,
-                          std::string source_id);
-    int         add_footer_btn(std::string label, std::string key, sol::protected_function fn);
+    void add_log_watch(const std::string& pattern, luabridge::LuaRef fn, std::string source_id,
+                       int64_t backlog);
+    TimerHandle add_timer(Clock::duration interval, luabridge::LuaRef fn, std::string source_id);
+    int         add_footer_btn(std::string label, std::string key, luabridge::LuaRef fn);
     void        wake(const TimerHandle& h);
     std::map<int, PendingCoroutine>& pending() { return pending_; }
 
-    sol::object json_to_lua(const json& j);
-
-    static CellData  to_cell_data(ColumnType type, int decimals, const sol::object& v);
-    static CellValue to_cell_value(ColumnType type, int decimals, const sol::object& v);
-    static CellData  to_key(LuaTable& self, const sol::object& v);
+    static CellData  to_cell_data(ColumnType type, int decimals, const luabridge::LuaRef& v);
+    static CellValue to_cell_value(ColumnType type, int decimals, const luabridge::LuaRef& v);
+    static CellData  to_key(LuaTable& self, const luabridge::LuaRef& v);
 
     std::vector<LuaError>& warnings() { return warnings_; }
 
@@ -161,7 +247,7 @@ class LuaScript {
     }
 
   private:
-    sol::state                             lua_;
+    lua_State*                             L_ = nullptr; // owned; closed in destructor
     std::vector<std::unique_ptr<LogWatch>> log_watches_;
     std::map<TimePoint, LuaTimer>          timers_;
     std::vector<LuaFooterBtn>              footer_btns_;
@@ -170,18 +256,30 @@ class LuaScript {
     std::vector<LuaError>                  warnings_;
 
   public:
-    std::ostream*           debug_out = nullptr;
-    std::string             on_resize_src_;
-    sol::protected_function on_resize_fn_;     // references `lua_` so must be declared after it
-    sol::protected_function input_confirm_fn_; // set by btcui_text_input, called on Enter/Esc
-    std::string             on_select_src_;
-    sol::protected_function on_select_fn_; // set by btcui_on_select, called on row activate
+    std::ostream*                    debug_out = nullptr;
+    std::string                      on_resize_src_;
+    std::optional<luabridge::LuaRef> on_resize_fn_;     // set by btcui_on_resize
+    std::optional<luabridge::LuaRef> input_confirm_fn_; // set by btcui_text_input
+    std::string                      on_select_src_;
+    std::optional<luabridge::LuaRef> on_select_fn_; // set by btcui_on_select
 };
 
 LuaScript::LuaScript() {
-    lua_.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table, sol::lib::math,
-                        sol::lib::coroutine);
-    lua_.script(R"(
+    L_ = luaL_newstate();
+    // Open only a restricted set of libs (no io/os/package) for sandboxing.
+    static const luaL_Reg libs[] = {
+        {LUA_GNAME, luaopen_base},          {LUA_TABLIBNAME, luaopen_table},
+        {LUA_STRLIBNAME, luaopen_string},   {LUA_MATHLIBNAME, luaopen_math},
+        {LUA_COLIBNAME, luaopen_coroutine},
+    };
+    for (const auto& lib : libs) {
+        luaL_requiref(L_, lib.name, lib.func, 1);
+        lua_pop(L_, 1);
+    }
+    // Let C++ exceptions thrown in bound functions surface as Lua errors
+    // (our Lua is built in C/longjmp mode).
+    luabridge::enableExceptions(L_);
+    luaL_dostring(L_, R"(
         function btcui_rpc(method, ...)
             local result, err = coroutine.yield('rpc', method, {...})
             if err then error(err, 2) end
@@ -195,21 +293,21 @@ LuaScript::LuaScript() {
     )");
 }
 
-void LuaScript::add_log_watch(const std::string& pattern, sol::protected_function fn,
+void LuaScript::add_log_watch(const std::string& pattern, luabridge::LuaRef fn,
                               std::string source_id, int64_t backlog) {
     int id = ++next_callback_id_;
     log_watches_.push_back(
         std::make_unique<LogWatch>(id, pattern, std::move(fn), std::move(source_id), backlog));
 }
 
-TimerHandle LuaScript::add_timer(Clock::duration interval, sol::protected_function fn,
+TimerHandle LuaScript::add_timer(Clock::duration interval, luabridge::LuaRef fn,
                                  std::string source_id) {
     int id = ++next_callback_id_;
     timers_.insert({Clock::now(), {id, interval, std::move(fn), std::move(source_id)}});
     return {id};
 }
 
-int LuaScript::add_footer_btn(std::string label, std::string key, sol::protected_function fn) {
+int LuaScript::add_footer_btn(std::string label, std::string key, luabridge::LuaRef fn) {
     int id = ++next_callback_id_;
     footer_btns_.push_back({id, std::move(label), std::move(key), std::move(fn)});
     return id;
@@ -233,92 +331,62 @@ void LuaScript::wake(const TimerHandle& h) {
     throw std::runtime_error("btcui_wake: invalid timer handle");
 }
 
-sol::protected_function_result LuaScript::load(const std::string& script_path) {
-    return lua_.safe_script_file(script_path, sol::script_pass_on_error);
+std::optional<std::string> LuaScript::load(const std::string& script_path) {
+    if (luaL_loadfile(L_, script_path.c_str()) != LUA_OK || lua_pcall(L_, 0, 0, 0) != LUA_OK) {
+        const char* msg = lua_tostring(L_, -1);
+        std::string err = msg ? msg : "unknown error";
+        lua_pop(L_, 1);
+        return err;
+    }
+    return std::nullopt;
 }
 
-sol::object LuaScript::json_to_lua(const json& j) {
-    if (j.is_null())
-        return sol::make_object(lua_, sol::lua_nil);
-    if (j.is_bool())
-        return sol::make_object(lua_, j.get<bool>());
-    if (j.is_number_integer())
-        return sol::make_object(lua_, j.get<int64_t>());
-    if (j.is_number_float())
-        return sol::make_object(lua_, j.get<double>());
-    if (j.is_string())
-        return sol::make_object(lua_, j.get<std::string>());
-    if (j.is_array()) {
-        sol::table t = lua_.create_table(static_cast<int>(j.size()), 0);
-        for (size_t i = 0; i < j.size(); ++i)
-            t[i + 1] = json_to_lua(j[i]);
-        return t;
-    }
-    if (j.is_object()) {
-        sol::table t = lua_.create_table(0, static_cast<int>(j.size()));
-        for (auto& [k, v] : j.items())
-            t[k] = json_to_lua(v);
-        return t;
-    }
-    return sol::make_object(lua_, sol::lua_nil);
-}
-
-CellData LuaScript::to_cell_data(ColumnType type, int decimals, const sol::object& v) {
+CellData LuaScript::to_cell_data(ColumnType type, int decimals, const lb::LuaRef& v) {
     switch (type) {
     case ColumnType::Number:
-        if (decimals >= 0) {
-            if (v.is<double>())
-                return v.as<double>();
-            if (v.is<int64_t>())
-                return static_cast<double>(v.as<int64_t>());
-            return 0.0;
-        }
-        if (v.is<int64_t>())
-            return v.as<int64_t>();
-        if (v.is<double>())
-            return static_cast<int64_t>(v.as<double>());
-        return int64_t(0);
+        if (decimals >= 0)
+            return v.isNumber() ? v.unsafe_cast<double>() : 0.0;
+        // Integer column: lua_tointeger preserves full 64-bit ints, truncates floats.
+        return v.isNumber() ? CellData{v.unsafe_cast<int64_t>()} : CellData{int64_t(0)};
     case ColumnType::DateTime:
     case ColumnType::Date:
     case ColumnType::Time:
     case ColumnType::TimeMS:
-        if (v.is<double>())
-            return v.as<double>();
-        return 0.0;
+        return v.isNumber() ? v.unsafe_cast<double>() : 0.0;
     default:
-        if (v.is<std::string>())
-            return v.as<std::string>();
-        if (v.is<double>())
-            return std::to_string(v.as<double>());
+        if (v.isString())
+            return v.unsafe_cast<std::string>();
+        if (v.isNumber())
+            return std::to_string(v.unsafe_cast<double>());
         return std::string{};
     }
 }
 
-CellValue LuaScript::to_cell_value(ColumnType type, int decimals, const sol::object& v) {
+CellValue LuaScript::to_cell_value(ColumnType type, int decimals, const lb::LuaRef& v) {
     CellValue cv;
-    if (v.is<sol::table>()) {
-        sol::table sv   = v;
-        auto       addr = sv.get<sol::optional<std::string>>("__address");
-        if (addr) {
-            cv.data = Address{*addr};
+    if (v.isTable()) {
+        lb::LuaRef addr = v["__address"];
+        if (addr.isString()) {
+            cv.data = Address{addr.unsafe_cast<std::string>()};
             return cv;
         }
-        auto gfrac = sv.get<sol::optional<double>>("__gauge");
-        if (gfrac) {
-            cv.color = sv.get_or<std::string>("color", "");
-            cv.data  = Gauge{*gfrac, sv.get_or<std::string>("prefix", "")};
+        lb::LuaRef gfrac = v["__gauge"];
+        if (gfrac.isNumber()) {
+            cv.color = field_or(v, "color", std::string{});
+            cv.data  = Gauge{gfrac.unsafe_cast<double>(), field_or(v, "prefix", std::string{})};
             return cv;
         }
-        cv.color = sv.get_or<std::string>("color", "");
-        cv.bold  = sv.get_or("bold", false);
-        cv.data  = to_cell_data(type, decimals, sv["value"]);
+        cv.color      = field_or(v, "color", std::string{});
+        cv.bold       = field_or(v, "bold", false);
+        lb::LuaRef vv = v["value"];
+        cv.data       = to_cell_data(type, decimals, vv);
     } else {
         cv.data = to_cell_data(type, decimals, v);
     }
     return cv;
 }
 
-CellData LuaScript::to_key(LuaTable& self, const sol::object& v) {
+CellData LuaScript::to_key(LuaTable& self, const lb::LuaRef& v) {
     return to_cell_data(self.key_type(), -1, v);
 }
 
@@ -341,10 +409,13 @@ static std::string parse_toml_scalar(std::string s) {
 }
 
 // Read config.toml into a Lua table {tabs, allow_rpc, refresh, host, port}
-static sol::table read_config_table(sol::state& lua) {
-    sol::table t     = lua.create_table();
-    t["tabs"]        = lua.create_table();
-    t["allow_rpc"]   = lua.create_table();
+static lb::LuaRef read_config_table(lua_State* L) {
+    lb::LuaRef t      = lb::newTable(L);
+    lb::LuaRef tabs   = lb::newTable(L);
+    lb::LuaRef rpcs   = lb::newTable(L);
+    int        n_tabs = 0, n_rpc = 0;
+    t["tabs"]        = tabs;
+    t["allow_rpc"]   = rpcs;
     t["refresh"]     = 5;
     t["host"]        = std::string("127.0.0.1");
     t["port"]        = 8332;
@@ -401,17 +472,15 @@ static sol::table read_config_table(sol::state& lua) {
         // format). Accumulate into the existing table so multi-line configs are read
         // in full, not just the last occurrence.
         case Key::Tab: {
-            sol::table tabs = t["tabs"];
-            auto       sv   = parse_toml_scalar(val);
+            auto sv = parse_toml_scalar(val);
             if (!sv.empty())
-                tabs.add(sv);
+                tabs[++n_tabs] = sv;
             break;
         }
         case Key::AllowRpc: {
-            sol::table rpcs = t["allow_rpc"];
-            auto       sv   = parse_toml_scalar(val);
+            auto sv = parse_toml_scalar(val);
             if (!sv.empty())
-                rpcs.add(sv);
+                rpcs[++n_rpc] = sv;
             break;
         }
         case Key::Refresh: {
@@ -454,7 +523,7 @@ static std::string toml_quote(const std::string& v) {
 // Write config.toml, preserving unknown keys and updating the managed keys
 // (tab/allow-rpc/refresh/settingstab). Repeated entries for multi-value keys are
 // collapsed at the first occurrence so no stale duplicates are left behind.
-static bool write_config_table(const sol::table& cfg) {
+static bool write_config_table(const lb::LuaRef& cfg) {
     std::string path = config_file_path();
     if (path.empty())
         return false;
@@ -496,32 +565,35 @@ static bool write_config_table(const sol::table& cfg) {
             return Key::Other;
         };
 
+        // Emit one `key = "value"` line per array element for multi-value keys.
+        auto emit_array = [&](const char* field, const char* out_key) {
+            lb::LuaRef arr = cfg[field];
+            if (arr.isTable())
+                for (int i = 1; i <= static_cast<int>(arr.length()); ++i) {
+                    lb::LuaRef e = arr[i];
+                    if (e.isString())
+                        lines.push_back(std::string(out_key) + " = " +
+                                        toml_quote(e.unsafe_cast<std::string>()));
+                }
+        };
         switch (classify(key)) {
-        case Key::Tab: {
-            sol::optional<sol::table> tabs = cfg.get<sol::optional<sol::table>>("tabs");
-            if (tabs)
-                for (size_t i = 1; i <= tabs->size(); ++i)
-                    lines.push_back("tab = " + toml_quote(tabs->get<std::string>(i)));
+        case Key::Tab:
+            emit_array("tabs", "tab");
             break;
-        }
-        case Key::AllowRpc: {
-            sol::optional<sol::table> rpcs = cfg.get<sol::optional<sol::table>>("allow_rpc");
-            if (rpcs)
-                for (size_t i = 1; i <= rpcs->size(); ++i)
-                    lines.push_back("allow-rpc = " + toml_quote(rpcs->get<std::string>(i)));
+        case Key::AllowRpc:
+            emit_array("allow_rpc", "allow-rpc");
             break;
-        }
         case Key::Refresh: {
-            sol::optional<int> r = cfg.get<sol::optional<int>>("refresh");
-            if (r)
-                lines.push_back("refresh = " + std::to_string(*r));
+            lb::LuaRef r = cfg["refresh"];
+            if (r.isNumber())
+                lines.push_back("refresh = " + std::to_string(r.unsafe_cast<int>()));
             break;
         }
         case Key::SettingsTab: {
             // Default is visible; only persist the non-default (false) so existing
             // "settingstab = true" lines are cleaned up when toggled back on.
-            sol::optional<bool> b = cfg.get<sol::optional<bool>>("settingstab");
-            if (b && !*b)
+            lb::LuaRef b = cfg["settingstab"];
+            if (b.isBool() && !b.unsafe_cast<bool>())
                 lines.push_back("settingstab = false");
             break;
         }
@@ -579,310 +651,319 @@ static bool write_config_table(const sol::table& cfg) {
 }
 
 void LuaTab::register_lua_api(LuaScript& script) {
-    auto& lua_ = script.lua();
+    lua_State* L = script.lua();
 
-    lua_["btcui_error"] = [&script](sol::this_state ts, const std::string& msg) {
-        script.add_warning(lua_source_id(ts.L), msg);
-    };
-    lua_.new_usertype<LuaTable>(
-        "LuaTable", "update",
-        [](LuaTable& self, const sol::object& key, const sol::table& data) {
-            std::map<std::string, CellValue> cells;
-            const auto&                      cols = self.columns();
-            for (auto& [k, v] : data) {
-                if (v.is<sol::lua_nil_t>())
-                    continue;
-                std::string col_name = k.as<std::string>();
-                CellValue   cv;
-                ColumnType  ct  = ColumnType::String;
-                int         dec = -1;
-                for (const auto& col : cols) {
-                    if (col.name == col_name) {
-                        ct  = col.type;
-                        dec = col.decimals;
-                        break;
-                    }
-                }
-                cells[col_name] = LuaScript::to_cell_value(ct, dec, v);
-            }
-            self.update(LuaScript::to_key(self, key), cells);
-        },
-        "remove",
-        [](LuaTable& self, const sol::object& key) {
-            return self.remove(LuaScript::to_key(self, key));
-        },
-        "keys", &LuaTable::keys, "start_refresh", &LuaTable::start_refresh, "finish_refresh",
-        &LuaTable::finish_refresh, "set_header_info",
-        [](LuaTable& self, const sol::object& v) {
-            self.set_header_info(LuaScript::to_cell_value(ColumnType::String, -1, v));
-        },
-        "selected_key",
-        [](LuaTable& self) -> sol::optional<std::string> {
-            auto k = self.selected_key();
-            if (!k)
-                return sol::nullopt;
-            return *k;
-        },
-        "selected_value",
-        [](LuaTable& self, const std::string& col) -> sol::optional<std::string> {
-            auto v = self.selected_value(col);
-            if (!v)
-                return sol::nullopt;
-            return *v;
+    // Note: a trailing `lua_State*` parameter is filled with the calling state by
+    // LuaBridge and not counted as a Lua argument (Stack<lua_State*> ignores its
+    // index), so it must come last to keep the real args' stack positions aligned.
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_error",
+        [&script](std::string msg, lua_State* L) { script.add_warning(lua_source_id(L), msg); });
+
+    luabridge::getGlobalNamespace(L)
+        .beginClass<LuaTable>("LuaTable")
+        .addFunction("update",
+                     [](LuaTable* self, const lb::LuaRef& key, const lb::LuaRef& data) {
+                         std::map<std::string, CellValue> cells;
+                         const auto&                      cols = self->columns();
+                         for (lb::Iterator it(data); !it.isNil(); ++it) {
+                             lb::LuaRef v = it.value();
+                             if (v.isNil())
+                                 continue;
+                             std::string col_name = it.key().unsafe_cast<std::string>();
+                             ColumnType  ct       = ColumnType::String;
+                             int         dec      = -1;
+                             for (const auto& col : cols) {
+                                 if (col.name == col_name) {
+                                     ct  = col.type;
+                                     dec = col.decimals;
+                                     break;
+                                 }
+                             }
+                             cells[col_name] = LuaScript::to_cell_value(ct, dec, v);
+                         }
+                         self->update(LuaScript::to_key(*self, key), cells);
+                     })
+        .addFunction("remove",
+                     [](LuaTable* self, const lb::LuaRef& key) {
+                         return self->remove(LuaScript::to_key(*self, key));
+                     })
+        .addFunction("keys", &LuaTable::keys)
+        .addFunction("start_refresh", &LuaTable::start_refresh)
+        .addFunction("finish_refresh", &LuaTable::finish_refresh)
+        .addFunction("set_header_info",
+                     [](LuaTable* self, const lb::LuaRef& v) {
+                         self->set_header_info(LuaScript::to_cell_value(ColumnType::String, -1, v));
+                     })
+        .addFunction("selected_key", &LuaTable::selected_key)
+        .addFunction("selected_value", &LuaTable::selected_value)
+        .endClass();
+
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_watch_log", [&script](const std::string& pattern, lb::LuaRef fn,
+                                     std::optional<int64_t> backlog, lua_State* L) {
+            script.add_log_watch(pattern, std::move(fn), lua_source_id(L), backlog.value_or(0));
         });
 
-    lua_["btcui_watch_log"] = [&script](const std::string& pattern, sol::protected_function fn,
-                                        sol::optional<int64_t> backlog) {
-        auto src = lua_source_id(fn.lua_state());
-        script.add_log_watch(pattern, std::move(fn), std::move(src), backlog.value_or(0));
-    };
-
-    lua_["btcui_table"] = [this](sol::table opts) -> std::shared_ptr<LuaTable> {
-        sol::table             col_defs = opts["columns"];
-        std::vector<ColumnDef> cols;
-        for (size_t i = 1; i <= col_defs.size(); ++i) {
-            sol::table  col      = col_defs[i];
-            std::string name     = col["name"];
-            std::string header   = col.get_or<std::string>("header", name);
-            std::string type_str = col.get_or<std::string>("type", "string");
-            auto        type     = parse_column_type(type_str);
-            if (!type) {
-                throw std::runtime_error("unknown column type: " + type_str);
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_table", [this](lb::LuaRef opts) -> std::shared_ptr<LuaTable> {
+            lb::LuaRef             col_defs = opts["columns"];
+            std::vector<ColumnDef> cols;
+            for (int i = 1; i <= static_cast<int>(col_defs.length()); ++i) {
+                lb::LuaRef  col      = col_defs[i];
+                std::string name     = col["name"].unsafe_cast<std::string>();
+                std::string header   = field_or(col, "header", name);
+                std::string type_str = field_or(col, "type", std::string("string"));
+                auto        type     = parse_column_type(type_str);
+                if (!type) {
+                    throw std::runtime_error("unknown column type: " + type_str);
+                }
+                int decimals = field_or(col, "decimals", -1);
+                cols.push_back({std::move(name), std::move(header), *type, decimals});
             }
-            int decimals = col.get_or("decimals", -1);
-            cols.push_back({std::move(name), std::move(header), *type, decimals});
-        }
-        std::string def_key    = cols.empty() ? std::string{} : cols[0].name;
-        std::string key_column = opts.get_or("key", std::move(def_key));
-        std::string title      = opts.get_or("title", std::string{});
-        bool        no_header  = opts.get_or("no_header", false);
-        auto        tbl =
-            std::make_shared<LuaTable>(key_column, std::move(cols), std::move(title), no_header);
-        lua_tab_state_.update(
-            [&](auto& st) { st.lua_panels.push_back(std::make_shared<LuaPanelRender>(tbl)); });
-        return tbl;
-    };
+            std::string def_key    = cols.empty() ? std::string{} : cols[0].name;
+            std::string key_column = field_or(opts, "key", std::move(def_key));
+            std::string title      = field_or(opts, "title", std::string{});
+            bool        no_header  = field_or(opts, "no_header", false);
+            auto tbl = std::make_shared<LuaTable>(key_column, std::move(cols), std::move(title),
+                                                  no_header);
+            lua_tab_state_.update(
+                [&](auto& st) { st.lua_panels.push_back(std::make_shared<LuaPanelRender>(tbl)); });
+            return tbl;
+        });
 
-    lua_.new_usertype<LuaSummary>("LuaSummary", "set",
-                                  [](LuaSummary& self, const sol::table& data) {
-                                      std::map<std::string, CellValue> cells;
-                                      const auto&                      flds = self.fields();
-                                      for (auto& [k, v] : data) {
-                                          if (v.is<sol::lua_nil_t>())
-                                              continue;
-                                          std::string field_name = k.as<std::string>();
-                                          ColumnType  ct         = ColumnType::String;
-                                          int         dec        = -1;
-                                          for (const auto& f : flds) {
-                                              if (f.name == field_name) {
-                                                  ct  = f.type;
-                                                  dec = f.decimals;
-                                                  break;
-                                              }
-                                          }
-                                          cells[field_name] = LuaScript::to_cell_value(ct, dec, v);
-                                      }
-                                      self.set(cells);
-                                  });
+    luabridge::getGlobalNamespace(L)
+        .beginClass<LuaSummary>("LuaSummary")
+        .addFunction("set",
+                     [](LuaSummary* self, const lb::LuaRef& data) {
+                         std::map<std::string, CellValue> cells;
+                         const auto&                      flds = self->fields();
+                         for (lb::Iterator it(data); !it.isNil(); ++it) {
+                             lb::LuaRef v = it.value();
+                             if (v.isNil())
+                                 continue;
+                             std::string field_name = it.key().unsafe_cast<std::string>();
+                             ColumnType  ct         = ColumnType::String;
+                             int         dec        = -1;
+                             for (const auto& f : flds) {
+                                 if (f.name == field_name) {
+                                     ct  = f.type;
+                                     dec = f.decimals;
+                                     break;
+                                 }
+                             }
+                             cells[field_name] = LuaScript::to_cell_value(ct, dec, v);
+                         }
+                         self->set(cells);
+                     })
+        .endClass();
 
-    lua_["btcui_summary"] = [this](sol::table opts) -> std::shared_ptr<LuaSummary> {
-        sol::table             field_defs = opts["fields"];
-        std::vector<ColumnDef> fields;
-        size_t                 max_label = 0;
-        for (size_t i = 1; i <= field_defs.size(); ++i) {
-            sol::table  f        = field_defs[i];
-            std::string name     = f["name"];
-            std::string label    = f.get_or<std::string>("label", name);
-            std::string type_str = f.get_or<std::string>("type", "string");
-            auto        type     = parse_column_type(type_str);
-            if (!type) {
-                throw std::runtime_error("unknown field type: " + type_str);
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_summary", [this](lb::LuaRef opts) -> std::shared_ptr<LuaSummary> {
+            lb::LuaRef             field_defs = opts["fields"];
+            std::vector<ColumnDef> fields;
+            size_t                 max_label = 0;
+            for (int i = 1; i <= static_cast<int>(field_defs.length()); ++i) {
+                lb::LuaRef  f        = field_defs[i];
+                std::string name     = f["name"].unsafe_cast<std::string>();
+                std::string label    = field_or(f, "label", name);
+                std::string type_str = field_or(f, "type", std::string("string"));
+                auto        type     = parse_column_type(type_str);
+                if (!type) {
+                    throw std::runtime_error("unknown field type: " + type_str);
+                }
+                if (label.size() > max_label)
+                    max_label = label.size();
+                int decimals = field_or(f, "decimals", -1);
+                fields.push_back({std::move(name), std::move(label), *type, decimals});
             }
-            if (label.size() > max_label)
-                max_label = label.size();
-            int decimals = f.get_or("decimals", -1);
-            fields.push_back({std::move(name), std::move(label), *type, decimals});
-        }
-        // Pad labels so colons align in the rendered summary
-        for (auto& f : fields)
-            f.header.resize(max_label, ' ');
+            // Pad labels so colons align in the rendered summary
+            for (auto& f : fields)
+                f.header.resize(max_label, ' ');
 
-        std::string title   = opts.get_or("title", std::string{});
-        bool        new_row = opts.get_or("new_row", false);
-        auto sum = std::make_shared<LuaSummary>(std::move(fields), std::move(title), new_row);
-        lua_tab_state_.update(
-            [&](auto& st) { st.lua_panels.push_back(std::make_shared<LuaPanelRender>(sum)); });
-        return sum;
-    };
+            std::string title   = field_or(opts, "title", std::string{});
+            bool        new_row = field_or(opts, "new_row", false);
+            auto sum = std::make_shared<LuaSummary>(std::move(fields), std::move(title), new_row);
+            lua_tab_state_.update(
+                [&](auto& st) { st.lua_panels.push_back(std::make_shared<LuaPanelRender>(sum)); });
+            return sum;
+        });
 
-    lua_["btcui_key_hint"] = [this](const std::string& hint) {
+    luabridge::getGlobalNamespace(L).addFunction("btcui_key_hint", [this](std::string hint) {
         lua_tab_state_.update([&](auto& st) { st.lua_status = hint; });
-    };
+    });
 
-    lua_["btcui_add_footer_button"] = [&script, this](const std::string&                label,
-                                                      sol::protected_function           fn,
-                                                      const sol::optional<std::string>& key) {
-        std::string k = key.value_or("");
-        if (k.empty()) {
-            // Auto-extract key from "[x]" pattern in label
-            auto lb = label.find('[');
-            auto rb = label.find(']');
-            if (lb != std::string::npos && rb == lb + 2)
-                k = label.substr(lb + 1, 1);
-        }
-        int id = script.add_footer_btn(label, k, std::move(fn));
-        lua_tab_state_.update([&](auto& st) { st.footer_btn_labels.push_back({id, label, k}); });
-    };
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_add_footer_button", [&script, this](const std::string& label, lb::LuaRef fn,
+                                                   const std::optional<std::string>& key) {
+            std::string k = key.value_or("");
+            if (k.empty()) {
+                // Auto-extract key from "[x]" pattern in label
+                auto lb = label.find('[');
+                auto rb = label.find(']');
+                if (lb != std::string::npos && rb == lb + 2)
+                    k = label.substr(lb + 1, 1);
+            }
+            int id = script.add_footer_btn(label, k, std::move(fn));
+            lua_tab_state_.update(
+                [&](auto& st) { st.footer_btn_labels.push_back({id, label, k}); });
+        });
 
-    lua_["btcui_show_search_button"] = [this](bool show) {
+    luabridge::getGlobalNamespace(L).addFunction("btcui_show_search_button", [this](bool show) {
         lua_tab_state_.update([show](auto& st) { st.show_search = show; });
-    };
+    });
 
-    lua_["btcui_show_quit_button"] = [this](bool show) {
+    luabridge::getGlobalNamespace(L).addFunction("btcui_show_quit_button", [this](bool show) {
         lua_tab_state_.update([show](auto& st) { st.show_quit = show; });
-    };
+    });
 
-    lua_.new_usertype<TimerHandle>("TimerHandle", sol::no_constructor);
+    luabridge::getGlobalNamespace(L).beginClass<TimerHandle>("TimerHandle").endClass();
 
-    lua_["btcui_set_interval"] = [&script](double secs, sol::protected_function fn) -> TimerHandle {
-        auto src = lua_source_id(fn.lua_state());
-        auto interval =
-            std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(secs));
-        return script.add_timer(interval, std::move(fn), std::move(src));
-    };
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_set_interval", [&script](double secs, lb::LuaRef fn, lua_State* L) -> TimerHandle {
+            auto interval =
+                std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(secs));
+            return script.add_timer(interval, std::move(fn), lua_source_id(L));
+        });
 
-    lua_["btcui_wake"] = [&script](const TimerHandle& h) { script.wake(h); };
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_wake", [&script](const TimerHandle& h) { script.wake(h); });
 
-    lua_["btcui_set_name"] = [this](const std::string& name) {
+    luabridge::getGlobalNamespace(L).addFunction("btcui_set_name", [this](std::string name) {
         lua_tab_state_.update([&](auto& st) { st.tab_name = name; });
-    };
+    });
 
-    lua_["btcui_screen_size"] = [this](sol::this_state ts) -> sol::variadic_results {
-        sol::variadic_results vr;
-        vr.push_back({ts, sol::in_place, screen_.dimx()});
-        vr.push_back({ts, sol::in_place, screen_.dimy()});
-        return vr;
-    };
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_screen_size",
+        [this]() -> std::tuple<int, int> { return {screen_.dimx(), screen_.dimy()}; });
 
-    lua_["btcui_on_resize"] = [&script](sol::protected_function fn) {
-        script.on_resize_src_ = lua_source_id(fn.lua_state());
-        script.on_resize_fn_  = std::move(fn);
-    };
+    luabridge::getGlobalNamespace(L).addFunction("btcui_on_resize",
+                                                 [&script](lb::LuaRef fn, lua_State* L) {
+                                                     script.on_resize_src_ = lua_source_id(L);
+                                                     script.on_resize_fn_  = std::move(fn);
+                                                 });
 
-    lua_["btcui_on_select"] = [&script](sol::protected_function fn) {
-        script.on_select_src_ = lua_source_id(fn.lua_state());
-        script.on_select_fn_  = std::move(fn);
-    };
+    luabridge::getGlobalNamespace(L).addFunction("btcui_on_select",
+                                                 [&script](lb::LuaRef fn, lua_State* L) {
+                                                     script.on_select_src_ = lua_source_id(L);
+                                                     script.on_select_fn_  = std::move(fn);
+                                                 });
 
-    lua_["btcui_option"] = [this](sol::this_state ts, const std::string& key,
-                                  sol::optional<sol::object> default_val) -> sol::object {
-        if (tab_options_.contains(key))
-            return sol::make_object(ts, tab_options_[key].get<std::string>());
-        if (default_val)
-            return *default_val;
-        throw std::runtime_error("required tab option '" + key + "' not set");
-    };
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_option",
+        [this](std::string key, std::optional<lb::LuaRef> default_val, lua_State* L) -> lb::LuaRef {
+            if (tab_options_.contains(key))
+                return lb::LuaRef(L, tab_options_[key].get<std::string>());
+            if (default_val)
+                return *default_val;
+            throw std::runtime_error("required tab option '" + key + "' not set");
+        });
 
-    lua_["btcui_address"] = [&lua_](const std::string& addr) -> sol::table {
-        sol::table t   = lua_.create_table();
-        t["__address"] = addr;
-        return t;
-    };
+    luabridge::getGlobalNamespace(L).addFunction("btcui_address",
+                                                 [](std::string addr, lua_State* L) -> lb::LuaRef {
+                                                     lb::LuaRef t   = lb::newTable(L);
+                                                     t["__address"] = addr;
+                                                     return t;
+                                                 });
 
-    lua_["btcui_gauge"] = [&lua_](double                           frac,
-                                  const sol::optional<sol::table>& opts) -> sol::table {
-        sol::table t = lua_.create_table();
-        t["__gauge"] = frac;
-        if (opts) {
-            const sol::table& o = *opts;
-            if (auto prefix = o.get<sol::optional<std::string>>("prefix"))
-                t["prefix"] = *prefix;
-            if (auto col = o.get<sol::optional<std::string>>("color"))
-                t["color"] = *col;
-        }
-        return t;
-    };
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_gauge", [](double frac, std::optional<lb::LuaRef> opts, lua_State* L) -> lb::LuaRef {
+            lb::LuaRef t = lb::newTable(L);
+            t["__gauge"] = frac;
+            if (opts && opts->isTable()) {
+                std::string prefix = field_or(*opts, "prefix", std::string{});
+                if (!prefix.empty())
+                    t["prefix"] = prefix;
+                std::string color = field_or(*opts, "color", std::string{});
+                if (!color.empty())
+                    t["color"] = color;
+            }
+            return t;
+        });
 
-    lua_["btcui_script_dir"] = [this]() -> std::string {
+    luabridge::getGlobalNamespace(L).addFunction("btcui_script_dir", [this]() -> std::string {
         if (!tab_options_.contains("script"))
             return "";
         return std::filesystem::path(tab_options_["script"].get<std::string>())
             .parent_path()
             .string();
-    };
+    });
 
-    lua_["btcui_list_files"] = [&lua_](const std::string& dir) -> sol::table {
-        sol::table      result = lua_.create_table();
-        std::error_code ec;
-        if (!std::filesystem::is_directory(dir, ec))
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_list_files", [](std::string dir, lua_State* L) -> lb::LuaRef {
+            lb::LuaRef      result = lb::newTable(L);
+            std::error_code ec;
+            if (!std::filesystem::is_directory(dir, ec))
+                return result;
+            std::vector<std::pair<std::string, std::string>> entries; // {name, path}
+            for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+                if (entry.path().extension() == ".lua")
+                    entries.emplace_back(entry.path().stem().string(), entry.path().string());
+            }
+            std::sort(entries.begin(), entries.end());
+            int n = 0;
+            for (auto& [name, path] : entries) {
+                lb::LuaRef item = lb::newTable(L);
+                item["name"]    = name;
+                item["path"]    = path;
+                result[++n]     = item;
+            }
             return result;
-        std::vector<std::pair<std::string, std::string>> entries; // {name, path}
-        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-            if (entry.path().extension() == ".lua")
-                entries.emplace_back(entry.path().stem().string(), entry.path().string());
-        }
-        std::sort(entries.begin(), entries.end());
-        for (auto& [name, path] : entries) {
-            sol::table item = lua_.create_table();
-            item["name"]    = name;
-            item["path"]    = path;
-            result.add(item);
-        }
-        return result;
-    };
-
-    lua_["btcui_config_path"] = []() -> std::string { return config_file_path(); };
-
-    lua_["btcui_config_read"] = [&lua_]() -> sol::table { return read_config_table(lua_); };
-
-    lua_["btcui_config_write"] = [](const sol::table& cfg) -> bool {
-        return write_config_table(cfg);
-    };
-
-    lua_["btcui_text_input"] = [this, &script](const std::string&      label,
-                                               const std::string&      default_val,
-                                               sol::protected_function on_confirm) {
-        script.input_confirm_fn_ = std::move(on_confirm);
-        lua_tab_state_.update([&](auto& st) {
-            st.input_overlay.active = true;
-            st.input_overlay.label  = label;
-            st.input_overlay.buffer = default_val;
-            st.input_overlay.cursor = static_cast<int>(default_val.size());
         });
-        screen_.PostEvent(ftxui::Event::Custom);
-    };
 
-    lua_["btcui_reload_tabs"] = [this]() {
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_config_path", []() -> std::string { return config_file_path(); });
+
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_config_read", [](lua_State* L) -> lb::LuaRef { return read_config_table(L); });
+
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_config_write",
+        [](const lb::LuaRef& cfg) -> bool { return write_config_table(cfg); });
+
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_text_input",
+        [this, &script](std::string label, std::string default_val, lb::LuaRef on_confirm) {
+            script.input_confirm_fn_ = std::move(on_confirm);
+            lua_tab_state_.update([&](auto& st) {
+                st.input_overlay.active = true;
+                st.input_overlay.label  = label;
+                st.input_overlay.buffer = default_val;
+                st.input_overlay.cursor = static_cast<int>(default_val.size());
+            });
+            screen_.PostEvent(ftxui::Event::Custom);
+        });
+
+    luabridge::getGlobalNamespace(L).addFunction("btcui_reload_tabs", [this]() {
         if (reload_request_fn_)
             reload_request_fn_();
-    };
+    });
 
-    lua_["btcui_open_qr_overlay"] = [this](const sol::object& arg) {
-        QrItems items;
-        if (arg.is<std::string>()) {
-            items.push_back({"", arg.as<std::string>()});
-        } else if (arg.is<sol::table>()) {
-            sol::table t = arg;
-            for (size_t i = 1; i <= t.size(); ++i) {
-                sol::object entry = t[i];
-                if (entry.is<std::string>()) {
-                    items.push_back({"", entry.as<std::string>()});
-                } else if (entry.is<sol::table>()) {
-                    sol::table  e     = entry;
-                    std::string label = e.get_or<std::string>("label", "");
-                    std::string data  = e.get_or<std::string>("data", "");
-                    items.push_back({std::move(label), std::move(data)});
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_open_qr_overlay", [this](const lb::LuaRef& arg) {
+            QrItems items;
+            if (arg.isString()) {
+                items.push_back({"", arg.unsafe_cast<std::string>()});
+            } else if (arg.isTable()) {
+                for (int i = 1; i <= static_cast<int>(arg.length()); ++i) {
+                    lb::LuaRef entry = arg[i];
+                    if (entry.isString()) {
+                        items.push_back({"", entry.unsafe_cast<std::string>()});
+                    } else if (entry.isTable()) {
+                        std::string label = field_or(entry, "label", std::string{});
+                        std::string data  = field_or(entry, "data", std::string{});
+                        items.push_back({std::move(label), std::move(data)});
+                    }
                 }
             }
-        }
-        if (items.empty())
-            return;
-        lua_tab_state_.update([&](auto& st) {
-            st.show_qr_overlay = true;
-            st.qr_selected     = 0;
-            st.qr_items        = std::move(items);
+            if (items.empty())
+                return;
+            lua_tab_state_.update([&](auto& st) {
+                st.show_qr_overlay = true;
+                st.qr_selected     = 0;
+                st.qr_items        = std::move(items);
+            });
         });
-    };
 }
 
 void LuaTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>&  requests,
@@ -918,26 +999,38 @@ void LuaTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>&  requests,
     }
 }
 
-static json extract_rpc_params(const sol::table& args) {
+// Read an RPC params array (a Lua table at absolute stack index `idx` on `co`)
+// into json, preserving the integer/float distinction via the Lua number subtype.
+static json extract_rpc_params(lua_State* co, int idx) {
     std::vector<json> pv;
-    for (size_t i = 1; i <= args.size(); ++i) {
-        sol::object a = args[i];
-        if (a.is<int64_t>())
-            pv.emplace_back(a.as<int64_t>());
-        else if (a.is<double>())
-            pv.emplace_back(a.as<double>());
-        else if (a.is<bool>())
-            pv.emplace_back(a.as<bool>());
-        else if (a.is<std::string>())
-            pv.emplace_back(a.as<std::string>());
+    int               n = static_cast<int>(lua_rawlen(co, idx));
+    for (int i = 1; i <= n; ++i) {
+        lua_rawgeti(co, idx, i);
+        switch (lua_type(co, -1)) {
+        case LUA_TBOOLEAN:
+            pv.emplace_back(static_cast<bool>(lua_toboolean(co, -1)));
+            break;
+        case LUA_TNUMBER:
+            if (lua_isinteger(co, -1))
+                pv.emplace_back(static_cast<int64_t>(lua_tointeger(co, -1)));
+            else
+                pv.emplace_back(static_cast<double>(lua_tonumber(co, -1)));
+            break;
+        case LUA_TSTRING:
+            pv.emplace_back(std::string(lua_tostring(co, -1)));
+            break;
+        default:
+            break;
+        }
+        lua_pop(co, 1);
     }
     return json(std::move(pv));
 }
 
 void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
-    auto& lua         = script->lua();
-    auto& log_watches = script->log_watches();
-    auto& timers      = script->timers();
+    lua_State* lua         = script->lua();
+    auto&      log_watches = script->log_watches();
+    auto&      timers      = script->timers();
 
     WaitableGuarded<std::deque<RpcRequest>>  requests;
     WaitableGuarded<std::deque<RpcResponse>> responses;
@@ -974,40 +1067,58 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
         return id;
     };
 
-    // Resume a coroutine with a value. If it yields another RPC,
-    // submit that and return the new rpc_id. If it finishes,
-    // return nullopt (caller reschedules timer).
-    auto resume_coro = [&](PendingCoroutine& pc, const sol::object& value,
-                           const sol::object& err) -> std::optional<int> {
-        auto result = pc.coro(value, err);
-        while (pc.coro.status() == sol::call_status::yielded) {
-            std::string tag = result;
-            if (tag == "rpc" && result.return_count() >= 2) {
-                std::string method = result.get<std::string>(1);
-                if (!rpc_allowlist_.contains(method)) {
-                    result = pc.coro(sol::lua_nil, "RPC method not allowed: " + method);
-                    continue;
+    // Drive a Lua coroutine `co`, which already has `nargs` arguments pushed onto
+    // its stack. Resumes it and interprets each yield: a valid rpc/rpc_wallet yield
+    // submits the request and returns its id (co stays suspended); when the
+    // coroutine finishes (or errors), returns nullopt and reports against `timer`.
+    auto drive = [&](lua_State* co, const LuaTimer& timer, int nargs) -> std::optional<int> {
+        for (;;) {
+            int nres   = 0;
+            int status = lua_resume(co, lua, nargs, &nres);
+            if (status == LUA_YIELD) {
+                std::string tag =
+                    (nres >= 1 && lua_type(co, 1) == LUA_TSTRING) ? lua_tostring(co, 1) : "";
+                auto deny = [&](const std::string& method) {
+                    lua_settop(co, 0);
+                    lua_pushnil(co);
+                    lua_pushstring(co, ("RPC method not allowed: " + method).c_str());
+                    nargs = 2;
+                };
+                if (tag == "rpc" && nres >= 3) {
+                    std::string method = lua_tostring(co, 2);
+                    if (!rpc_allowlist_.contains(method)) {
+                        deny(method);
+                        continue;
+                    }
+                    json params = extract_rpc_params(co, 3);
+                    lua_settop(co, 0);
+                    return submit_rpc(method, std::move(params));
                 }
-                return submit_rpc(method, extract_rpc_params(result.get<sol::table>(2)));
-            } else if (tag == "rpc_wallet" && result.return_count() >= 3) {
-                std::string wallet = result.get<std::string>(1);
-                std::string method = result.get<std::string>(2);
-                if (!rpc_allowlist_.contains(method)) {
-                    result = pc.coro(sol::lua_nil, "RPC method not allowed: " + method);
-                    continue;
+                if (tag == "rpc_wallet" && nres >= 4) {
+                    std::string wallet = lua_tostring(co, 2);
+                    std::string method = lua_tostring(co, 3);
+                    if (!rpc_allowlist_.contains(method)) {
+                        deny(method);
+                        continue;
+                    }
+                    json params = extract_rpc_params(co, 4);
+                    lua_settop(co, 0);
+                    return submit_rpc(method, std::move(params), wallet);
                 }
-                return submit_rpc(method, extract_rpc_params(result.get<sol::table>(3)), wallet);
-            } else {
-                break;
+                // Unknown yield — treat the coroutine as finished.
+                lua_settop(co, 0);
+                clear_callback_error(timer.id);
+                return std::nullopt;
             }
+            if (status != LUA_OK) {
+                const char* msg = lua_tostring(co, -1);
+                report_callback_error(timer.id, timer.source_id, msg ? msg : "error");
+            } else {
+                clear_callback_error(timer.id);
+            }
+            lua_settop(co, 0);
+            return std::nullopt;
         }
-        if (!result.valid()) {
-            sol::error err = result;
-            report_callback_error(pc.timer.id, pc.timer.source_id, err.what());
-        } else {
-            clear_callback_error(pc.timer.id);
-        }
-        return std::nullopt;
     };
 
     std::string line;
@@ -1031,9 +1142,8 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                                 << std::flush;
                 }
                 auto result = b.fn();
-                if (!result.valid()) {
-                    sol::error err = result;
-                    report_callback_error(btn_id, "footer_btn", err.what());
+                if (!result) {
+                    report_callback_error(btn_id, "footer_btn", result.message());
                 } else {
                     if (debug_out_) {
                         *debug_out_ << "[ btn_click_queue success] " << b.id << ": " << btn_id
@@ -1047,11 +1157,10 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
         }
 
         // 0b. Fire resize callback if the UI reported a size change
-        if (resize_pending_.exchange(false) && script->on_resize_fn_.valid()) {
-            auto result = script->on_resize_fn_(screen_.dimx(), screen_.dimy());
-            if (!result.valid()) {
-                sol::error err = result;
-                report_callback_error(-1, script->on_resize_src_, err.what());
+        if (resize_pending_.exchange(false) && script->on_resize_fn_) {
+            auto result = (*script->on_resize_fn_)(screen_.dimx(), screen_.dimy());
+            if (!result) {
+                report_callback_error(-1, script->on_resize_src_, result.message());
             } else {
                 clear_callback_error(-1);
             }
@@ -1061,14 +1170,12 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
         {
             auto results = input_result_queue_.update([](auto& q) { return std::exchange(q, {}); });
             for (auto& res : results) {
-                if (script->input_confirm_fn_.valid()) {
-                    sol::protected_function fn = std::move(script->input_confirm_fn_);
-                    script->input_confirm_fn_  = sol::protected_function{};
-                    sol::protected_function_result r =
-                        res.has_value() ? fn(*res) : fn(sol::lua_nil);
-                    if (!r.valid()) {
-                        sol::error err = r;
-                        report_callback_error(-2, "text_input", err.what());
+                if (script->input_confirm_fn_) {
+                    luabridge::LuaRef fn = std::move(*script->input_confirm_fn_);
+                    script->input_confirm_fn_.reset();
+                    auto r = res.has_value() ? fn(*res) : fn(luabridge::LuaRef(lua));
+                    if (!r) {
+                        report_callback_error(-2, "text_input", r.message());
                     } else {
                         clear_callback_error(-2);
                     }
@@ -1080,11 +1187,10 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
         {
             auto keys = select_queue_.update([](auto& q) { return std::exchange(q, {}); });
             for (auto& key : keys) {
-                if (script->on_select_fn_.valid()) {
-                    auto r = script->on_select_fn_(key);
-                    if (!r.valid()) {
-                        sol::error err = r;
-                        report_callback_error(-3, script->on_select_src_, err.what());
+                if (script->on_select_fn_) {
+                    auto r = (*script->on_select_fn_)(key);
+                    if (!r) {
+                        report_callback_error(-3, script->on_select_src_, r.message());
                     } else {
                         clear_callback_error(-3);
                     }
@@ -1130,16 +1236,16 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                         arg_ptrs[i] = &args[i];
                     }
                     if (RE2::PartialMatchN(msg, lw->pattern, arg_ptrs.data(), n)) {
-                        sol::variadic_results vr;
-                        vr.push_back({lua, sol::in_place, ts});
-                        vr.push_back({lua, sol::in_place, msg});
-                        for (int i = 0; i < n; ++i) {
-                            vr.push_back({lua, sol::in_place, captures[i]});
-                        }
-                        auto result = lw->callback(std::move(vr));
-                        if (!result.valid()) {
-                            sol::error err = result;
-                            report_callback_error(lw->id, lw->source_id, err.what());
+                        // Variable arg count (ts, msg, captures...) → raw pcall.
+                        lw->callback.push();
+                        lua_pushnumber(lua, ts);
+                        lua_pushlstring(lua, msg.data(), msg.size());
+                        for (int i = 0; i < n; ++i)
+                            lua_pushlstring(lua, captures[i].data(), captures[i].size());
+                        if (lua_pcall(lua, 2 + n, 0, 0) != LUA_OK) {
+                            const char* m = lua_tostring(lua, -1);
+                            report_callback_error(lw->id, lw->source_id, m ? m : "error");
+                            lua_pop(lua, 1);
                         } else {
                             clear_callback_error(lw->id);
                         }
@@ -1156,18 +1262,24 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             if (it == pending.end())
                 continue;
 
-            auto&       pc    = it->second;
-            sol::object value = resp.error.empty() ? script->json_to_lua(resp.result)
-                                                   : sol::make_object(lua, sol::lua_nil);
-            sol::object err   = resp.error.empty() ? sol::make_object(lua, sol::lua_nil)
-                                                   : sol::make_object(lua, resp.error);
+            auto& pc = it->second;
+            // Resume the coroutine with (value, err): push both onto its stack.
+            lua_settop(pc.co, 0);
+            if (resp.error.empty()) {
+                push_json(pc.co, resp.result);
+                lua_pushnil(pc.co);
+            } else {
+                lua_pushnil(pc.co);
+                lua_pushlstring(pc.co, resp.error.data(), resp.error.size());
+            }
 
-            auto new_rpc_id = resume_coro(pc, value, err);
+            auto new_rpc_id = drive(pc.co, pc.timer, 2);
             if (new_rpc_id) {
                 auto node  = pending.extract(it);
                 node.key() = *new_rpc_id;
                 pending.insert(std::move(node));
             } else {
+                luaL_unref(lua, LUA_REGISTRYINDEX, pc.thread_ref);
                 auto next = pc.wake_pending ? TimePoint::min() : Clock::now() + pc.timer.interval;
                 timers.insert({next, std::move(pc.timer)});
                 pending.erase(it);
@@ -1180,45 +1292,21 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             auto  node  = timers.extract(timers.begin());
             auto& timer = node.mapped();
 
-            sol::thread    thread = sol::thread::create(lua);
-            sol::coroutine coro(thread.state(), timer.callback);
+            // New coroutine thread, anchored in the registry so it survives GC
+            // while suspended. drive() runs it (no initial args).
+            lua_State* co         = lua_newthread(lua);
+            int        thread_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
+            timer.callback.push(); // push the callback onto `lua`
+            lua_xmove(lua, co, 1); // move it onto the coroutine
 
-            auto result = coro();
-            if (coro.status() == sol::call_status::yielded) {
-                std::string tag = result;
-                if (tag == "rpc" && result.return_count() >= 2) {
-                    std::string method = result.get<std::string>(1);
-                    if (!rpc_allowlist_.contains(method)) {
-                        result = coro(sol::lua_nil, "RPC method not allowed: " + method);
-                    } else {
-                        int rpc_id =
-                            submit_rpc(method, extract_rpc_params(result.get<sol::table>(2)));
-                        pending.emplace(rpc_id, PendingCoroutine{std::move(thread), std::move(coro),
-                                                                 std::move(timer)});
-                        now = Clock::now();
-                        continue; // timer NOT rescheduled yet
-                    }
-                } else if (tag == "rpc_wallet" && result.return_count() >= 3) {
-                    std::string wallet = result.get<std::string>(1);
-                    std::string method = result.get<std::string>(2);
-                    if (!rpc_allowlist_.contains(method)) {
-                        result = coro(sol::lua_nil, "RPC method not allowed: " + method);
-                    } else {
-                        int rpc_id = submit_rpc(
-                            method, extract_rpc_params(result.get<sol::table>(3)), wallet);
-                        pending.emplace(rpc_id, PendingCoroutine{std::move(thread), std::move(coro),
-                                                                 std::move(timer)});
-                        now = Clock::now();
-                        continue; // timer NOT rescheduled yet
-                    }
-                }
+            auto rpc_id = drive(co, timer, 0);
+            if (rpc_id) {
+                pending.emplace(*rpc_id, PendingCoroutine{co, thread_ref, std::move(timer), false});
+                now = Clock::now();
+                continue; // timer NOT rescheduled yet
             }
-            if (!result.valid()) {
-                sol::error err = result;
-                report_callback_error(timer.id, timer.source_id, err.what());
-            } else {
-                clear_callback_error(timer.id);
-            }
+            // Finished synchronously — release the thread and reschedule.
+            luaL_unref(lua, LUA_REGISTRYINDEX, thread_ref);
             now        = Clock::now();
             node.key() = std::max(now, node.key() + timer.interval);
             timers.insert(std::move(node));
@@ -1269,19 +1357,17 @@ LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
     lua_tab_state_.update(
         [&](auto& st) { st.tab_name = std::filesystem::path(lua_script).stem().string(); });
     register_lua_api(*script);
-    auto result = script->load(lua_script);
-    if (!result.valid()) {
-        sol::error err = result;
+    if (auto err = script->load(lua_script)) {
         if (debug_out_)
-            *debug_out_ << "[lua init error] " << lua_script << ": " << err.what() << "\n"
-                        << std::flush;
+            *debug_out_ << "[lua init error] " << lua_script << ": " << *err << "\n" << std::flush;
         lua_tab_state_.update(
-            [&](auto& st) { st.init_error = LuaError{lua_script, err.what(), Clock::now()}; });
+            [&](auto& st) { st.init_error = LuaError{lua_script, *err, Clock::now()}; });
         return;
     }
-    script->lua()["btcui_set_name"] = [](const std::string&) {
+    // btcui_set_name is only valid during script load; replace it afterwards.
+    luabridge::getGlobalNamespace(script->lua()).addFunction("btcui_set_name", [](std::string) {
         throw std::runtime_error("btcui_set_name() can only be called during script loading");
-    };
+    });
     lua_thread_ = std::thread(&LuaTab::lua_thread_fn, this, std::move(script));
 }
 
