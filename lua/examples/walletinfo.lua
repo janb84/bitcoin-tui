@@ -1,6 +1,11 @@
 
 -- Requires --allow-rpc=getwalletinfo,getbalances,listunspent,listtransactions
 
+-- Lua 5.5 strict globals: a typo in any name below is caught at load time.
+global btcui_add_footer_button, btcui_address, btcui_open_qr_overlay, btcui_option,
+       btcui_rpc_wallet, btcui_set_interval, btcui_set_name, btcui_summary,
+       btcui_table, ipairs, string, table, tonumber, type
+
 local WALLET_NAME = btcui_option("wallet", "")
 if WALLET_NAME == "" then
   btcui_set_name("Default Wallet")

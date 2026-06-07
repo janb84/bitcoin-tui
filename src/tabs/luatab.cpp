@@ -205,6 +205,15 @@ class LuaScript {
   public:
     LuaScript();
     ~LuaScript() {
+        // Coroutines still suspended mid-RPC are abandoned at shutdown. Close them
+        // with Lua 5.5's lua_closethread so their to-be-closed (`<close>`) variables
+        // are finalized — plain GC at lua_close would not run those handlers.
+        for (auto& [id, pc] : pending_) {
+            if (pc.co)
+                lua_closethread(pc.co, L_);
+            if (pc.thread_ref != LUA_NOREF)
+                luaL_unref(L_, LUA_REGISTRYINDEX, pc.thread_ref);
+        }
         // Every LuaRef below anchors a value in the Lua registry and calls
         // luaL_unref on the state when destroyed. They must be released BEFORE
         // lua_close(L_), or that unref runs on a freed state (use-after-free).
@@ -279,18 +288,27 @@ LuaScript::LuaScript() {
     // Let C++ exceptions thrown in bound functions surface as Lua errors
     // (our Lua is built in C/longjmp mode).
     luabridge::enableExceptions(L_);
-    luaL_dostring(L_, R"(
-        function btcui_rpc(method, ...)
+    // btcui_rpc / btcui_rpc_wallet are intentional API globals — declare them with
+    // Lua 5.5's `global` keyword rather than relying on global-by-default. Note that
+    // any `global` declaration voids global-by-default for the rest of the chunk, so
+    // the stdlib globals these bodies reference (coroutine, error) must be declared too.
+    if (luaL_dostring(L_, R"(
+        global coroutine, error
+        global function btcui_rpc(method, ...)
             local result, err = coroutine.yield('rpc', method, {...})
             if err then error(err, 2) end
             return result
         end
-        function btcui_rpc_wallet(wallet, method, ...)
+        global function btcui_rpc_wallet(wallet, method, ...)
             local result, err = coroutine.yield('rpc_wallet', wallet, method, {...})
             if err then error(err, 2) end
             return result
         end
-    )");
+    )") != LUA_OK) {
+        if (debug_out)
+            *debug_out << "[lua bootstrap error] " << lua_tostring(L_, -1) << "\n" << std::flush;
+        lua_pop(L_, 1);
+    }
 }
 
 void LuaScript::add_log_watch(const std::string& pattern, luabridge::LuaRef fn,
