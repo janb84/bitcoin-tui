@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -159,6 +161,15 @@ class Application {
     mutable std::ofstream    debug_out;
     std::vector<std::string> lua_tabs;
     std::vector<std::string> extra_rpcs;
+    std::string              lua_tabs_dir; // resolved path to lua/tabs/ (for auto-load)
+    // Scripts auto-injected by configure() (e.g. settings.lua) — never removed on
+    // live reload. Only these are "auto"; user-enabled tabs in lua_tabs_dir are not.
+    std::set<std::string> auto_injected_tabs;
+    // Whether the auto-loaded Settings tab is shown. Controlled by `settingstab`
+    // in config.toml and the --settingstab=true|false CLI option (default true).
+    // Honored both at startup (auto-inject gating) and on live reload.
+    bool        show_settings_tab{true};
+    std::string settings_tab_path; // resolved settings.lua path (for reload gating)
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -242,6 +253,10 @@ int Application::configure(int argc, char* argv[]) {
                    "Add RPC method to Lua allowlist (repeatable, comma-separated)")
         ->group("Lua")
         ->delimiter(',');
+    app.add_option("--settingstab", show_settings_tab,
+                   "Show the Settings tab (true/false, default true)")
+        ->default_val(true)
+        ->group("Lua");
 
     // Display
     app.add_option("-r,--refresh", refresh_secs, "Refresh interval in seconds")
@@ -346,6 +361,64 @@ int Application::configure(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // Auto-locate lua/tabs/ relative to the executable, trying up to 4 parent directories.
+    // Resolves both development builds (build/bin/bitcoin-tui → ../../lua/tabs) and
+    // installed layouts where lua/ sits next to the binary.
+    {
+        namespace fs = std::filesystem;
+        try {
+            fs::path dir = fs::canonical(fs::path(argv[0])).parent_path();
+            for (int up = 0; up <= 3; ++up, dir = dir.parent_path()) {
+                fs::path candidate = dir / "lua" / "tabs";
+                if (fs::is_directory(candidate)) {
+                    lua_tabs_dir = candidate.string();
+                    break;
+                }
+            }
+        } catch (...) { // NOLINT(bugprone-empty-catch) — best-effort path resolution
+            // canonicalization can fail (e.g. argv[0] is not a real path); leave
+            // lua_tabs_dir empty and continue.
+        }
+
+        // Auto-register settings.lua unless the user already added it explicitly
+        if (!lua_tabs_dir.empty()) {
+            fs::path settings = fs::path(lua_tabs_dir) / "settings.lua";
+            if (fs::exists(settings)) {
+                std::string settings_str = settings.string();
+                settings_tab_path        = settings_str; // recorded even when hidden
+                bool already             = false;
+                for (const auto& spec : lua_tabs) {
+                    // spec is either JSON or "path[,opts]"
+                    std::string script = spec;
+                    if (!spec.empty() && spec[0] == '{') {
+                        try {
+                            auto j = json::parse(spec);
+                            if (j.contains("script"))
+                                script = j["script"].get<std::string>();
+                        } catch (...) { // NOLINT(bugprone-empty-catch) — malformed JSON spec
+                            // fall back to treating it as a literal path below.
+                        }
+                    } else if (auto comma = spec.find(','); comma != std::string::npos) {
+                        script = spec.substr(0, comma);
+                    }
+                    try {
+                        if (fs::exists(script) && fs::equivalent(script, settings_str)) {
+                            already = true;
+                            break;
+                        }
+                    } catch (...) { // NOLINT(bugprone-empty-catch) — fs::equivalent may throw
+                        // if a path does not exist; treat as not matching and keep going.
+                    }
+                }
+                if (!already && show_settings_tab) {
+                    lua_tabs.push_back(settings_str);
+                    auto_injected_tabs.insert(settings_str);
+                }
+            }
+        }
+    }
+
     return 0;
 }
 
@@ -374,11 +447,12 @@ int Application::run() const {
         cfg, auth, screen, running, state, refresh_secs,
         [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
 
-    std::string                          debug_log = debug_log_file.empty()
-                                                         ? datadir + "/" + network_subdir(network) + "debug.log"
-                                                         : debug_log_file;
-    std::vector<std::unique_ptr<LuaTab>> lua_tab_ptrs;
-    for (const auto& tab_spec : lua_tabs) {
+    std::string debug_log = debug_log_file.empty()
+                                ? datadir + "/" + network_subdir(network) + "debug.log"
+                                : debug_log_file;
+
+    // Parse a tab spec string ("script.lua,k=v" or JSON) into a json options object.
+    auto parse_tab_spec = [](const std::string& tab_spec) -> json {
         json options;
         if (!tab_spec.empty() && tab_spec[0] == '{') {
             options = json::parse(tab_spec);
@@ -395,21 +469,60 @@ int Application::run() const {
                 }
             }
         }
+        return options;
+    };
+
+    // Construct a LuaTab from a parsed options object.
+    auto make_lua_tab = [&](json options) -> std::unique_ptr<LuaTab> {
         if (!options.contains("script") || options["script"].get<std::string>().empty())
             throw std::runtime_error("--tab: missing script path");
-        lua_tab_ptrs.push_back(std::make_unique<LuaTab>(
-            cfg, auth, screen, running, state, refresh_secs, debug_log, std::move(options),
-            extra_rpcs, debug_enabled ? &debug_out : nullptr));
-    }
+        return std::make_unique<LuaTab>(cfg, auth, screen, running, state, refresh_secs, debug_log,
+                                        std::move(options), extra_rpcs,
+                                        debug_enabled ? &debug_out : nullptr);
+    };
 
-    std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
-    for (auto& p : lua_tab_ptrs)
-        tabs.push_back(p.get());
+    // Pending tab live-reload flag (set by btcui_reload_tabs() from any Lua thread).
+    std::atomic<bool> tabs_reload_pending{false};
+
+    // Dead tabs: removed from the UI but their threads are still winding down.
+    // Joined at shutdown when running becomes false.
+    std::vector<std::unique_ptr<LuaTab>> dead_lua_tabs;
+
+    // Paths auto-loaded by bitcoin-tui (not from config.toml) — never removed on reload.
+    std::set<std::string> auto_tab_paths;
+
+    // Rebuild helper: wires up the reload callback on every LuaTab and
+    // synchronises tabs / tab_labels with lua_tab_ptrs.
+    // Called once after initial construction and again after each live reload.
+    std::vector<Tab*>                    tabs;
+    std::vector<std::string>             tab_labels;
+    std::vector<std::unique_ptr<LuaTab>> lua_tab_ptrs;
+
+    auto rebuild_tab_lists = [&]() {
+        for (auto& p : lua_tab_ptrs) {
+            p->set_reload_callback([&]() {
+                tabs_reload_pending.store(true);
+                screen.PostEvent(Event::Custom);
+            });
+        }
+        tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
+        for (auto& p : lua_tab_ptrs)
+            tabs.push_back(p.get());
+        tab_labels.clear();
+        for (auto* t : tabs)
+            tab_labels.push_back(t->name());
+    };
+
+    // Tabs auto-injected by configure() (e.g. settings.lua) are never removed on
+    // reload. User-enabled tabs that happen to live in lua_tabs_dir ARE removable.
+    auto_tab_paths = auto_injected_tabs;
+
+    // Initial tab construction
+    for (const auto& tab_spec : lua_tabs)
+        lua_tab_ptrs.push_back(make_lua_tab(parse_tab_spec(tab_spec)));
+    rebuild_tab_lists();
 
     // Tab toggle
-    std::vector<std::string> tab_labels;
-    for (auto* tab : tabs)
-        tab_labels.push_back(tab->name());
     auto tab_toggle = Toggle(&tab_labels, &tab_index);
 
     // Footer bar — per-tab buttons + global search/quit, all mouse-clickable
@@ -426,6 +539,137 @@ int Application::run() const {
     auto layout = Container::Vertical({tab_toggle, footer_bar});
 
     auto renderer = Renderer(layout, [&]() -> Element {
+        // Live tab reload — triggered by btcui_reload_tabs() from any Lua script
+        if (tabs_reload_pending.exchange(false)) {
+            // Remember which tab is focused so we can keep the user on it after the
+            // list is rebuilt (config tabs shift position when one is added/removed).
+            Tab* focused_tab = (tab_index >= 0 && tab_index < static_cast<int>(tabs.size()))
+                                   ? tabs[tab_index]
+                                   : nullptr;
+
+            // Read the updated tab list from config.toml
+            std::vector<std::string> new_specs;
+            // Re-read the settingstab visibility flag so the Settings tab can hide
+            // itself live; the CLI --no-settingstab default carries over when absent.
+            bool settings_visible = show_settings_tab;
+            {
+                namespace fs        = std::filesystem;
+                std::string cfg_dir = default_config_dir();
+                if (!cfg_dir.empty()) {
+                    std::ifstream f(fs::path(cfg_dir) / "config.toml");
+                    std::string   line;
+                    while (std::getline(f, line)) {
+                        if (!line.empty() && line.back() == '\r')
+                            line.pop_back();
+                        if (line.empty() || line[0] == ';' || line[0] == '#')
+                            continue;
+                        auto eq = line.find('=');
+                        if (eq == std::string::npos)
+                            continue;
+                        std::string key = line.substr(0, eq);
+                        auto        ks  = key.find_first_not_of(" \t");
+                        auto        ke  = key.find_last_not_of(" \t");
+                        if (ks == std::string::npos)
+                            continue;
+                        key = key.substr(ks, ke - ks + 1);
+                        if (key == "settingstab") {
+                            std::string val = line.substr(eq + 1);
+                            auto        vs  = val.find_first_not_of(" \t");
+                            settings_visible =
+                                vs != std::string::npos && val.compare(vs, 4, "true") == 0;
+                            continue;
+                        }
+                        if (key != "tab")
+                            continue;
+                        std::string val = line.substr(eq + 1);
+                        auto        vs  = val.find_first_not_of(" \t");
+                        if (vs == std::string::npos)
+                            continue;
+                        val            = val.substr(vs);
+                        auto parse_val = [](const std::string& v) {
+                            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                                return v.substr(1, v.size() - 2);
+                            return v;
+                        };
+                        // Repeated `tab = "path"` lines accumulate into new_specs.
+                        if (!val.empty())
+                            new_specs.push_back(parse_val(val));
+                    }
+                }
+            }
+
+            auto spec_path = [](const std::string& spec) {
+                if (auto c = spec.find(','); c != std::string::npos)
+                    return spec.substr(0, c);
+                return spec;
+            };
+
+            // Single-pass diff: drain the current tabs into a pool, then rebuild
+            // lua_tab_ptrs in config order (auto tabs appended after). Entries are
+            // extracted by null-checking each pool slot, so moved-out holes are never
+            // dereferenced — the bug that crashed when config had 2+ tabs.
+            std::vector<std::unique_ptr<LuaTab>> pool = std::move(lua_tab_ptrs);
+            lua_tab_ptrs.clear();
+
+            auto extract = [&](const std::string& path) -> std::unique_ptr<LuaTab> {
+                for (auto& p : pool) {
+                    if (p && p->script_path() == path)
+                        return std::move(p); // leaves a null hole, skipped below
+                }
+                return nullptr;
+            };
+
+            // Config-ordered tabs first: reuse existing or construct new.
+            for (const auto& spec : new_specs) {
+                if (auto existing = extract(spec_path(spec))) {
+                    lua_tab_ptrs.push_back(std::move(existing));
+                } else {
+                    try {
+                        lua_tab_ptrs.push_back(make_lua_tab(parse_tab_spec(spec)));
+                    } catch (const std::exception& e) {
+                        (void)e; // tab with bad path shows its own error panel
+                    }
+                }
+            }
+
+            // Leftovers: keep auto-injected tabs (appended after config tabs),
+            // retire everything else into dead_lua_tabs so its threads wind down.
+            for (auto& p : pool) {
+                if (!p)
+                    continue;
+                bool is_settings =
+                    !settings_tab_path.empty() && p->script_path() == settings_tab_path;
+                if (auto_tab_paths.count(p->script_path()) && !(is_settings && !settings_visible)) {
+                    lua_tab_ptrs.push_back(std::move(p));
+                } else {
+                    p->stop(); // wind the worker thread down (~1s)
+                    dead_lua_tabs.push_back(std::move(p));
+                }
+            }
+
+            // Reap dead tabs whose threads have already exited (join is instant then),
+            // so repeated toggling doesn't accumulate finished tabs indefinitely.
+            for (auto& p : dead_lua_tabs) {
+                if (p && p->finished())
+                    p->join();
+            }
+            dead_lua_tabs.erase(std::remove_if(dead_lua_tabs.begin(), dead_lua_tabs.end(),
+                                               [](const auto& p) { return p && p->finished(); }),
+                                dead_lua_tabs.end());
+
+            rebuild_tab_lists();
+
+            // Restore focus to the same tab if it still exists (e.g. stay on
+            // Settings after toggling another tab). Falls back to a clamp.
+            if (focused_tab) {
+                auto it = std::find(tabs.begin(), tabs.end(), focused_tab);
+                if (it != tabs.end())
+                    tab_index = static_cast<int>(it - tabs.begin());
+            }
+            if (tab_index >= static_cast<int>(tabs.size()))
+                tab_index = static_cast<int>(tabs.size()) - 1;
+        }
+
         AppState snap = state.get();
 
         Element tab_content = (tab_index < 0 || tab_index >= tabs.size())
@@ -762,9 +1006,10 @@ int Application::run() const {
     screen.Loop(event_handler);
 
     running = false;
-    for (auto tab : tabs) {
+    for (auto tab : tabs)
         tab->join();
-    }
+    for (auto& p : dead_lua_tabs)
+        p->join();
     if (launch_thread.joinable())
         launch_thread.join();
     poll_thread.join();
