@@ -376,9 +376,9 @@ int Application::configure(int argc, char* argv[]) {
                     break;
                 }
             }
-        } catch (...) {
-            // Best-effort path resolution; if canonicalization fails (e.g. argv[0]
-            // is not a real path), leave lua_tabs_dir empty and continue.
+        } catch (...) { // NOLINT(bugprone-empty-catch) — best-effort path resolution
+            // canonicalization can fail (e.g. argv[0] is not a real path); leave
+            // lua_tabs_dir empty and continue.
         }
 
         // Auto-register settings.lua unless the user already added it explicitly
@@ -396,9 +396,8 @@ int Application::configure(int argc, char* argv[]) {
                             auto j = json::parse(spec);
                             if (j.contains("script"))
                                 script = j["script"].get<std::string>();
-                        } catch (...) {
-                            // Malformed JSON spec; fall back to treating it as a
-                            // literal path below.
+                        } catch (...) { // NOLINT(bugprone-empty-catch) — malformed JSON spec
+                            // fall back to treating it as a literal path below.
                         }
                     } else if (auto comma = spec.find(','); comma != std::string::npos) {
                         script = spec.substr(0, comma);
@@ -408,9 +407,8 @@ int Application::configure(int argc, char* argv[]) {
                             already = true;
                             break;
                         }
-                    } catch (...) {
-                        // fs::equivalent throws if a path does not exist; treat
-                        // such specs as not matching settings.lua and keep going.
+                    } catch (...) { // NOLINT(bugprone-empty-catch) — fs::equivalent may throw
+                        // if a path does not exist; treat as not matching and keep going.
                     }
                 }
                 if (!already && show_settings_tab) {
