@@ -165,6 +165,11 @@ class Application {
     // Scripts auto-injected by configure() (e.g. settings.lua) — never removed on
     // live reload. Only these are "auto"; user-enabled tabs in lua_tabs_dir are not.
     std::set<std::string> auto_injected_tabs;
+    // Whether the auto-loaded Settings tab is shown. Controlled by `settingstab`
+    // in config.toml and the --settingstab=true|false CLI option (default true).
+    // Honored both at startup (auto-inject gating) and on live reload.
+    bool        show_settings_tab{true};
+    std::string settings_tab_path; // resolved settings.lua path (for reload gating)
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -248,6 +253,10 @@ int Application::configure(int argc, char* argv[]) {
                    "Add RPC method to Lua allowlist (repeatable, comma-separated)")
         ->group("Lua")
         ->delimiter(',');
+    app.add_option("--settingstab", show_settings_tab,
+                   "Show the Settings tab (true/false, default true)")
+        ->default_val(true)
+        ->group("Lua");
 
     // Display
     app.add_option("-r,--refresh", refresh_secs, "Refresh interval in seconds")
@@ -377,7 +386,8 @@ int Application::configure(int argc, char* argv[]) {
             fs::path settings = fs::path(lua_tabs_dir) / "settings.lua";
             if (fs::exists(settings)) {
                 std::string settings_str = settings.string();
-                bool        already      = false;
+                settings_tab_path        = settings_str; // recorded even when hidden
+                bool already             = false;
                 for (const auto& spec : lua_tabs) {
                     // spec is either JSON or "path[,opts]"
                     std::string script = spec;
@@ -403,7 +413,7 @@ int Application::configure(int argc, char* argv[]) {
                         // such specs as not matching settings.lua and keep going.
                     }
                 }
-                if (!already) {
+                if (!already && show_settings_tab) {
                     lua_tabs.push_back(settings_str);
                     auto_injected_tabs.insert(settings_str);
                 }
@@ -541,6 +551,9 @@ int Application::run() const {
 
             // Read the updated tab list from config.toml
             std::vector<std::string> new_specs;
+            // Re-read the settingstab visibility flag so the Settings tab can hide
+            // itself live; the CLI --no-settingstab default carries over when absent.
+            bool settings_visible = show_settings_tab;
             {
                 namespace fs        = std::filesystem;
                 std::string cfg_dir = default_config_dir();
@@ -561,6 +574,13 @@ int Application::run() const {
                         if (ks == std::string::npos)
                             continue;
                         key = key.substr(ks, ke - ks + 1);
+                        if (key == "settingstab") {
+                            std::string val = line.substr(eq + 1);
+                            auto        vs  = val.find_first_not_of(" \t");
+                            settings_visible =
+                                vs != std::string::npos && val.compare(vs, 4, "true") == 0;
+                            continue;
+                        }
                         if (key != "tab")
                             continue;
                         std::string val = line.substr(eq + 1);
@@ -573,37 +593,9 @@ int Application::run() const {
                                 return v.substr(1, v.size() - 2);
                             return v;
                         };
-                        if (!val.empty() && val[0] == '[') {
-                            size_t i = 1;
-                            while (i < val.size()) {
-                                while (i < val.size() && (val[i] == ' ' || val[i] == ','))
-                                    ++i;
-                                if (i >= val.size() || val[i] == ']')
-                                    break;
-                                if (val[i] == '"') {
-                                    ++i;
-                                    std::string s;
-                                    while (i < val.size() && val[i] != '"') {
-                                        if (val[i] == '\\' && i + 1 < val.size())
-                                            ++i;
-                                        s += val[i++];
-                                    }
-                                    if (i < val.size())
-                                        ++i;
-                                    if (!s.empty())
-                                        new_specs.push_back(s);
-                                } else {
-                                    size_t end = i;
-                                    while (end < val.size() && val[end] != ',' && val[end] != ']')
-                                        ++end;
-                                    if (end > i)
-                                        new_specs.push_back(val.substr(i, end - i));
-                                    i = end;
-                                }
-                            }
-                        } else if (!val.empty()) {
+                        // Repeated `tab = "path"` lines accumulate into new_specs.
+                        if (!val.empty())
                             new_specs.push_back(parse_val(val));
-                        }
                     }
                 }
             }
@@ -647,7 +639,9 @@ int Application::run() const {
             for (auto& p : pool) {
                 if (!p)
                     continue;
-                if (auto_tab_paths.count(p->script_path())) {
+                bool is_settings =
+                    !settings_tab_path.empty() && p->script_path() == settings_tab_path;
+                if (auto_tab_paths.count(p->script_path()) && !(is_settings && !settings_visible)) {
                     lua_tab_ptrs.push_back(std::move(p));
                 } else {
                     p->stop(); // wind the worker thread down (~1s)

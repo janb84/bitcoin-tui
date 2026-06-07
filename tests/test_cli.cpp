@@ -209,6 +209,15 @@ TEST_CASE("--allow-rpc with --version exits 0") {
     CHECK(exit_code(binary() + " --allow-rpc getblockchaininfo --version" + null_sink()) == 0);
 }
 
+TEST_CASE("--settingstab accepts true/false with --version") {
+    CHECK(exit_code(binary() + " --settingstab=false --version" + null_sink()) == 0);
+    CHECK(exit_code(binary() + " --settingstab=true --version" + null_sink()) == 0);
+}
+
+TEST_CASE("--settingstab rejects non-boolean value") {
+    CHECK(exit_code(binary() + " --settingstab=maybe" + null_sink()) != 0);
+}
+
 #ifndef _WIN32
 TEST_CASE("missing default config path does not fail") {
     TempDir home;

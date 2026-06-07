@@ -352,40 +352,6 @@ static std::string config_file_path() {
     return dir + static_cast<char>(std::filesystem::path::preferred_separator) + "config.toml";
 }
 
-// Parse a TOML inline array: ["a", "b", "c"] → vector of strings
-static std::vector<std::string> parse_toml_array(const std::string& s) {
-    std::vector<std::string> result;
-    size_t                   i = 0;
-    while (i < s.size() && (s[i] == ' ' || s[i] == '['))
-        ++i;
-    while (i < s.size()) {
-        while (i < s.size() && (s[i] == ' ' || s[i] == ','))
-            ++i;
-        if (i >= s.size() || s[i] == ']')
-            break;
-        if (s[i] == '"') {
-            ++i;
-            std::string val;
-            while (i < s.size() && s[i] != '"') {
-                if (s[i] == '\\' && i + 1 < s.size())
-                    ++i;
-                val += s[i++];
-            }
-            if (i < s.size())
-                ++i; // skip closing "
-            result.push_back(val);
-        } else {
-            size_t end = i;
-            while (end < s.size() && s[end] != ',' && s[end] != ']' && s[end] != ' ')
-                ++end;
-            if (end > i)
-                result.push_back(s.substr(i, end - i));
-            i = end;
-        }
-    }
-    return result;
-}
-
 // Strip surrounding whitespace and quotes from a TOML scalar value
 static std::string parse_toml_scalar(std::string s) {
     size_t a = s.find_first_not_of(" \t\r\n");
@@ -400,13 +366,14 @@ static std::string parse_toml_scalar(std::string s) {
 
 // Read config.toml into a Lua table {tabs, allow_rpc, refresh, host, port}
 static sol::table read_config_table(sol::state& lua) {
-    sol::table t   = lua.create_table();
-    t["tabs"]      = lua.create_table();
-    t["allow_rpc"] = lua.create_table();
-    t["refresh"]   = 5;
-    t["host"]      = std::string("127.0.0.1");
-    t["port"]      = 8332;
-    t["exists"]    = false;
+    sol::table t     = lua.create_table();
+    t["tabs"]        = lua.create_table();
+    t["allow_rpc"]   = lua.create_table();
+    t["refresh"]     = 5;
+    t["host"]        = std::string("127.0.0.1");
+    t["port"]        = 8332;
+    t["settingstab"] = true;
+    t["exists"]      = false;
 
     std::ifstream f(config_file_path());
     if (!f)
@@ -436,63 +403,81 @@ static sol::table read_config_table(sol::state& lua) {
                 val = val.substr(vs);
         }
 
-        if (key == "tab") {
-            sol::table tabs = lua.create_table();
-            if (!val.empty() && val[0] == '[') {
-                for (const auto& s : parse_toml_array(val))
-                    tabs.add(s);
-            } else {
-                auto sv = parse_toml_scalar(val);
-                if (!sv.empty())
-                    tabs.add(sv);
-            }
-            t["tabs"] = tabs;
-        } else if (key == "allow-rpc") {
-            sol::table rpcs = lua.create_table();
-            if (!val.empty() && val[0] == '[') {
-                for (const auto& s : parse_toml_array(val))
-                    rpcs.add(s);
-            } else {
-                auto sv = parse_toml_scalar(val);
-                if (!sv.empty())
-                    rpcs.add(sv);
-            }
-            t["allow_rpc"] = rpcs;
-        } else if (key == "refresh") {
+        enum class Key { Tab, AllowRpc, Refresh, Host, Port, SettingsTab, Unknown };
+        auto classify = [](const std::string& k) {
+            if (k == "tab")
+                return Key::Tab;
+            if (k == "allow-rpc")
+                return Key::AllowRpc;
+            if (k == "refresh")
+                return Key::Refresh;
+            if (k == "host")
+                return Key::Host;
+            if (k == "port")
+                return Key::Port;
+            if (k == "settingstab")
+                return Key::SettingsTab;
+            return Key::Unknown;
+        };
+
+        switch (classify(key)) {
+        // `tab` and `allow-rpc` use repeated one-per-line entries (the legacy/CLI11
+        // format). Accumulate into the existing table so multi-line configs are read
+        // in full, not just the last occurrence.
+        case Key::Tab: {
+            sol::table tabs = t["tabs"];
+            auto       sv   = parse_toml_scalar(val);
+            if (!sv.empty())
+                tabs.add(sv);
+            break;
+        }
+        case Key::AllowRpc: {
+            sol::table rpcs = t["allow_rpc"];
+            auto       sv   = parse_toml_scalar(val);
+            if (!sv.empty())
+                rpcs.add(sv);
+            break;
+        }
+        case Key::Refresh: {
             int v = 5;
             if (std::from_chars(val.data(), val.data() + val.size(), v).ec == std::errc{})
                 t["refresh"] = v;
-        } else if (key == "host") {
+            break;
+        }
+        case Key::Host:
             t["host"] = parse_toml_scalar(val);
-        } else if (key == "port") {
+            break;
+        case Key::Port: {
             int v = 8332;
             if (std::from_chars(val.data(), val.data() + val.size(), v).ec == std::errc{})
                 t["port"] = v;
+            break;
+        }
+        case Key::SettingsTab:
+            t["settingstab"] = (parse_toml_scalar(val) == "true");
+            break;
+        case Key::Unknown:
+            break;
         }
     }
     return t;
 }
 
-// Serialize a Lua string array as a TOML inline array
-static std::string toml_array(const sol::table& tbl) {
-    std::string s = "[";
-    for (size_t i = 1; i <= tbl.size(); ++i) {
-        if (i > 1)
-            s += ", ";
-        std::string v = tbl.get<std::string>(i);
-        std::string esc;
-        for (char c : v) {
-            if (c == '\\' || c == '"')
-                esc += '\\';
-            esc += c;
-        }
-        s += "\"" + esc + "\"";
+// Quote a string as a TOML basic string, escaping backslashes and quotes.
+static std::string toml_quote(const std::string& v) {
+    std::string s = "\"";
+    for (char c : v) {
+        if (c == '\\' || c == '"')
+            s += '\\';
+        s += c;
     }
-    s += "]";
+    s += '"';
     return s;
 }
 
-// Write config.toml, preserving unknown keys and updating tab/allow-rpc/refresh
+// Write config.toml, preserving unknown keys and updating the managed keys
+// (tab/allow-rpc/refresh/settingstab). Repeated entries for multi-value keys are
+// collapsed at the first occurrence so no stale duplicates are left behind.
 static bool write_config_table(const sol::table& cfg) {
     std::string path = config_file_path();
     if (path.empty())
@@ -511,28 +496,60 @@ static bool write_config_table(const sol::table& cfg) {
         }
     }
 
-    const std::set<std::string> managed = {"tab", "allow-rpc", "refresh"};
+    const std::set<std::string> managed = {"tab", "allow-rpc", "refresh", "settingstab"};
     std::set<std::string>       written;
 
-    auto emit_key = [&](const std::string& key) -> std::string {
-        if (key == "tab") {
+    // Returns the replacement line(s) for a managed key. Multi-value keys (tab,
+    // allow-rpc) emit one `key = "value"` line per element — the format users
+    // hand-write and the one CLI11 reads at startup.
+    auto emit_key = [&](const std::string& key) -> std::vector<std::string> {
+        std::vector<std::string> lines;
+        enum class Key { Tab, AllowRpc, Refresh, SettingsTab, Other };
+        auto classify = [](const std::string& k) {
+            if (k == "tab")
+                return Key::Tab;
+            if (k == "allow-rpc")
+                return Key::AllowRpc;
+            if (k == "refresh")
+                return Key::Refresh;
+            if (k == "settingstab")
+                return Key::SettingsTab;
+            return Key::Other;
+        };
+
+        switch (classify(key)) {
+        case Key::Tab: {
             sol::optional<sol::table> tabs = cfg.get<sol::optional<sol::table>>("tabs");
-            if (tabs && tabs->size() > 0)
-                return "tab = " + toml_array(*tabs);
-            return "";
+            if (tabs)
+                for (size_t i = 1; i <= tabs->size(); ++i)
+                    lines.push_back("tab = " + toml_quote(tabs->get<std::string>(i)));
+            break;
         }
-        if (key == "allow-rpc") {
+        case Key::AllowRpc: {
             sol::optional<sol::table> rpcs = cfg.get<sol::optional<sol::table>>("allow_rpc");
-            if (rpcs && rpcs->size() > 0)
-                return "allow-rpc = " + toml_array(*rpcs);
-            return "";
+            if (rpcs)
+                for (size_t i = 1; i <= rpcs->size(); ++i)
+                    lines.push_back("allow-rpc = " + toml_quote(rpcs->get<std::string>(i)));
+            break;
         }
-        if (key == "refresh") {
+        case Key::Refresh: {
             sol::optional<int> r = cfg.get<sol::optional<int>>("refresh");
             if (r)
-                return "refresh = " + std::to_string(*r);
+                lines.push_back("refresh = " + std::to_string(*r));
+            break;
         }
-        return "";
+        case Key::SettingsTab: {
+            // Default is visible; only persist the non-default (false) so existing
+            // "settingstab = true" lines are cleaned up when toggled back on.
+            sol::optional<bool> b = cfg.get<sol::optional<bool>>("settingstab");
+            if (b && !*b)
+                lines.push_back("settingstab = false");
+            break;
+        }
+        case Key::Other:
+            break;
+        }
+        return lines;
     };
 
     std::vector<std::string> out;
@@ -552,11 +569,14 @@ static bool write_config_table(const sol::table& cfg) {
             size_t ke = key.find_last_not_of(" \t");
             key       = (ks == std::string::npos) ? "" : key.substr(ks, ke - ks + 1);
         }
-        if (managed.count(key) && !written.count(key)) {
-            written.insert(key);
-            auto replacement = emit_key(key);
-            if (!replacement.empty())
-                out.push_back(replacement);
+        if (managed.count(key)) {
+            // Emit the full replacement set at the first occurrence; drop every
+            // later occurrence so repeated `tab =` lines aren't duplicated.
+            if (!written.count(key)) {
+                written.insert(key);
+                for (const auto& l : emit_key(key))
+                    out.push_back(l);
+            }
         } else {
             out.push_back(line);
         }
@@ -565,9 +585,8 @@ static bool write_config_table(const sol::table& cfg) {
     for (const auto& key : managed) {
         if (written.count(key))
             continue;
-        auto line = emit_key(key);
-        if (!line.empty())
-            out.push_back(line);
+        for (const auto& l : emit_key(key))
+            out.push_back(l);
     }
 
     std::ofstream f(path);

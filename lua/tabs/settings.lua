@@ -1,7 +1,10 @@
 --- bitcoin-tui Settings
---- Auto-loaded at startup. Scans lua/tabs/ and lets you enable/disable tabs.
---- Usage: ↓ focus the list, Enter to select a row, then Enter (or click a row)
+--- Auto-loaded at startup. Scans lua/tabs/ and lets you enable/disable tabs,
+--- and toggle boolean options (e.g. hiding this Settings tab itself).
+--- Usage: ↓ focus a list, Enter to select a row, then Enter (or click a row)
 ---        to toggle it on/off.  [r] refresh list
+--- Note: hiding the Settings tab takes effect immediately; re-enable it by
+---       starting with --settingstab=true (or removing settingstab from config).
 
 btcui_set_name("Settings")
 
@@ -19,6 +22,18 @@ local tabs_panel = btcui_table({
         { name = "on",   header = "On" },
         { name = "name", header = "Tab name" },
         { name = "file", header = "File" },
+    },
+})
+
+-- Boolean options toggled the same way as the tab list (Enter / click a row).
+-- Keys are prefixed "opt:" so toggle_selected can tell them apart from tab paths.
+local opts_panel = btcui_table({
+    title   = "Options",
+    key     = "key",
+    columns = {
+        { name = "key",   header = "" },        -- hidden key column
+        { name = "on",    header = "On" },
+        { name = "label", header = "Option" },
     },
 })
 
@@ -44,6 +59,24 @@ local function get_config()
     return enabled, cfg
 end
 
+-- A cell rendering an on/off boolean.
+local function on_cell(on)
+    return on and { value = "✓", color = "green", bold = true }
+              or  { value = "✗", color = "gray" }
+end
+
+-- Boolean options shown in opts_panel. Each has a config key, label, a getter
+-- reading the current value from the config table, and a setter mutating it.
+-- settingstab defaults to true (visible) when absent from config.
+local OPTIONS = {
+    {
+        key   = "settingstab",
+        label = "Show Settings tab (re-enable with --settingstab=true)",
+        get   = function(cfg) return cfg.settingstab ~= false end,
+        set   = function(cfg, v) cfg.settingstab = v end,
+    },
+}
+
 local function refresh_display()
     local enabled, cfg = get_config()
     local files = btcui_list_files(script_dir)
@@ -54,14 +87,23 @@ local function refresh_display()
             local on = enabled[f.path]
             tabs_panel:update(f.path, {
                 path = f.path,
-                on   = on and { value = "✓", color = "green", bold = true }
-                          or  { value = "✗", color = "gray" },
+                on   = on_cell(on),
                 name = f.name,
                 file = f.name .. ".lua",
             })
         end
     end
     tabs_panel:finish_refresh()
+
+    opts_panel:start_refresh()
+    for _, o in ipairs(OPTIONS) do
+        opts_panel:update(o.key, {
+            key   = o.key,
+            on    = on_cell(o.get(cfg)),
+            label = o.label,
+        })
+    end
+    opts_panel:finish_refresh()
 
     local file_label
     if config_path == "" then
@@ -78,12 +120,49 @@ local function refresh_display()
     })
 end
 
+-- Find an option definition by its config key.
+local function find_option(key)
+    for _, o in ipairs(OPTIONS) do
+        if o.key == key then return o end
+    end
+end
+
+-- Persist cfg and live-reload the tab bar; returns false (with status set) on error.
+local function save_config(cfg)
+    if not btcui_config_write(cfg) then
+        status_msg = "ERROR: could not write " .. config_path
+        return false
+    end
+    btcui_reload_tabs()   -- live-reloads the tab bar without restarting
+    return true
+end
+
+-- Toggle a boolean option row (Options panel).
+local function toggle_option(opt)
+    local _, cfg = get_config()
+    local now    = not opt.get(cfg)
+    opt.set(cfg, now)
+    status_msg = (now and "Enabled: " or "Disabled: ") .. opt.label
+    if not save_config(cfg) then
+        refresh_display()
+        return
+    end
+    refresh_display()
+end
+
 -- Called by btcui_on_select with the activated row key (Enter or mouse click).
 local function toggle_selected(key)
     key = key or tabs_panel:selected_key()
     if not key then
-        status_msg = "Select a tab first  (↓ focus, Enter select)"
+        status_msg = "Select a row first  (↓ focus, Enter select)"
         refresh_display()
+        return
+    end
+
+    -- Options panel rows match an OPTIONS entry; everything else is a tab path.
+    local opt = find_option(key)
+    if opt then
+        toggle_option(opt)
         return
     end
 
@@ -107,12 +186,7 @@ local function toggle_selected(key)
     end
 
     cfg.tabs = tabs
-    if not btcui_config_write(cfg) then
-        status_msg = "ERROR: could not write " .. config_path
-        refresh_display()
-        return
-    end
-    btcui_reload_tabs()   -- live-reloads the tab bar without restarting
+    save_config(cfg)
     refresh_display()
 end
 
