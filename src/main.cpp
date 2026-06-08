@@ -31,6 +31,7 @@ static void ensure_terminal();
 #include "components/footer_bar.hpp"
 #include "format.hpp"
 #include "guarded.hpp"
+#include "paths.hpp"
 #include "poll.hpp"
 #include "render.hpp"
 #include "rpc_client.hpp"
@@ -46,32 +47,7 @@ static void ensure_terminal();
 // Cookie authentication helpers
 // ============================================================================
 
-static std::string default_config_dir() {
-#ifdef _WIN32
-    const char* appdata = std::getenv("APPDATA");
-    if (appdata)
-        return std::string(appdata) + "\\bitcoin-tui";
-#elif defined(__APPLE__)
-    const char* home = std::getenv("HOME");
-    if (home)
-        return std::string(home) + "/Library/Application Support/bitcoin-tui";
-#else
-    const char* xdg = std::getenv("XDG_CONFIG_HOME");
-    if (xdg && std::filesystem::exists(xdg))
-        return std::string(xdg) + "/bitcoin-tui";
-    const char* home = std::getenv("HOME");
-    if (home)
-        return std::string(home) + "/.config/bitcoin-tui";
-#endif
-    return "";
-}
-
-static std::string config_file_if_exists(const std::string& dir) {
-    if (dir.empty())
-        return "";
-    std::filesystem::path p = std::filesystem::path(dir) / "config.toml";
-    return std::filesystem::exists(p) ? p.string() : "";
-}
+static std::string default_config_dir() { return paths::config_dir(); }
 
 static std::string default_datadir() {
 #ifdef _WIN32
@@ -161,6 +137,7 @@ class Application {
     mutable std::ofstream    debug_out;
     std::vector<std::string> lua_tabs;
     std::vector<std::string> extra_rpcs;
+    std::string              lua_dir;      // --lua-dir / config override for the tab script dir
     std::string              lua_tabs_dir; // resolved path to lua/tabs/ (for auto-load)
     // Scripts auto-injected by configure() (e.g. settings.lua) — never removed on
     // live reload. Only these are "auto"; user-enabled tabs in lua_tabs_dir are not.
@@ -257,6 +234,10 @@ int Application::configure(int argc, char* argv[]) {
                    "Show the Settings tab (true/false, default true)")
         ->default_val(true)
         ->group("Lua");
+    app.add_option("--lua-dir", lua_dir,
+                   "Path to the lua/ root (scripts read from <lua-dir>/tabs; "
+                   "overrides auto-detection)")
+        ->group("Lua");
 
     // Display
     app.add_option("-r,--refresh", refresh_secs, "Refresh interval in seconds")
@@ -284,10 +265,43 @@ int Application::configure(int argc, char* argv[]) {
     );
     // clang-format on
 
-    // Config file — only use a default when config.toml exists.
-    std::string cfg_dir = default_config_dir();
-    app.set_config("--config", config_file_if_exists(cfg_dir), "Read configuration from file")
-        ->transform(CLI::FileOnDefaultPath(cfg_dir));
+    // Resolve a config-file override before wiring up --config-file, so the
+    // startup config.toml is read from the right place. CLI11 evaluates
+    // set_config()'s default path now (before app.parse() populates the flag),
+    // so we read $BITCOIN_TUI_CONFIG_FILE and scan argv for --config-file here.
+    {
+        std::string ov;
+        if (const char* e = std::getenv("BITCOIN_TUI_CONFIG_FILE"); e && e[0] != '\0')
+            ov = e;
+        const std::string prefix = "--config-file=";
+        for (int i = 1; i < argc; ++i) {
+            std::string a = argv[i];
+            if (a == "--config-file" && i + 1 < argc)
+                ov = argv[i + 1];
+            else if (a.rfind(prefix, 0) == 0)
+                ov = a.substr(prefix.size());
+        }
+        if (!ov.empty()) {
+            std::error_code ec;
+            if (std::filesystem::is_directory(ov, ec)) {
+                std::fprintf(stderr,
+                             "bitcoin-tui: --config-file is a directory, expected a file: %s\n",
+                             ov.c_str());
+                return 1;
+            }
+            paths::config_file_override() = ov;
+        }
+    }
+
+    // Config file — only read it on startup when it already exists. The override
+    // (if any) is honored by paths::config_file(); --config-file/env are also
+    // accepted here so they show in --help and resolve relative paths.
+    std::string cfg_file = paths::config_file();
+    app.set_config("--config-file",
+                   (!cfg_file.empty() && std::filesystem::exists(cfg_file)) ? cfg_file
+                                                                            : std::string(),
+                   "Path to config.toml (env: BITCOIN_TUI_CONFIG_FILE)")
+        ->transform(CLI::FileOnDefaultPath(default_config_dir()));
 
     try {
         app.parse(argc, argv);
@@ -295,6 +309,16 @@ int Application::configure(int argc, char* argv[]) {
         int rc = app.exit(e);
         // --help and --version exit with 0; treat as clean early exit
         return (rc == 0) ? -1 : rc;
+    }
+
+    // Refuse to guess a config location. Without an override this is empty only
+    // when there is no usable HOME (e.g. `sudo -u <user>` for a user with no
+    // home dir) — fail loudly instead of writing config somewhere surprising.
+    if (paths::config_file().empty()) {
+        std::fprintf(stderr,
+                     "bitcoin-tui: cannot determine a config file location (no usable HOME).\n"
+                     "  Pass --config-file <path> or set BITCOIN_TUI_CONFIG_FILE.\n");
+        return 1;
     }
 
     // Apply network selection
@@ -362,23 +386,41 @@ int Application::configure(int argc, char* argv[]) {
         }
     }
 
-    // Auto-locate lua/tabs/ relative to the executable, trying up to 4 parent directories.
-    // Resolves both development builds (build/bin/bitcoin-tui → ../../lua/tabs) and
-    // installed layouts where lua/ sits next to the binary.
+    // Locate the directory holding Lua tab scripts (settings.lua etc.).
+    //   1. --lua-dir / `lua-dir` in config.toml takes precedence. It names the
+    //      lua/ root (the folder containing tabs/); the tab scripts are read
+    //      from <lua-dir>/tabs.
+    //   2. Otherwise auto-locate lua/tabs/ relative to the executable
     {
         namespace fs = std::filesystem;
-        try {
-            fs::path dir = fs::canonical(fs::path(argv[0])).parent_path();
-            for (int up = 0; up <= 3; ++up, dir = dir.parent_path()) {
-                fs::path candidate = dir / "lua" / "tabs";
-                if (fs::is_directory(candidate)) {
-                    lua_tabs_dir = candidate.string();
-                    break;
-                }
+        if (!lua_dir.empty()) {
+            std::error_code ec;
+            fs::path        tabs = fs::path(lua_dir) / "tabs";
+            if (fs::is_directory(tabs, ec)) {
+                lua_tabs_dir = tabs.string();
+            } else {
+                std::fprintf(stderr, "bitcoin-tui: --lua-dir has no tabs/ subdirectory: %s\n",
+                             lua_dir.c_str());
+                return 1;
             }
-        } catch (...) { // NOLINT(bugprone-empty-catch) — best-effort path resolution
-            // canonicalization can fail (e.g. argv[0] is not a real path); leave
-            // lua_tabs_dir empty and continue.
+        } else {
+            try {
+                // Resolve the real executable from the OS; argv[0] is just the bare
+                // name when launched from PATH (e.g. `sudo bitcoin-tui`), which would
+                // make canonical() fail and silently disable script auto-loading.
+                std::string exe = paths::executable_path();
+                fs::path dir = fs::canonical(fs::path(exe.empty() ? argv[0] : exe)).parent_path();
+                for (int up = 0; up <= 3; ++up, dir = dir.parent_path()) {
+                    fs::path candidate = dir / "lua" / "tabs";
+                    if (fs::is_directory(candidate)) {
+                        lua_tabs_dir = candidate.string();
+                        break;
+                    }
+                }
+            } catch (...) { // NOLINT(bugprone-empty-catch) — best-effort path resolution
+                // canonicalization can fail (e.g. argv[0] is not a real path); leave
+                // lua_tabs_dir empty and continue.
+            }
         }
 
         // Auto-register settings.lua unless the user already added it explicitly
@@ -553,10 +595,9 @@ int Application::run() const {
             // itself live; the CLI --no-settingstab default carries over when absent.
             bool settings_visible = show_settings_tab;
             {
-                namespace fs        = std::filesystem;
-                std::string cfg_dir = default_config_dir();
-                if (!cfg_dir.empty()) {
-                    std::ifstream f(fs::path(cfg_dir) / "config.toml");
+                std::string cfg_path = paths::config_file();
+                if (!cfg_path.empty()) {
+                    std::ifstream f(cfg_path);
                     std::string   line;
                     while (std::getline(f, line)) {
                         if (!line.empty() && line.back() == '\r')
