@@ -20,6 +20,7 @@
 #include "components/qr_overlay.hpp"
 #include "format.hpp"
 #include "luatable.hpp"
+#include "paths.hpp"
 #include "render.hpp"
 
 using namespace ftxui;
@@ -325,32 +326,7 @@ CellData LuaScript::to_key(LuaTable& self, const sol::object& v) {
 // Config file helpers (for btcui_config_path / btcui_config_read / btcui_config_write)
 // ============================================================================
 
-static std::string config_dir_path() {
-#ifdef _WIN32
-    const char* appdata = std::getenv("APPDATA");
-    if (appdata)
-        return std::string(appdata) + "\\bitcoin-tui";
-#elif defined(__APPLE__)
-    const char* home = std::getenv("HOME");
-    if (home)
-        return std::string(home) + "/Library/Application Support/bitcoin-tui";
-#else
-    const char* xdg = std::getenv("XDG_CONFIG_HOME");
-    if (xdg && xdg[0] != '\0')
-        return std::string(xdg) + "/bitcoin-tui";
-    const char* home = std::getenv("HOME");
-    if (home)
-        return std::string(home) + "/.config/bitcoin-tui";
-#endif
-    return "";
-}
-
-static std::string config_file_path() {
-    std::string dir = config_dir_path();
-    if (dir.empty())
-        return "";
-    return dir + static_cast<char>(std::filesystem::path::preferred_separator) + "config.toml";
-}
+static std::string config_file_path() { return paths::config_file(); }
 
 // Strip surrounding whitespace and quotes from a TOML scalar value
 static std::string parse_toml_scalar(std::string s) {
@@ -484,6 +460,9 @@ static bool write_config_table(const sol::table& cfg) {
         return false;
 
     std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+    // When run via sudo, hand the config dir back to the invoking user so it
+    // stays usable without sudo.
+    paths::chown_to_invoking_user(std::filesystem::path(path).parent_path().string());
 
     std::vector<std::string> existing;
     {
@@ -594,6 +573,8 @@ static bool write_config_table(const sol::table& cfg) {
         return false;
     for (const auto& line : out)
         f << line << "\n";
+    f.close();
+    paths::chown_to_invoking_user(path);
     return true;
 }
 

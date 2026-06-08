@@ -9,8 +9,8 @@ All notable changes to bitcoin-tui are documented here.
 - **Clickable footer bar** - footer hints are now rendered as a dedicated mouse-aware footer bar; click refresh/search/quit and tab-specific actions directly
 - **Lua scripting** - load custom tabs from Lua scripts with `--tab <path.lua>`; scripts can call a configurable set of RPC methods (allowlisted with `--allow-rpc`); optional debug log via `--debuglog`; bundled examples: slow-block monitor, wallet info, feerate diagram
 - **Lua footer buttons** - Lua scripts can register clickable footer actions with `btcui_add_footer_button(label, callback)`; `btcui_show_search_button(bool)` and `btcui_show_quit_button(bool)` let scripts hide the global search and quit buttons per-tab
-- **Config file support** - options can be set in a `config.toml` file (Linux: `$XDG_CONFIG_HOME/bitcoin-tui/` or `~/.config/bitcoin-tui/`; macOS: `~/Library/Application Support/bitcoin-tui/`; Windows: `%APPDATA%\bitcoin-tui\`); CLI flags override file values; path can be changed with `--config` -
-- CLI11 replaces hand-rolled argument parsing; adds `--help` grouping, `--config` file support, and stricter validation of unknown flags
+- **Config file support** - options can be set in a `config.toml` file (Linux: `$XDG_CONFIG_HOME/bitcoin-tui/` or `~/.config/bitcoin-tui/`; macOS: `~/Library/Application Support/bitcoin-tui/`; Windows: `%APPDATA%\bitcoin-tui\`); CLI flags override file values; path can be changed with `--config-file <path>` or `$BITCOIN_TUI_CONFIG_FILE`
+- CLI11 replaces hand-rolled argument parsing; adds `--help` grouping, `--config-file` support, and stricter validation of unknown flags
 - **Debug file output** — `--debug --debug-file <path>` writes internal debug data to a file (append mode); both flags must be used together
 - **Lua footer button keyboard shortcuts** - `btcui_add_footer_button` now auto-extracts the keyboard shortcut from `[x]` patterns in the label (e.g. `"[r] QR"` binds the `r` key automatically); an explicit key can also be passed as the optional third argument
 - **QR code overlay** - `btcui_open_qr_overlay(data)` opens a full-screen QR overlay; accepts a plain address string or a list of `{label, data}` items for a tabbed overlay; `left arrow/ right arrow` arrow keys switch between tabs; 
@@ -33,11 +33,18 @@ All notable changes to bitcoin-tui are documented here.
 - **Lua wallet RPC selection** - `btcui_rpc_wallet(name)` directs subsequent RPC calls at a specific named wallet
 - **Lua script options** - `btcui_option(name)` reads CLI/config-file values passed through to scripts
 - **Lua timestamp formats** - multiple timestamp formats now exposed to Lua scripts
+- **Lua tab directory override** - `--lua-dir <path>` (or `lua-dir` in `config.toml`) points at the `lua/` root; tab scripts are loaded from `<lua-dir>/tabs`, overriding the executable-relative auto-detection
+- **Explicit config file location** - `--config-file <path>` and `$BITCOIN_TUI_CONFIG_FILE` set the exact `config.toml` path for both reading and writing, independent of `$HOME`/XDG; useful for service users without a home directory
 
 ### Changed
 - FTXUI updated from v5.0.0 to v6.1.9
 - Footer hints are unified across tabs: context-sensitive actions now appear in one shared footer bar instead of each tab rendering its own status text
 - FetchContent dependencies are now pinned by SHA256 hash for reproducibility
+- When run via `sudo` as root, config and cache paths now resolve to the invoking user's home (`SUDO_USER`) instead of root's, and files created as root are chowned back to that user
+- bitcoin-tui now exits with a clear error instead of guessing a location when no config directory can be determined (e.g. `sudo -u <user>` for a user with no home directory); pass `--config-file` or set `$BITCOIN_TUI_CONFIG_FILE`
+
+### Fixed
+- Lua tab auto-detection (including the Settings tab) no longer silently fails when bitcoin-tui is launched from `PATH` (e.g. under `sudo`); the executable path is now resolved from the OS rather than `argv[0]`
 
 
 ## [0.8.3] - 2026-04-11
