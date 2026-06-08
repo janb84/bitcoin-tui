@@ -6,6 +6,21 @@
 
 #include "paths.hpp"
 
+// Portable env set/unset (POSIX setenv/unsetenv vs. MSVC _putenv_s).
+namespace {
+void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    // _putenv_s(name, "") removes the variable in the MSVC CRT.
+    ::_putenv_s(name, value ? value : "");
+#else
+    if (value)
+        ::setenv(name, value, 1);
+    else
+        ::unsetenv(name);
+#endif
+}
+} // namespace
+
 // RAII helper: set an env var for the duration of a scope and restore the
 // previous value (or unset) afterwards, so tests don't leak into each other.
 namespace {
@@ -16,17 +31,9 @@ class ScopedEnv {
             had_prev_ = true;
             prev_     = prev;
         }
-        if (value)
-            ::setenv(name, value, 1);
-        else
-            ::unsetenv(name);
+        set_env(name, value);
     }
-    ~ScopedEnv() {
-        if (had_prev_)
-            ::setenv(name_.c_str(), prev_.c_str(), 1);
-        else
-            ::unsetenv(name_.c_str());
-    }
+    ~ScopedEnv() { set_env(name_.c_str(), had_prev_ ? prev_.c_str() : nullptr); }
     ScopedEnv(const ScopedEnv&)            = delete;
     ScopedEnv& operator=(const ScopedEnv&) = delete;
 
@@ -92,12 +99,17 @@ TEST_CASE("config_file — override wins over everything") {
 TEST_CASE("config_file — derived from config_dir when no override") {
     ScopedOverride ov(""); // ensure no leaked override
     ScopedEnv      home("HOME", "/home/tester");
-#if !defined(_WIN32) && !defined(__APPLE__)
-    ScopedEnv xdg("XDG_CONFIG_HOME", nullptr);
-    CHECK(paths::config_file() == "/home/tester/.config/bitcoin-tui/config.toml");
+#if defined(_WIN32)
+    ScopedEnv appdata("APPDATA", "C:\\Users\\tester\\AppData\\Roaming");
+    // Compare as paths so the test is agnostic to the native separator.
+    CHECK(std::filesystem::path(paths::config_file()) ==
+          std::filesystem::path("C:/Users/tester/AppData/Roaming/bitcoin-tui/config.toml"));
 #elif defined(__APPLE__)
     CHECK(paths::config_file() ==
           "/home/tester/Library/Application Support/bitcoin-tui/config.toml");
+#else
+    ScopedEnv xdg("XDG_CONFIG_HOME", nullptr);
+    CHECK(paths::config_file() == "/home/tester/.config/bitcoin-tui/config.toml");
 #endif
 }
 
@@ -117,11 +129,16 @@ TEST_CASE("config_file — empty when no override and no usable HOME") {
 
 TEST_CASE("config_dir — appends the bitcoin-tui suffix under a home dir") {
     ScopedEnv home("HOME", "/home/tester");
-#if !defined(_WIN32) && !defined(__APPLE__)
-    ScopedEnv xdg("XDG_CONFIG_HOME", nullptr); // force the HOME fallback
-    CHECK(paths::config_dir() == "/home/tester/.config/bitcoin-tui");
+#if defined(_WIN32)
+    ScopedEnv appdata("APPDATA", "C:\\Users\\tester\\AppData\\Roaming");
+    // Compare as paths so the test is agnostic to the native separator.
+    CHECK(std::filesystem::path(paths::config_dir()) ==
+          std::filesystem::path("C:/Users/tester/AppData/Roaming/bitcoin-tui"));
 #elif defined(__APPLE__)
     CHECK(paths::config_dir() == "/home/tester/Library/Application Support/bitcoin-tui");
+#else
+    ScopedEnv xdg("XDG_CONFIG_HOME", nullptr); // force the HOME fallback
+    CHECK(paths::config_dir() == "/home/tester/.config/bitcoin-tui");
 #endif
 }
 
