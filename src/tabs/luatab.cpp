@@ -9,8 +9,7 @@
 #include <string>
 #include <vector>
 
-#include <ftxui/component/event.hpp>
-#include <ftxui/component/mouse.hpp>
+#include <ftxui/ftxui.hpp>
 #include <re2/re2.h>
 #include <sol/sol.hpp>
 

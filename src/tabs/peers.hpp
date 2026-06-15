@@ -5,8 +5,7 @@
 #include <thread>
 #include <vector>
 
-#include <ftxui/component/event.hpp>
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "guarded.hpp"
 #include "state.hpp"

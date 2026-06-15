@@ -12,7 +12,7 @@
 #include <string>
 #include <thread>
 
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "components/hit_list.hpp"
 #include "components/qr_item.hpp"

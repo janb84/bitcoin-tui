@@ -21,11 +21,7 @@ static void ensure_terminal();
 
 #include <CLI/CLI.hpp>
 
-#include <ftxui/component/app.hpp>
-#include <ftxui/component/component.hpp>
-#include <ftxui/component/event.hpp>
-#include <ftxui/dom/elements.hpp>
-#include <ftxui/screen/color.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "bitcoind.hpp"
 #include "components/footer_bar.hpp"

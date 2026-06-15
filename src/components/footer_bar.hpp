@@ -1,6 +1,6 @@
 #pragma once
 #include "footer_spec.hpp"
-#include <ftxui/component/component.hpp>
+#include <ftxui/ftxui.hpp>
 #include <functional>
 
 // on_search / on_quit are permanent callbacks set once at construction.

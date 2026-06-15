@@ -3,8 +3,7 @@
 #include <cstddef>
 #include <string>
 
-#include <ftxui/dom/elements.hpp>
-#include <ftxui/screen/color.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "state.hpp"
 

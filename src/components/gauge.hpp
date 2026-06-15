@@ -3,8 +3,7 @@
 #include <algorithm>
 #include <string>
 
-#include <ftxui/dom/elements.hpp>
-#include <ftxui/screen/color.hpp>
+#include <ftxui/ftxui.hpp>
 
 // Renders a horizontal progress bar: an optional bold prefix label, a flexing
 // gauge that fills the available width, and a trailing percentage. The frac is

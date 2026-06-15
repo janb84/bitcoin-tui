@@ -6,9 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include <ftxui/component/app.hpp>
-#include <ftxui/component/event.hpp>
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "components/footer_bar.hpp"
 #include "guarded.hpp"

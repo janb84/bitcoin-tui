@@ -140,9 +140,7 @@ endif()
 target_link_libraries(bitcoin-tui PRIVATE
   rpc_client_obj
   bitcoind_obj
-  ftxui::screen
-  ftxui::dom
-  ftxui::component
+  ftxui::ftxui
   re2::re2
   lua_static
   sol2

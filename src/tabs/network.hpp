@@ -4,7 +4,7 @@
 #include <thread>
 #include <vector>
 
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "guarded.hpp"
 #include "state.hpp"

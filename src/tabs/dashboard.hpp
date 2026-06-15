@@ -2,7 +2,7 @@
 
 #include <atomic>
 
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "tabs/tab.hpp"
 

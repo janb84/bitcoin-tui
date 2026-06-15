@@ -5,7 +5,7 @@
 #include <iomanip>
 #include <sstream>
 
-#include <ftxui/screen/terminal.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "components/address.hpp"
 #include "format.hpp"

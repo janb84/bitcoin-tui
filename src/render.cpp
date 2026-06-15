@@ -2,8 +2,7 @@
 #include <string>
 #include <utility>
 
-#include <ftxui/dom/elements.hpp>
-#include <ftxui/screen/color.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "components/gauge.hpp"
 #include "format.hpp"
