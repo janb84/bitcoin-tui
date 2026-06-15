@@ -5,7 +5,7 @@
 
 using namespace ftxui;
 
-DashboardTab::DashboardTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
+DashboardTab::DashboardTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen,
                            std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 

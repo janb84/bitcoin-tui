@@ -12,7 +12,7 @@
 #include <string>
 #include <thread>
 
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "components/hit_list.hpp"
 #include "components/qr_item.hpp"
@@ -75,10 +75,10 @@ struct RpcResponse;
 
 class LuaTab : public Tab {
   public:
-    LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-           std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
-           std::string debug_log_path, json tab_options = {},
-           std::span<const std::string> extra_rpcs = {}, std::ostream* debug_out = nullptr);
+    LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::App& screen, std::atomic<bool>& running,
+           Guarded<AppState>& state, int refresh_secs, std::string debug_log_path,
+           json tab_options = {}, std::span<const std::string> extra_rpcs = {},
+           std::ostream* debug_out = nullptr);
     ~LuaTab() override = default;
 
     std::string    name() const override;

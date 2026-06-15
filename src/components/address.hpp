@@ -2,7 +2,7 @@
 
 #include <string_view>
 
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 // Renders a Bitcoin address with alternating bold groups of 4 characters.
 inline ftxui::Element address_element(std::string_view addr) {

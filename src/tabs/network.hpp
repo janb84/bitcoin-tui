@@ -4,7 +4,7 @@
 #include <thread>
 #include <vector>
 
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "guarded.hpp"
 #include "state.hpp"
@@ -12,7 +12,7 @@
 
 class NetworkTab : public Tab {
   public:
-    NetworkTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
+    NetworkTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::App& screen,
                std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs);
     ~NetworkTab() override = default;
 

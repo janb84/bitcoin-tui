@@ -3,8 +3,7 @@
 #include <deque>
 #include <utility>
 
-#include <ftxui/dom/elements.hpp>
-#include <ftxui/screen/box.hpp>
+#include <ftxui/ftxui.hpp>
 
 namespace components {
 

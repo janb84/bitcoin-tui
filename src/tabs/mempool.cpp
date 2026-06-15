@@ -5,7 +5,7 @@
 #include <iomanip>
 #include <sstream>
 
-#include <ftxui/screen/terminal.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "components/address.hpp"
 #include "format.hpp"
@@ -125,7 +125,7 @@ static Element render_mempool(const AppState& s, int mempool_sel) {
     });
 }
 
-MempoolTab::MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
+MempoolTab::MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen,
                        std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 
@@ -336,8 +336,8 @@ Element MempoolTab::render(const AppState& snap) {
 
     std::string overlay_title =
         result_kind == TxResultKind::Block ? " Block Search " : " Transaction Search ";
-    auto overlay_panel = build_titled_panel(std::move(overlay_title), txid_abbrev,
-                                            std::move(result_rows), kOverlayPanelWidth);
+    auto overlay_panel =
+        build_titled_panel(overlay_title, txid_abbrev, std::move(result_rows), kOverlayPanelWidth);
 
     if (ss.outputs_overlay_open && !ss.vout_list.empty()) {
         return render_io_overlay_panel(

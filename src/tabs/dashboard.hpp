@@ -2,13 +2,13 @@
 
 #include <atomic>
 
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "tabs/tab.hpp"
 
 class DashboardTab : public Tab {
   public:
-    DashboardTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
+    DashboardTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::App& screen,
                  std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs);
     ~DashboardTab() override = default;
 

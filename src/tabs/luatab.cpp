@@ -9,8 +9,7 @@
 #include <string>
 #include <vector>
 
-#include <ftxui/component/event.hpp>
-#include <ftxui/component/mouse.hpp>
+#include <ftxui/ftxui.hpp>
 #include <re2/re2.h>
 #include <sol/sol.hpp>
 
@@ -1256,10 +1255,9 @@ static std::set<std::string> make_allowlist(std::span<const std::string> extra) 
     return allowlist;
 }
 
-LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-               std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
-               std::string debug_log_path, json tab_options,
-               std::span<const std::string> extra_rpcs, std::ostream* debug_out)
+LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen, std::atomic<bool>& running,
+               Guarded<AppState>& state, int refresh_secs, std::string debug_log_path,
+               json tab_options, std::span<const std::string> extra_rpcs, std::ostream* debug_out)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs, debug_out),
       debug_log_path_(std::move(debug_log_path)), tab_options_(std::move(tab_options)),
       rpc_allowlist_(make_allowlist(extra_rpcs)) {

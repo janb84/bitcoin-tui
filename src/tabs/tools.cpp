@@ -133,8 +133,8 @@ static Element render_tools(const AppState& snap, const BroadcastState& bs, int 
     return vbox(std::move(layout)) | flex;
 }
 
-ToolsTab::ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                   std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
+ToolsTab::ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen, std::atomic<bool>& running,
+                   Guarded<AppState>& state, int refresh_secs,
                    std::function<void(const std::string&, bool)> trigger_search)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
       trigger_search_(std::move(trigger_search)) {}

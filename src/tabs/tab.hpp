@@ -6,9 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include <ftxui/component/event.hpp>
-#include <ftxui/component/screen_interactive.hpp>
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "components/footer_bar.hpp"
 #include "guarded.hpp"
@@ -17,9 +15,8 @@
 
 class Tab {
   public:
-    Tab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-        std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
-        std::ostream* debug_out = nullptr)
+    Tab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::App& screen, std::atomic<bool>& running,
+        Guarded<AppState>& state, int refresh_secs, std::ostream* debug_out = nullptr)
         : cfg_{std::move(cfg)}, auth_{auth}, screen_{screen}, running_{running}, state_{state},
           refresh_secs_{refresh_secs}, debug_out_{debug_out} {}
     virtual ~Tab() = default;
@@ -31,13 +28,13 @@ class Tab {
     virtual void           join() = 0;
 
   protected:
-    RpcConfig                 cfg_;
-    Guarded<RpcAuth>&         auth_;
-    ftxui::ScreenInteractive& screen_;
-    std::atomic<bool>&        running_;
-    Guarded<AppState>&        state_;
-    int                       refresh_secs_;
-    std::ostream*             debug_out_;
+    RpcConfig          cfg_;
+    Guarded<RpcAuth>&  auth_;
+    ftxui::App&        screen_;
+    std::atomic<bool>& running_;
+    Guarded<AppState>& state_;
+    int                refresh_secs_;
+    std::ostream*      debug_out_;
 
     FooterButton refresh_btn(const AppState& snap) const {
         return {snap.refreshing ? " \u21bb refreshing"

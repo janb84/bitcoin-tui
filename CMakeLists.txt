@@ -24,8 +24,8 @@ endif()
 # FTXUI
 FetchContent_Declare(
   ftxui
-  URL      https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v6.1.9.tar.gz
-  URL_HASH SHA256=45819c1e54914783d4a1ca5633885035d74146778a1f74e1213cdb7b76340e71
+  URL      https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v7.0.0.tar.gz
+  URL_HASH SHA256=14bef1f8caff548c49af8eeadfca21910d66e93e68237f0c3d20236b60c01e7e
 )
 set(FTXUI_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -140,9 +140,7 @@ endif()
 target_link_libraries(bitcoin-tui PRIVATE
   rpc_client_obj
   bitcoind_obj
-  ftxui::screen
-  ftxui::dom
-  ftxui::component
+  ftxui::ftxui
   re2::re2
   lua_static
   sol2

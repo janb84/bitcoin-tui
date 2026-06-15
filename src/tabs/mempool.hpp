@@ -6,8 +6,7 @@
 #include <thread>
 #include <vector>
 
-#include <ftxui/component/event.hpp>
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 #include "guarded.hpp"
 #include "state.hpp"
@@ -15,7 +14,7 @@
 
 class MempoolTab : public Tab {
   public:
-    MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
+    MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::App& screen,
                std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs);
     ~MempoolTab() override = default;
 

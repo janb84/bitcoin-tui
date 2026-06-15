@@ -37,7 +37,7 @@ All notable changes to bitcoin-tui are documented here.
 - **Explicit config file location** - `--config-file <path>` and `$BITCOIN_TUI_CONFIG_FILE` set the exact `config.toml` path for both reading and writing, independent of `$HOME`/XDG; useful for service users without a home directory
 
 ### Changed
-- FTXUI updated from v5.0.0 to v6.1.9
+- FTXUI updated from v5.0.0 to v7.0.0;
 - Footer hints are unified across tabs: context-sensitive actions now appear in one shared footer bar instead of each tab rendering its own status text
 - FetchContent dependencies are now pinned by SHA256 hash for reproducibility
 - When run via `sudo` as root, config and cache paths now resolve to the invoking user's home (`SUDO_USER`) instead of root's, and files created as root are chowned back to that user

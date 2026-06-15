@@ -1,9 +1,6 @@
 #include "footer_bar.hpp"
 #include "hit_list.hpp"
-#include <ftxui/component/component_base.hpp>
-#include <ftxui/component/event.hpp>
-#include <ftxui/component/mouse.hpp>
-#include <ftxui/dom/elements.hpp>
+#include <ftxui/ftxui.hpp>
 
 using namespace ftxui;
 
