@@ -14,8 +14,8 @@
 
 class PeersTab : public Tab {
   public:
-    PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-             std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs);
+    PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::App& screen, std::atomic<bool>& running,
+             Guarded<AppState>& state, int refresh_secs);
     ~PeersTab() override = default;
 
     std::string    name() const override { return "Peers"; }

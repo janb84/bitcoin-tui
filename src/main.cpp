@@ -21,9 +21,9 @@ static void ensure_terminal();
 
 #include <CLI/CLI.hpp>
 
+#include <ftxui/component/app.hpp>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
-#include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 
@@ -471,7 +471,7 @@ int Application::run() const {
     ensure_terminal();
 #endif
 
-    auto screen = ScreenInteractive::Fullscreen();
+    auto screen = App::Fullscreen();
     running     = true;
 
     // Global search bar state

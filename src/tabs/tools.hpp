@@ -14,8 +14,8 @@
 
 class ToolsTab : public Tab {
   public:
-    ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-             std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
+    ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::App& screen, std::atomic<bool>& running,
+             Guarded<AppState>& state, int refresh_secs,
              std::function<void(const std::string&, bool)> trigger_search);
     ~ToolsTab() override = default;
 

@@ -68,7 +68,7 @@ static Element render_network(const AppState& s, const std::vector<SoftFork>& fo
            flex;
 }
 
-NetworkTab::NetworkTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
+NetworkTab::NetworkTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen,
                        std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 

@@ -319,8 +319,8 @@ static Element render_ban_list_panel(const std::vector<BannedEntry>& entries, bo
     return vbox(std::move(rows)) | border | size(WIDTH, EQUAL, 64);
 }
 
-PeersTab::PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                   std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
+PeersTab::PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen, std::atomic<bool>& running,
+                   Guarded<AppState>& state, int refresh_secs)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs) {}
 
 FooterSpec PeersTab::footer_buttons(const AppState& snap) {

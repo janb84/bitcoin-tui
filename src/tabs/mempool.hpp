@@ -15,7 +15,7 @@
 
 class MempoolTab : public Tab {
   public:
-    MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
+    MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::App& screen,
                std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs);
     ~MempoolTab() override = default;
 
