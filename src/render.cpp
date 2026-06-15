@@ -38,10 +38,10 @@ WindowSlice centered_window(int count, int selected, int max_visible) {
     return out;
 }
 
-Element build_titled_panel(std::string title, const std::string& right_label, Elements rows,
+Element build_titled_panel(const std::string& title, const std::string& right_label, Elements rows,
                            int width, Color title_color) {
     Elements header = {
-        text(std::move(title)) | bold | color(title_color),
+        text(title) | bold | color(title_color),
         filler(),
     };
     if (!right_label.empty())

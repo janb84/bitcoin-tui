@@ -21,7 +21,7 @@ struct WindowSlice {
 std::string    ellipsize_middle(const std::string& value, size_t max_len, size_t prefix,
                                 size_t suffix);
 WindowSlice    centered_window(int count, int selected, int max_visible);
-ftxui::Element build_titled_panel(std::string title, const std::string& right_label,
+ftxui::Element build_titled_panel(const std::string& title, const std::string& right_label,
                                   ftxui::Elements rows, int width,
                                   ftxui::Color title_color = ftxui::Color::Gold1);
 ftxui::Element center_overlay(ftxui::Element body);

@@ -336,8 +336,8 @@ Element MempoolTab::render(const AppState& snap) {
 
     std::string overlay_title =
         result_kind == TxResultKind::Block ? " Block Search " : " Transaction Search ";
-    auto overlay_panel = build_titled_panel(std::move(overlay_title), txid_abbrev,
-                                            std::move(result_rows), kOverlayPanelWidth);
+    auto overlay_panel =
+        build_titled_panel(overlay_title, txid_abbrev, std::move(result_rows), kOverlayPanelWidth);
 
     if (ss.outputs_overlay_open && !ss.vout_list.empty()) {
         return render_io_overlay_panel(
