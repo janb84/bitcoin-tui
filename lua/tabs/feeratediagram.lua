@@ -6,6 +6,12 @@
 --
 -- Requires Bitcoin Core v31+ (for the getmempoolfeeratediagram RPC).
 
+-- Lua 5.5 strict globals: a typo in any name below is caught at load time.
+global btcui_add_footer_button, btcui_error, btcui_on_resize, btcui_option,
+       btcui_rpc, btcui_screen_size, btcui_set_interval, btcui_set_name,
+       btcui_summary, btcui_table, btcui_wake, ipairs, math, pcall, string,
+       table, tonumber
+
 btcui_set_name("Feerate")
 
 local REFRESH     = tonumber(btcui_option("refresh", 5))

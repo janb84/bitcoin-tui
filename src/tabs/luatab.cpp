@@ -205,6 +205,15 @@ class LuaScript {
   public:
     LuaScript();
     ~LuaScript() {
+        // Coroutines still suspended mid-RPC are abandoned at shutdown. Close them
+        // with Lua 5.5's lua_closethread so their to-be-closed (`<close>`) variables
+        // are finalized — plain GC at lua_close would not run those handlers.
+        for (auto& [id, pc] : pending_) {
+            if (pc.co)
+                lua_closethread(pc.co, L_);
+            if (pc.thread_ref != LUA_NOREF)
+                luaL_unref(L_, LUA_REGISTRYINDEX, pc.thread_ref);
+        }
         // Every LuaRef below anchors a value in the Lua registry and calls
         // luaL_unref on the state when destroyed. They must be released BEFORE
         // lua_close(L_), or that unref runs on a freed state (use-after-free).
@@ -279,18 +288,27 @@ LuaScript::LuaScript() {
     // Let C++ exceptions thrown in bound functions surface as Lua errors
     // (our Lua is built in C/longjmp mode).
     luabridge::enableExceptions(L_);
-    luaL_dostring(L_, R"(
-        function btcui_rpc(method, ...)
+    // btcui_rpc / btcui_rpc_wallet are intentional API globals — declare them with
+    // Lua 5.5's `global` keyword rather than relying on global-by-default. Note that
+    // any `global` declaration voids global-by-default for the rest of the chunk, so
+    // the stdlib globals these bodies reference (coroutine, error) must be declared too.
+    if (luaL_dostring(L_, R"(
+        global coroutine, error
+        global function btcui_rpc(method, ...)
             local result, err = coroutine.yield('rpc', method, {...})
             if err then error(err, 2) end
             return result
         end
-        function btcui_rpc_wallet(wallet, method, ...)
+        global function btcui_rpc_wallet(wallet, method, ...)
             local result, err = coroutine.yield('rpc_wallet', wallet, method, {...})
             if err then error(err, 2) end
             return result
         end
-    )");
+    )") != LUA_OK) {
+        if (debug_out)
+            *debug_out << "[lua bootstrap error] " << lua_tostring(L_, -1) << "\n" << std::flush;
+        lua_pop(L_, 1);
+    }
 }
 
 void LuaScript::add_log_watch(const std::string& pattern, luabridge::LuaRef fn,
@@ -656,9 +674,10 @@ void LuaTab::register_lua_api(LuaScript& script) {
     // Note: a trailing `lua_State*` parameter is filled with the calling state by
     // LuaBridge and not counted as a Lua argument (Stack<lua_State*> ignores its
     // index), so it must come last to keep the real args' stack positions aligned.
-    luabridge::getGlobalNamespace(L).addFunction(
-        "btcui_error",
-        [&script](std::string msg, lua_State* L) { script.add_warning(lua_source_id(L), msg); });
+    luabridge::getGlobalNamespace(L).addFunction("btcui_error",
+                                                 [&script](const std::string& msg, lua_State* L) {
+                                                     script.add_warning(lua_source_id(L), msg);
+                                                 });
 
     luabridge::getGlobalNamespace(L)
         .beginClass<LuaTable>("LuaTable")
@@ -706,7 +725,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
         });
 
     luabridge::getGlobalNamespace(L).addFunction(
-        "btcui_table", [this](lb::LuaRef opts) -> std::shared_ptr<LuaTable> {
+        "btcui_table", [this](const lb::LuaRef& opts) -> std::shared_ptr<LuaTable> {
             lb::LuaRef             col_defs = opts["columns"];
             std::vector<ColumnDef> cols;
             for (int i = 1; i <= static_cast<int>(col_defs.length()); ++i) {
@@ -759,7 +778,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
         .endClass();
 
     luabridge::getGlobalNamespace(L).addFunction(
-        "btcui_summary", [this](lb::LuaRef opts) -> std::shared_ptr<LuaSummary> {
+        "btcui_summary", [this](const lb::LuaRef& opts) -> std::shared_ptr<LuaSummary> {
             lb::LuaRef             field_defs = opts["fields"];
             std::vector<ColumnDef> fields;
             size_t                 max_label = 0;
@@ -851,7 +870,8 @@ void LuaTab::register_lua_api(LuaScript& script) {
 
     luabridge::getGlobalNamespace(L).addFunction(
         "btcui_option",
-        [this](std::string key, std::optional<lb::LuaRef> default_val, lua_State* L) -> lb::LuaRef {
+        [this](const std::string& key, std::optional<lb::LuaRef> default_val,
+               lua_State* L) -> lb::LuaRef {
             if (tab_options_.contains(key))
                 return lb::LuaRef(L, tab_options_[key].get<std::string>());
             if (default_val)
@@ -859,12 +879,12 @@ void LuaTab::register_lua_api(LuaScript& script) {
             throw std::runtime_error("required tab option '" + key + "' not set");
         });
 
-    luabridge::getGlobalNamespace(L).addFunction("btcui_address",
-                                                 [](std::string addr, lua_State* L) -> lb::LuaRef {
-                                                     lb::LuaRef t   = lb::newTable(L);
-                                                     t["__address"] = addr;
-                                                     return t;
-                                                 });
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_address", [](const std::string& addr, lua_State* L) -> lb::LuaRef {
+            lb::LuaRef t   = lb::newTable(L);
+            t["__address"] = addr;
+            return t;
+        });
 
     luabridge::getGlobalNamespace(L).addFunction(
         "btcui_gauge", [](double frac, std::optional<lb::LuaRef> opts, lua_State* L) -> lb::LuaRef {
@@ -890,7 +910,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
     });
 
     luabridge::getGlobalNamespace(L).addFunction(
-        "btcui_list_files", [](std::string dir, lua_State* L) -> lb::LuaRef {
+        "btcui_list_files", [](const std::string& dir, lua_State* L) -> lb::LuaRef {
             lb::LuaRef      result = lb::newTable(L);
             std::error_code ec;
             if (!std::filesystem::is_directory(dir, ec))
@@ -1365,9 +1385,10 @@ LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
         return;
     }
     // btcui_set_name is only valid during script load; replace it afterwards.
-    luabridge::getGlobalNamespace(script->lua()).addFunction("btcui_set_name", [](std::string) {
-        throw std::runtime_error("btcui_set_name() can only be called during script loading");
-    });
+    luabridge::getGlobalNamespace(script->lua())
+        .addFunction("btcui_set_name", [](const std::string&) {
+            throw std::runtime_error("btcui_set_name() can only be called during script loading");
+        });
     lua_thread_ = std::thread(&LuaTab::lua_thread_fn, this, std::move(script));
 }
 
