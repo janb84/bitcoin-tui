@@ -35,7 +35,6 @@ static void ensure_terminal();
 #include "tabs/dashboard.hpp"
 #include "tabs/luatab.hpp"
 #include "tabs/mempool.hpp"
-#include "tabs/network.hpp"
 #include "tabs/peers.hpp"
 #include "tabs/tools.hpp"
 
@@ -479,7 +478,6 @@ int Application::run() const {
     // Tab objects (mempool first — tools captures a reference to it via lambda)
     DashboardTab dashboard_tab(cfg, auth, screen, running, state, refresh_secs);
     MempoolTab   mempool_tab(cfg, auth, screen, running, state, refresh_secs);
-    NetworkTab   network_tab(cfg, auth, screen, running, state, refresh_secs);
     PeersTab     peers_tab(cfg, auth, screen, running, state, refresh_secs);
     ToolsTab     tools_tab(
         cfg, auth, screen, running, state, refresh_secs,
@@ -543,7 +541,7 @@ int Application::run() const {
                 screen.PostEvent(Event::Custom);
             });
         }
-        tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
+        tabs = {&dashboard_tab, &mempool_tab, &peers_tab, &tools_tab};
         for (auto& p : lua_tab_ptrs)
             tabs.push_back(p.get());
         tab_labels.clear();
