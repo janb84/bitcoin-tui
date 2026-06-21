@@ -1,3 +1,8 @@
+-- Lua 5.5 strict globals: a typo in any name below is caught at load time.
+global btcui_add_footer_button, btcui_rpc, btcui_set_interval, btcui_set_name,
+       btcui_table, btcui_wake, btcui_watch_log, ipairs, math, pairs, string,
+       table, tonumber, tostring, type
+
 btcui_set_name("Slow Blocks")
 
 -- Constants

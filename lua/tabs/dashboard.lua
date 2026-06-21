@@ -7,6 +7,10 @@
 -- Load with: --tab lua/examples/dashboard.lua
 -- Optional refresh interval (seconds): --tab lua/examples/dashboard.lua,interval=2
 
+-- Lua 5.5 strict globals: a typo in any name below is caught at load time.
+global btcui_gauge, btcui_option, btcui_rpc, btcui_set_interval, btcui_set_name,
+       btcui_summary, ipairs, math, string, tonumber, tostring
+
 btcui_set_name("Dashboard")
 
 local REFRESH = tonumber(btcui_option("interval", "5")) or 5

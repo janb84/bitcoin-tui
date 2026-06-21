@@ -6,6 +6,13 @@
 --- Note: hiding the Settings tab takes effect immediately; re-enable it by
 ---       starting with --settingstab=true (or removing settingstab from config).
 
+-- Lua 5.5 strict globals: declaring every global we reference voids
+-- global-by-default for this chunk, so a typo in any btcui_* or stdlib
+-- name is caught at load time instead of failing silently at runtime.
+global btcui_add_footer_button, btcui_config_path, btcui_config_read,
+       btcui_config_write, btcui_list_files, btcui_on_select, btcui_reload_tabs,
+       btcui_script_dir, btcui_set_name, btcui_summary, btcui_table, ipairs, table
+
 btcui_set_name("Settings")
 
 local config_path = btcui_config_path()

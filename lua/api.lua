@@ -1,6 +1,14 @@
 --- bitcoin-tui Lua Tab API
 --- Type definitions for IDE autocompletion (LuaLS / lua-language-server).
 --- Drop this file into your workspace so your editor knows the API.
+--- Requires a Lua 5.5 runtime setting (the `btcui_*` API is declared with the
+--- 5.5 `global` keyword).
+---
+--- Strict globals (optional, recommended): bitcoin-tui runs on Lua 5.5, so a tab
+--- script can declare the names it uses up front to void global-by-default — then
+--- a typo in any btcui_* or stdlib name is a load-time error instead of a silent
+--- nil. The bundled tabs in lua/tabs/ do this; e.g.:
+---   global btcui_table, btcui_summary, btcui_set_name, ipairs, string
 
 ----------------------------------------------------------------------
 -- Global functions — available at top level and in callbacks
@@ -14,7 +22,7 @@
 ---   columns   ColumnDef[]  Column definitions (required)
 ---@param opts TableOpts
 ---@return Table
-function btcui_table(opts) end
+global function btcui_table(opts) end
 
 --- Register a periodic timer callback. The callback runs as a
 --- coroutine — btcui_rpc() yields transparently within it.
@@ -22,14 +30,14 @@ function btcui_table(opts) end
 ---@param seconds number   Interval in seconds
 ---@param callback function  Called each interval
 ---@return TimerHandle
-function btcui_set_interval(seconds, callback) end
+global function btcui_set_interval(seconds, callback) end
 
 --- Wake a timer so it fires on the next loop iteration, regardless
 --- of its normal interval. If the timer's callback is currently
 --- running (waiting for an RPC), the wake is deferred until the
 --- current invocation finishes.
 ---@param handle TimerHandle
-function btcui_wake(handle) end
+global function btcui_wake(handle) end
 
 --- Set the tab name displayed in the tab bar. Can only be called
 --- during script loading (top-level code); calling it from a
@@ -38,7 +46,7 @@ function btcui_wake(handle) end
 --- Note: if the user specified t=... in the --tab option, that
 --- takes precedence over btcui_set_name().
 ---@param name string
-function btcui_set_name(name) end
+global function btcui_set_name(name) end
 
 --- Read a tab option set via --tab script.lua,key=val,...
 --- Returns the string value if set. If not set, returns default_val.
@@ -47,7 +55,7 @@ function btcui_set_name(name) end
 ---@param key string
 ---@param default_val? any   Returned when the option is not set
 ---@return any
-function btcui_option(key, default_val) end
+global function btcui_option(key, default_val) end
 
 --- Register a log pattern callback. The pattern uses RE2 syntax and
 --- is matched against the message portion of each debug.log line.
@@ -56,7 +64,7 @@ function btcui_option(key, default_val) end
 ---@param pattern string           RE2 pattern (capture groups become extra args)
 ---@param callback function        fn(ts, msg, ...)
 ---@param backlog? integer         Bytes of historical log to process (default: 0)
-function btcui_watch_log(pattern, callback, backlog) end
+global function btcui_watch_log(pattern, callback, backlog) end
 
 --- Call a Bitcoin Core RPC method. Can only be called from within a
 --- btcui_set_interval callback (yields the coroutine). The RPC is
@@ -67,7 +75,7 @@ function btcui_watch_log(pattern, callback, backlog) end
 ---@param method string   RPC method name (must be in the allowlist)
 ---@param ... any         Method parameters
 ---@return any
-function btcui_rpc(method, ...) end
+global function btcui_rpc(method, ...) end
 
 --- Call a Bitcoin Core RPC method for a specific wallet. Can only be called from within a
 --- btcui_set_interval callback (yields the coroutine). The RPC is
@@ -79,7 +87,7 @@ function btcui_rpc(method, ...) end
 ---@param method string   RPC method name (must be in the allowlist)
 ---@param ... any         Method parameters
 ---@return any
-function btcui_rpc_wallet(wallet, method, ...) end
+global function btcui_rpc_wallet(wallet, method, ...) end
 
 --- Create a summary panel for display. Returns a Summary object.
 --- Summary panels show compact "Label : Value" lines and are
@@ -89,16 +97,16 @@ function btcui_rpc_wallet(wallet, method, ...) end
 ---   fields  FieldDef[]    Field definitions (required)
 ---@param opts SummaryOpts
 ---@return Summary
-function btcui_summary(opts) end
+global function btcui_summary(opts) end
 
 --- Set the status line hint text (displayed in the tab bar).
 ---@param text string
-function btcui_key_hint(text) end
+global function btcui_key_hint(text) end
 
 --- Display a warning message in the ERRORS pane. The message includes
 --- the caller's source location and ages out after 20 seconds.
 ---@param msg string
-function btcui_error(msg) end
+global function btcui_error(msg) end
 
 --- Register a clickable button in the footer bar. Can only be called
 --- during script loading (top-level code). The callback is invoked on
@@ -109,7 +117,7 @@ function btcui_error(msg) end
 ---@param label string       Button label text (e.g. "[r] Refresh")
 ---@param callback function  Called when the button is clicked or key is pressed
 ---@param key? string        Optional explicit keyboard shortcut (single character)
-function btcui_add_footer_button(label, callback, key) end
+global function btcui_add_footer_button(label, callback, key) end
 
 --- Open a QR code overlay. Accepts either a single string or a list of
 --- items for a tabbed overlay. The overlay replaces the footer with a
@@ -126,17 +134,17 @@ function btcui_add_footer_button(label, callback, key) end
 ---   })
 ---
 ---@param data string|{label:string, data:string}[]
-function btcui_open_qr_overlay(data) end
+global function btcui_open_qr_overlay(data) end
 
 --- Show or hide the global "/ search" button in the footer bar for this tab.
 --- Defaults to true. Can be called at any time (e.g. when an overlay is active).
 ---@param show boolean
-function btcui_show_search_button(show) end
+global function btcui_show_search_button(show) end
 
 --- Show or hide the global "[q] quit" button in the footer bar for this tab.
 --- Defaults to true. Can be called at any time.
 ---@param show boolean
-function btcui_show_quit_button(show) end
+global function btcui_show_quit_button(show) end
 
 --- Return the current terminal dimensions in cells (width, height).
 --- The value reflects the most recent render and updates as the user
@@ -145,7 +153,7 @@ function btcui_show_quit_button(show) end
 --- changes immediately instead of on the next refresh tick.
 ---@return integer width
 ---@return integer height
-function btcui_screen_size() end
+global function btcui_screen_size() end
 
 --- Register a callback that fires whenever the terminal is resized.
 --- The callback receives the new (width, height). Only one handler
@@ -156,7 +164,7 @@ function btcui_screen_size() end
 ---   btcui_on_resize(function(w, h) btcui_wake(timer) end)
 ---
 ---@param callback fun(width: integer, height: integer)
-function btcui_on_resize(callback) end
+global function btcui_on_resize(callback) end
 
 --- Register a callback that fires when a table row is activated — either by
 --- pressing Enter while the row is selected, or by clicking the row with the
@@ -169,7 +177,7 @@ function btcui_on_resize(callback) end
 ---   end)
 ---
 ---@param callback fun(key: string)
-function btcui_on_select(callback) end
+global function btcui_on_select(callback) end
 
 --- Return a styled address cell value. The address is rendered with
 --- alternating bold groups of 4 characters (e.g. "bc1q ar0s rr7x …"),
@@ -182,7 +190,7 @@ function btcui_on_select(callback) end
 ---
 ---@param addr string   Raw address string (empty string renders as "N/A")
 ---@return StyledAddress
-function btcui_address(addr) end
+global function btcui_address(addr) end
 
 --- Opaque styled-address value returned by btcui_address().
 --- Pass it wherever a cell value is accepted.
@@ -202,7 +210,7 @@ function btcui_address(addr) end
 ---@param frac number      Fraction in [0, 1]
 ---@param opts? { color?: string, prefix?: string }
 ---@return StyledGauge
-function btcui_gauge(frac, opts) end
+global function btcui_gauge(frac, opts) end
 
 --- Opaque styled-gauge value returned by btcui_gauge().
 --- Pass it wherever a cell value is accepted.
@@ -325,7 +333,7 @@ function Summary:set(data) end
 --- Useful for locating sibling scripts or data files. Returns "" when the
 --- script path is unavailable.
 ---@return string
-function btcui_script_dir() end
+global function btcui_script_dir() end
 
 --- List all .lua files in the given directory. Returns an array of
 --- {name, path} tables sorted alphabetically by name, where `name` is
@@ -333,12 +341,12 @@ function btcui_script_dir() end
 --- Returns an empty array when the directory does not exist.
 ---@param dir string   Absolute path to the directory to scan
 ---@return {name: string, path: string}[]
-function btcui_list_files(dir) end
+global function btcui_list_files(dir) end
 
 --- Return the absolute path to the bitcoin-tui config file (config.toml),
 --- or an empty string when the platform config directory cannot be determined.
 ---@return string
-function btcui_config_path() end
+global function btcui_config_path() end
 
 --- Read config.toml and return the relevant fields as a Lua table.
 --- Returns defaults when the file does not exist or a field is absent.
@@ -350,7 +358,7 @@ function btcui_config_path() end
 ---   host       string     RPC host (default: "127.0.0.1")
 ---   port       integer    RPC port (default: 8332)
 ---@return { exists: boolean, tabs: string[], allow_rpc: string[], refresh: integer, host: string, port: integer }
-function btcui_config_read() end
+global function btcui_config_read() end
 
 --- Write config.toml, updating the managed keys (tabs, allow_rpc, refresh)
 --- while preserving all other settings (host, port, credentials, etc.).
@@ -367,14 +375,14 @@ function btcui_config_read() end
 --- the next restart.
 ---@param cfg { tabs: string[], allow_rpc?: string[], refresh?: integer }
 ---@return boolean
-function btcui_config_write(cfg) end
+global function btcui_config_write(cfg) end
 
 --- Re-read config.toml and reconcile the running Lua tabs with its `tab` list:
 --- newly added tabs are loaded, removed tabs are unloaded, and surviving tabs
 --- keep their state. Auto-injected tabs (e.g. Settings) are never removed.
 --- Typically called right after btcui_config_write() to apply changes live.
 --- Safe to call from footer-button and timer callbacks.
-function btcui_reload_tabs() end
+global function btcui_reload_tabs() end
 
 --- Show a modal text-input overlay. The callback receives the entered string on
 --- confirm (Enter), or nil when the user cancels (Esc). Can be called from
@@ -389,7 +397,7 @@ function btcui_reload_tabs() end
 ---@param label     string     Prompt text shown above the input field
 ---@param default   string     Pre-filled value (use "" for an empty field)
 ---@param on_confirm fun(value: string|nil)  Called with the typed string or nil
-function btcui_text_input(label, default, on_confirm) end
+global function btcui_text_input(label, default, on_confirm) end
 
 --- Column types:
 ---   "string"    — displayed as-is, left-aligned

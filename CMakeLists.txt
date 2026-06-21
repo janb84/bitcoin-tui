@@ -54,11 +54,11 @@ set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(RE2_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(re2)
 
-# Lua 5.4
+# Lua 5.5
 FetchContent_Declare(
   lua
-  URL      https://github.com/lua/lua/archive/refs/tags/v5.4.8.tar.gz
-  URL_HASH SHA256=d85b70a65f43c5d2254944d58d625e822c8e2e10d9c6a3bd9b5b657e46376a19
+  URL      https://github.com/lua/lua/archive/refs/tags/v5.5.0.tar.gz
+  URL_HASH SHA256=a33484f7ce4c14e12ea4d51cc5a7353bff2796a8074004b96ae2dc246f33f16e
 )
 FetchContent_MakeAvailable(lua)
 
@@ -75,13 +75,15 @@ if(NOT WIN32)
   target_compile_definitions(lua_static PRIVATE LUA_USE_POSIX)
 endif()
 
-# Sol2
+# LuaBridge3
+# Its test/benchmark targets auto-disable when pulled in via FetchContent (they
+# are gated on being the top-level project). Exposes the `LuaBridge` INTERFACE target.
 FetchContent_Declare(
-  sol2
-  URL      https://github.com/ThePhD/sol2/archive/refs/tags/v3.5.0.tar.gz
-  URL_HASH SHA256=86c0f6d2836b184a250fc2907091c076bf53c9603dd291eaebade36cc342e13c
+  luabridge3
+  URL      https://github.com/kunitoki/LuaBridge3/archive/refs/tags/3.0-rc12.tar.gz
+  URL_HASH SHA256=0c15204d5ca2eefa760aa2a8b6543e6ec47231723ee9ed2819c9c9a9cb319e69
 )
-FetchContent_MakeAvailable(sol2)
+FetchContent_MakeAvailable(luabridge3)
 
 # CLI11
 FetchContent_Declare(
@@ -143,7 +145,7 @@ target_link_libraries(bitcoin-tui PRIVATE
   ftxui::ftxui
   re2::re2
   lua_static
-  sol2
+  LuaBridge
   CLI11::CLI11
 )
 
