@@ -37,6 +37,7 @@ All notable changes to bitcoin-tui are documented here.
 - **Explicit config file location** - `--config-file <path>` and `$BITCOIN_TUI_CONFIG_FILE` set the exact `config.toml` path for both reading and writing, independent of `$HOME`/XDG; useful for service users without a home directory
 
 ### Changed
+- The Network tab is no longer a built-in C++ tab; it has been removed from the executable and replaced by `lua/tabs/network.lua` (load on demand with `--tab`); `src/tabs/network.cpp` and `src/tabs/network.hpp` are no longer compiled
 - FTXUI updated from v5.0.0 to v7.0.0;
 - Footer hints are unified across tabs: context-sensitive actions now appear in one shared footer bar instead of each tab rendering its own status text
 - FetchContent dependencies are now pinned by SHA256 hash for reproducibility
