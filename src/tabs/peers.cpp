@@ -401,7 +401,7 @@ void PeersTab::trigger_peer_action(const std::string& addr, bool is_ban) {
         return;
     peer_action_in_flight = true;
     peer_action_          = PeerActionResult{};
-    screen_.PostEvent(Event::Custom);
+    screen_.Post(Event::Custom);
     if (peer_action_thread_.joinable())
         peer_action_thread_.join();
     peer_action_thread_ = std::thread([this, addr, is_ban] {
@@ -436,7 +436,7 @@ void PeersTab::trigger_peer_action(const std::string& addr, bool is_ban) {
         if (!running_.load())
             return;
         peer_action_ = std::move(result);
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
     });
 }
 
@@ -449,7 +449,7 @@ void PeersTab::trigger_addnode(const std::string& addr, const std::string& cmd) 
         s             = AddNodeState{.pending = true};
         s.cmd_idx     = saved_cmd;
     });
-    screen_.PostEvent(Event::Custom);
+    screen_.Post(Event::Custom);
     if (addnode_thread_.joinable())
         addnode_thread_.join();
     addnode_thread_ = std::thread([this, addr, cmd] {
@@ -468,7 +468,7 @@ void PeersTab::trigger_addnode(const std::string& addr, const std::string& cmd) 
         if (!running_.load())
             return;
         addnode_state_ = std::move(result);
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
     });
 }
 
@@ -477,7 +477,7 @@ void PeersTab::trigger_setban(const std::string& addr, bool remove) {
         return;
     ban_in_flight_ = true;
     ban_state_     = BanNodeState{.pending = true};
-    screen_.PostEvent(Event::Custom);
+    screen_.Post(Event::Custom);
     if (ban_thread_.joinable())
         ban_thread_.join();
     ban_thread_ = std::thread([this, addr, remove] {
@@ -497,7 +497,7 @@ void PeersTab::trigger_setban(const std::string& addr, bool remove) {
         if (!running_.load())
             return;
         ban_state_ = std::move(result);
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
     });
 }
 
@@ -532,7 +532,7 @@ void PeersTab::fetch_added_nodes() {
         added_nodes_         = std::move(result);
         added_nodes_loading_ = false;
         added_nodes_loaded_  = true;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
     });
 }
 
@@ -561,7 +561,7 @@ void PeersTab::fetch_ban_list() {
         banned_list_         = std::move(result);
         banned_list_loading_ = false;
         banned_list_loaded_  = true;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
     });
 }
 
@@ -578,7 +578,7 @@ void PeersTab::do_remove_added_node(const std::string& addr) {
             return;
         added_nodes_loaded_  = false;
         added_nodes_loading_ = false;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
     });
 }
 
@@ -595,7 +595,7 @@ void PeersTab::do_unban(const std::string& addr) {
             return;
         banned_list_loaded_  = false;
         banned_list_loading_ = false;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
     });
 }
 
@@ -671,7 +671,7 @@ bool PeersTab::handle_addnode_input(const Event& event) {
         addnode_input_active = false;
         addnode_str_.clear();
         addnode_state_ = AddNodeState{};
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     bool addnode_done =
@@ -684,25 +684,25 @@ bool PeersTab::handle_addnode_input(const Event& event) {
                 int cmd_idx = addnode_state_.access([](const auto& s) { return s.cmd_idx; });
                 trigger_addnode(addr, cmds[cmd_idx]);
             }
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Backspace) {
             if (!addnode_str_.empty())
                 addnode_str_.pop_back();
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowLeft || event == Event::ArrowRight) {
             addnode_state_.update([](auto& s) { s.cmd_idx = (s.cmd_idx + 1) % 2; });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Tab || event == Event::TabReverse)
             return true;
         if (event.is_character()) {
             addnode_str_ += event.character();
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
     }
@@ -716,7 +716,7 @@ bool PeersTab::handle_ban_input(const Event& event) {
         ban_input_active = false;
         ban_str_.clear();
         ban_state_ = BanNodeState{};
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     bool ban_done = ban_state_.access([](const auto& s) { return s.pending || s.has_result; });
@@ -727,25 +727,25 @@ bool PeersTab::handle_ban_input(const Event& event) {
                 bool remove = ban_state_.access([](const auto& s) { return s.is_remove; });
                 trigger_setban(addr, remove);
             }
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Backspace) {
             if (!ban_str_.empty())
                 ban_str_.pop_back();
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowLeft || event == Event::ArrowRight) {
             ban_state_.update([](auto& s) { s.is_remove = !s.is_remove; });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Tab || event == Event::TabReverse)
             return true;
         if (event.is_character()) {
             ban_str_ += event.character();
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
     }
@@ -758,7 +758,7 @@ bool PeersTab::handle_focused_event(const Event& event) {
         if (event == Event::Escape && !peer_action_in_flight.load()) {
             peer_disconnect_overlay = false;
             peer_action_            = PeerActionResult{};
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Character('q')) {
@@ -773,13 +773,13 @@ bool PeersTab::handle_focused_event(const Event& event) {
         if (event == Event::Escape) {
             peer_detail_open = false;
             peer_action_     = PeerActionResult{};
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowLeft || event == Event::ArrowRight || event == Event::ArrowUp ||
             event == Event::ArrowDown) {
             peer_detail_sel_ = 1 - peer_detail_sel_;
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Return || event == Event::Character('d') ||
@@ -812,7 +812,7 @@ bool PeersTab::handle_focused_event(const Event& event) {
     if (peers_panel == 1) {
         if (event == Event::Escape) {
             peers_panel = 0;
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowDown || event == Event::ArrowUp) {
@@ -825,7 +825,7 @@ bool PeersTab::handle_focused_event(const Event& event) {
                 else
                     addednodes_sel_ = std::max(addednodes_sel_ - 1, 0);
             }
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Return && addednodes_sel_ >= 0) {
@@ -843,7 +843,7 @@ bool PeersTab::handle_focused_event(const Event& event) {
         if (event == Event::Character('a')) {
             addnode_input_active = true;
             addnode_str_.clear();
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Character('q')) {
@@ -857,7 +857,7 @@ bool PeersTab::handle_focused_event(const Event& event) {
     if (peers_panel == 2) {
         if (event == Event::Escape) {
             peers_panel = 0;
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowDown || event == Event::ArrowUp) {
@@ -870,7 +870,7 @@ bool PeersTab::handle_focused_event(const Event& event) {
                 else
                     banlist_sel_ = std::max(banlist_sel_ - 1, 0);
             }
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Return && banlist_sel_ >= 0) {
@@ -901,26 +901,26 @@ bool PeersTab::handle_focused_event(const Event& event) {
             else
                 peer_selected = std::max(peer_selected - 1, 0);
         }
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (event == Event::Return && peer_selected >= 0) {
         peer_detail_open = true;
         peer_detail_sel_ = 0;
         peer_action_     = PeerActionResult{};
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (event == Event::Character('a')) {
         peers_panel     = 1;
         addednodes_sel_ = -1;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (event == Event::Character('b')) {
         peers_panel  = 2;
         banlist_sel_ = -1;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     return false;

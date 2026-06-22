@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -82,6 +83,35 @@ struct RpcResponse {
 };
 
 namespace {
+
+// All Lua tab/script worker threads share one debug stream. Serialize whole-line
+// writes through this mutex so concurrent threads never splice output mid-line.
+std::mutex g_debug_log_mutex;
+
+// Accumulates a log line and flushes it atomically (under g_debug_log_mutex) when
+// it goes out of scope. A null stream turns every operation into a no-op, so call
+// sites can keep their `if (debug_out_)` guard to avoid building the string at all.
+class DebugLine {
+  public:
+    explicit DebugLine(std::ostream* out) : out_(out) {}
+    DebugLine(const DebugLine&)            = delete;
+    DebugLine& operator=(const DebugLine&) = delete;
+    ~DebugLine() {
+        if (!out_)
+            return;
+        std::lock_guard<std::mutex> lock(g_debug_log_mutex);
+        *out_ << buf_.str() << std::flush;
+    }
+    template <typename T> DebugLine& operator<<(const T& v) {
+        if (out_)
+            buf_ << v;
+        return *this;
+    }
+
+  private:
+    std::ostream*      out_;
+    std::ostringstream buf_;
+};
 
 std::string lua_source_id(lua_State* L) {
     lua_Debug ar;
@@ -305,7 +335,7 @@ LuaScript::LuaScript() {
         end
     )") != LUA_OK) {
         if (debug_out)
-            *debug_out << "[lua bootstrap error] " << lua_tostring(L_, -1) << "\n" << std::flush;
+            DebugLine(debug_out) << "[lua bootstrap error] " << lua_tostring(L_, -1) << "\n";
         lua_pop(L_, 1);
     }
 }
@@ -950,7 +980,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
                 st.input_overlay.buffer = default_val;
                 st.input_overlay.cursor = static_cast<int>(default_val.size());
             });
-            screen_.PostEvent(ftxui::Event::Custom);
+            screen_.Post(ftxui::Event::Custom);
         });
 
     luabridge::getGlobalNamespace(L).addFunction("btcui_reload_tabs", [this]() {
@@ -1058,297 +1088,313 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
 
     std::thread rpc_thread(&LuaTab::rpc_thread_fn, this, std::ref(requests), std::ref(responses));
 
-    // Open debug.log, seek back by max backlog
-    int64_t max_backlog = 0;
-    for (const auto& lw : log_watches) {
-        max_backlog = std::max(max_backlog, lw->backlog_bytes);
-    }
-
-    std::ifstream logfile(debug_log_path_);
-    int64_t       live_pos = 0;
-    if (logfile) {
-        logfile.seekg(0, std::ios::end);
-        live_pos = logfile.tellg();
-        if (max_backlog > 0 && live_pos > max_backlog) {
-            logfile.seekg(live_pos - max_backlog);
-            std::string discard;
-            std::getline(logfile, discard);
+    // Everything below runs under an exception barrier: a C++ exception escaping
+    // this thread function would call std::terminate (the joinable rpc_thread above
+    // is destroyed mid-unwind), aborting the whole app with "terminate called
+    // without an active exception". Instead, surface the error and shut down cleanly.
+    try {
+        // Open debug.log, seek back by max backlog
+        int64_t max_backlog = 0;
+        for (const auto& lw : log_watches) {
+            max_backlog = std::max(max_backlog, lw->backlog_bytes);
         }
-    }
 
-    auto wake_ui = [this] { screen_.PostEvent(ftxui::Event::Custom); };
+        std::ifstream logfile(debug_log_path_);
+        int64_t       live_pos = 0;
+        if (logfile) {
+            logfile.seekg(0, std::ios::end);
+            live_pos = logfile.tellg();
+            if (max_backlog > 0 && live_pos > max_backlog) {
+                logfile.seekg(live_pos - max_backlog);
+                std::string discard;
+                std::getline(logfile, discard);
+            }
+        }
 
-    auto submit_rpc = [&](const std::string& method, json params,
-                          std::optional<std::string> wallet = std::nullopt) -> int {
-        int id = ++next_rpc_id;
-        requests.update_and_notify(
-            [&](auto& q) { q.push_back({id, method, std::move(params), std::move(wallet)}); });
-        return id;
-    };
+        auto wake_ui = [this] { screen_.Post(ftxui::Event::Custom); };
 
-    // Drive a Lua coroutine `co`, which already has `nargs` arguments pushed onto
-    // its stack. Resumes it and interprets each yield: a valid rpc/rpc_wallet yield
-    // submits the request and returns its id (co stays suspended); when the
-    // coroutine finishes (or errors), returns nullopt and reports against `timer`.
-    auto drive = [&](lua_State* co, const LuaTimer& timer, int nargs) -> std::optional<int> {
-        for (;;) {
-            int nres   = 0;
-            int status = lua_resume(co, lua, nargs, &nres);
-            if (status == LUA_YIELD) {
-                std::string tag =
-                    (nres >= 1 && lua_type(co, 1) == LUA_TSTRING) ? lua_tostring(co, 1) : "";
-                auto deny = [&](const std::string& method) {
-                    lua_settop(co, 0);
-                    lua_pushnil(co);
-                    lua_pushstring(co, ("RPC method not allowed: " + method).c_str());
-                    nargs = 2;
-                };
-                if (tag == "rpc" && nres >= 3) {
-                    std::string method = lua_tostring(co, 2);
-                    if (!rpc_allowlist_.contains(method)) {
-                        deny(method);
-                        continue;
+        auto submit_rpc = [&](const std::string& method, json params,
+                              std::optional<std::string> wallet = std::nullopt) -> int {
+            int id = ++next_rpc_id;
+            requests.update_and_notify(
+                [&](auto& q) { q.push_back({id, method, std::move(params), std::move(wallet)}); });
+            return id;
+        };
+
+        // Drive a Lua coroutine `co`, which already has `nargs` arguments pushed onto
+        // its stack. Resumes it and interprets each yield: a valid rpc/rpc_wallet yield
+        // submits the request and returns its id (co stays suspended); when the
+        // coroutine finishes (or errors), returns nullopt and reports against `timer`.
+        auto drive = [&](lua_State* co, const LuaTimer& timer, int nargs) -> std::optional<int> {
+            for (;;) {
+                int nres   = 0;
+                int status = lua_resume(co, lua, nargs, &nres);
+                if (status == LUA_YIELD) {
+                    std::string tag =
+                        (nres >= 1 && lua_type(co, 1) == LUA_TSTRING) ? lua_tostring(co, 1) : "";
+                    auto deny = [&](const std::string& method) {
+                        lua_settop(co, 0);
+                        lua_pushnil(co);
+                        lua_pushstring(co, ("RPC method not allowed: " + method).c_str());
+                        nargs = 2;
+                    };
+                    if (tag == "rpc" && nres >= 3) {
+                        std::string method = lua_tostring(co, 2);
+                        if (!rpc_allowlist_.contains(method)) {
+                            deny(method);
+                            continue;
+                        }
+                        json params = extract_rpc_params(co, 3);
+                        lua_settop(co, 0);
+                        return submit_rpc(method, std::move(params));
                     }
-                    json params = extract_rpc_params(co, 3);
-                    lua_settop(co, 0);
-                    return submit_rpc(method, std::move(params));
-                }
-                if (tag == "rpc_wallet" && nres >= 4) {
-                    std::string wallet = lua_tostring(co, 2);
-                    std::string method = lua_tostring(co, 3);
-                    if (!rpc_allowlist_.contains(method)) {
-                        deny(method);
-                        continue;
+                    if (tag == "rpc_wallet" && nres >= 4) {
+                        std::string wallet = lua_tostring(co, 2);
+                        std::string method = lua_tostring(co, 3);
+                        if (!rpc_allowlist_.contains(method)) {
+                            deny(method);
+                            continue;
+                        }
+                        json params = extract_rpc_params(co, 4);
+                        lua_settop(co, 0);
+                        return submit_rpc(method, std::move(params), wallet);
                     }
-                    json params = extract_rpc_params(co, 4);
+                    // Unknown yield — treat the coroutine as finished.
                     lua_settop(co, 0);
-                    return submit_rpc(method, std::move(params), wallet);
+                    clear_callback_error(timer.id);
+                    return std::nullopt;
                 }
-                // Unknown yield — treat the coroutine as finished.
+                if (status != LUA_OK) {
+                    const char* msg = lua_tostring(co, -1);
+                    report_callback_error(timer.id, timer.source_id, msg ? msg : "error");
+                } else {
+                    clear_callback_error(timer.id);
+                }
                 lua_settop(co, 0);
-                clear_callback_error(timer.id);
                 return std::nullopt;
             }
-            if (status != LUA_OK) {
-                const char* msg = lua_tostring(co, -1);
-                report_callback_error(timer.id, timer.source_id, msg ? msg : "error");
-            } else {
-                clear_callback_error(timer.id);
-            }
-            lua_settop(co, 0);
-            return std::nullopt;
-        }
-    };
+        };
 
-    std::string line;
-    while (running_ && !stopped_) {
-        // 0. Dispatch footer button clicks posted from the UI thread
-        auto clicks = btn_click_queue_.update([](auto& q) { return std::exchange(q, {}); });
-        if (debug_out_)
-            *debug_out_ << "[ btn_click_queue ] " << clicks.size() << " clicks\n" << std::flush;
-        for (int btn_id : clicks) {
-            for (auto& b : script->footer_btns()) {
-                if (b.id != btn_id) {
-                    if (debug_out_) {
-                        *debug_out_ << "[ btn_click_queue mismatch] " << b.id << ": " << btn_id
-                                    << "\n"
-                                    << std::flush;
-                    }
-                    continue;
-                }
-                if (debug_out_) {
-                    *debug_out_ << "[ btn_click_queue match] " << b.id << ": " << btn_id << "\n"
-                                << std::flush;
-                }
-                auto result = b.fn();
-                if (!result) {
-                    report_callback_error(btn_id, "footer_btn", result.message());
-                } else {
-                    if (debug_out_) {
-                        *debug_out_ << "[ btn_click_queue success] " << b.id << ": " << btn_id
-                                    << "\n"
-                                    << std::flush;
-                    }
-                    clear_callback_error(btn_id);
-                }
-                break;
-            }
-        }
-
-        // 0b. Fire resize callback if the UI reported a size change
-        if (resize_pending_.exchange(false) && script->on_resize_fn_) {
-            auto result = (*script->on_resize_fn_)(screen_.dimx(), screen_.dimy());
-            if (!result) {
-                report_callback_error(-1, script->on_resize_src_, result.message());
-            } else {
-                clear_callback_error(-1);
-            }
-        }
-
-        // 0c. Dispatch text-input confirm/cancel results from the UI thread
-        {
-            auto results = input_result_queue_.update([](auto& q) { return std::exchange(q, {}); });
-            for (auto& res : results) {
-                if (script->input_confirm_fn_) {
-                    luabridge::LuaRef fn = std::move(*script->input_confirm_fn_);
-                    script->input_confirm_fn_.reset();
-                    auto r = res.has_value() ? fn(*res) : fn(luabridge::LuaRef(lua));
-                    if (!r) {
-                        report_callback_error(-2, "text_input", r.message());
-                    } else {
-                        clear_callback_error(-2);
-                    }
-                }
-            }
-        }
-
-        // 0d. Dispatch row-activation (Enter / mouse click) selected keys
-        {
-            auto keys = select_queue_.update([](auto& q) { return std::exchange(q, {}); });
-            for (auto& key : keys) {
-                if (script->on_select_fn_) {
-                    auto r = (*script->on_select_fn_)(key);
-                    if (!r) {
-                        report_callback_error(-3, script->on_select_src_, r.message());
-                    } else {
-                        clear_callback_error(-3);
-                    }
-                }
-            }
-        }
-
-        // 1. Read new log lines, feed to Lua callbacks
-        if (logfile) {
-            while (std::getline(logfile, line)) {
-                int64_t          cur_pos         = logfile.tellg();
-                int64_t          bytes_from_live = std::max(int64_t{0}, live_pos - cur_pos);
-                static const RE2 re_ts_msg(
-                    R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z (.*)$)");
-                std::string y, mo, d, h, mi, s, frac, msg;
-                double      ts = 0.0;
-                if (RE2::FullMatch(line, re_ts_msg, &y, &mo, &d, &h, &mi, &s, &frac, &msg)) {
-                    auto ymd = std::chrono::year{std::stoi(y)} /
-                               std::chrono::month{static_cast<unsigned>(std::stoi(mo))} /
-                               std::chrono::day{static_cast<unsigned>(std::stoi(d))};
-                    Clock::time_point tp =
-                        std::chrono::sys_days{ymd} + std::chrono::hours{std::stoi(h)} +
-                        std::chrono::minutes{std::stoi(mi)} + std::chrono::seconds{std::stoi(s)};
-                    if (!frac.empty()) {
-                        while (frac.size() < 6)
-                            frac += '0';
-                        tp += std::chrono::microseconds(std::stoi(frac));
-                    }
-                    ts = std::chrono::duration<double>(tp.time_since_epoch()).count();
-                } else {
-                    msg = line;
-                }
-
-                for (auto& lw : log_watches) {
-                    if (bytes_from_live > lw->backlog_bytes)
+        std::string line;
+        while (running_ && !stopped_) {
+            // 0. Dispatch footer button clicks posted from the UI thread
+            auto clicks = btn_click_queue_.update([](auto& q) { return std::exchange(q, {}); });
+            if (debug_out_ && !clicks.empty())
+                DebugLine(debug_out_) << "[ btn_click_queue ] " << clicks.size() << " clicks\n";
+            for (int btn_id : clicks) {
+                for (auto& b : script->footer_btns()) {
+                    if (b.id != btn_id) {
+                        if (debug_out_) {
+                            DebugLine(debug_out_)
+                                << "[ btn_click_queue mismatch] " << b.id << ": " << btn_id << "\n";
+                        }
                         continue;
-                    int                          n = lw->ngroups;
-                    std::vector<std::string>     captures(n);
-                    std::vector<RE2::Arg>        args(n);
-                    std::vector<const RE2::Arg*> arg_ptrs(n);
-                    for (int i = 0; i < n; ++i) {
-                        args[i]     = &captures[i];
-                        arg_ptrs[i] = &args[i];
                     }
-                    if (RE2::PartialMatchN(msg, lw->pattern, arg_ptrs.data(), n)) {
-                        // Variable arg count (ts, msg, captures...) → raw pcall.
-                        lw->callback.push();
-                        lua_pushnumber(lua, ts);
-                        lua_pushlstring(lua, msg.data(), msg.size());
-                        for (int i = 0; i < n; ++i)
-                            lua_pushlstring(lua, captures[i].data(), captures[i].size());
-                        if (lua_pcall(lua, 2 + n, 0, 0) != LUA_OK) {
-                            const char* m = lua_tostring(lua, -1);
-                            report_callback_error(lw->id, lw->source_id, m ? m : "error");
-                            lua_pop(lua, 1);
+                    if (debug_out_) {
+                        DebugLine(debug_out_)
+                            << "[ btn_click_queue match] " << b.id << ": " << btn_id << "\n";
+                    }
+                    auto result = b.fn();
+                    if (!result) {
+                        report_callback_error(btn_id, "footer_btn", result.message());
+                    } else {
+                        if (debug_out_) {
+                            DebugLine(debug_out_)
+                                << "[ btn_click_queue success] " << b.id << ": " << btn_id << "\n";
+                        }
+                        clear_callback_error(btn_id);
+                    }
+                    break;
+                }
+            }
+
+            // 0b. Fire resize callback if the UI reported a size change
+            if (resize_pending_.exchange(false) && script->on_resize_fn_) {
+                auto result = (*script->on_resize_fn_)(screen_.dimx(), screen_.dimy());
+                if (!result) {
+                    report_callback_error(-1, script->on_resize_src_, result.message());
+                } else {
+                    clear_callback_error(-1);
+                }
+            }
+
+            // 0c. Dispatch text-input confirm/cancel results from the UI thread
+            {
+                auto results =
+                    input_result_queue_.update([](auto& q) { return std::exchange(q, {}); });
+                for (auto& res : results) {
+                    if (script->input_confirm_fn_) {
+                        luabridge::LuaRef fn = std::move(*script->input_confirm_fn_);
+                        script->input_confirm_fn_.reset();
+                        auto r = res.has_value() ? fn(*res) : fn(luabridge::LuaRef(lua));
+                        if (!r) {
+                            report_callback_error(-2, "text_input", r.message());
                         } else {
-                            clear_callback_error(lw->id);
+                            clear_callback_error(-2);
                         }
                     }
                 }
             }
-            logfile.clear();
-        }
 
-        // 2. Collect RPC responses and resume waiting coroutines
-        auto resp_queue = responses.update([](auto& q) { return std::exchange(q, {}); });
-        for (auto& resp : resp_queue) {
-            auto it = pending.find(resp.id);
-            if (it == pending.end())
-                continue;
-
-            auto& pc = it->second;
-            // Resume the coroutine with (value, err): push both onto its stack.
-            lua_settop(pc.co, 0);
-            if (resp.error.empty()) {
-                push_json(pc.co, resp.result);
-                lua_pushnil(pc.co);
-            } else {
-                lua_pushnil(pc.co);
-                lua_pushlstring(pc.co, resp.error.data(), resp.error.size());
+            // 0d. Dispatch row-activation (Enter / mouse click) selected keys
+            {
+                auto keys = select_queue_.update([](auto& q) { return std::exchange(q, {}); });
+                for (auto& key : keys) {
+                    if (script->on_select_fn_) {
+                        auto r = (*script->on_select_fn_)(key);
+                        if (!r) {
+                            report_callback_error(-3, script->on_select_src_, r.message());
+                        } else {
+                            clear_callback_error(-3);
+                        }
+                    }
+                }
             }
 
-            auto new_rpc_id = drive(pc.co, pc.timer, 2);
-            if (new_rpc_id) {
-                auto node  = pending.extract(it);
-                node.key() = *new_rpc_id;
-                pending.insert(std::move(node));
-            } else {
-                luaL_unref(lua, LUA_REGISTRYINDEX, pc.thread_ref);
-                auto next = pc.wake_pending ? TimePoint::min() : Clock::now() + pc.timer.interval;
-                timers.insert({next, std::move(pc.timer)});
-                pending.erase(it);
+            // 1. Read new log lines, feed to Lua callbacks
+            if (logfile) {
+                while (std::getline(logfile, line)) {
+                    int64_t          cur_pos         = logfile.tellg();
+                    int64_t          bytes_from_live = std::max(int64_t{0}, live_pos - cur_pos);
+                    static const RE2 re_ts_msg(
+                        R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z (.*)$)");
+                    std::string y, mo, d, h, mi, s, frac, msg;
+                    double      ts = 0.0;
+                    if (RE2::FullMatch(line, re_ts_msg, &y, &mo, &d, &h, &mi, &s, &frac, &msg)) {
+                        auto ymd = std::chrono::year{std::stoi(y)} /
+                                   std::chrono::month{static_cast<unsigned>(std::stoi(mo))} /
+                                   std::chrono::day{static_cast<unsigned>(std::stoi(d))};
+                        Clock::time_point tp = std::chrono::sys_days{ymd} +
+                                               std::chrono::hours{std::stoi(h)} +
+                                               std::chrono::minutes{std::stoi(mi)} +
+                                               std::chrono::seconds{std::stoi(s)};
+                        if (!frac.empty()) {
+                            while (frac.size() < 6)
+                                frac += '0';
+                            tp += std::chrono::microseconds(std::stoi(frac));
+                        }
+                        ts = std::chrono::duration<double>(tp.time_since_epoch()).count();
+                    } else {
+                        msg = line;
+                    }
+
+                    for (auto& lw : log_watches) {
+                        if (bytes_from_live > lw->backlog_bytes)
+                            continue;
+                        int                          n = lw->ngroups;
+                        std::vector<std::string>     captures(n);
+                        std::vector<RE2::Arg>        args(n);
+                        std::vector<const RE2::Arg*> arg_ptrs(n);
+                        for (int i = 0; i < n; ++i) {
+                            args[i]     = &captures[i];
+                            arg_ptrs[i] = &args[i];
+                        }
+                        if (RE2::PartialMatchN(msg, lw->pattern, arg_ptrs.data(), n)) {
+                            // Variable arg count (ts, msg, captures...) → raw pcall.
+                            lw->callback.push();
+                            lua_pushnumber(lua, ts);
+                            lua_pushlstring(lua, msg.data(), msg.size());
+                            for (int i = 0; i < n; ++i)
+                                lua_pushlstring(lua, captures[i].data(), captures[i].size());
+                            if (lua_pcall(lua, 2 + n, 0, 0) != LUA_OK) {
+                                const char* m = lua_tostring(lua, -1);
+                                report_callback_error(lw->id, lw->source_id, m ? m : "error");
+                                lua_pop(lua, 1);
+                            } else {
+                                clear_callback_error(lw->id);
+                            }
+                        }
+                    }
+                }
+                logfile.clear();
             }
-        }
 
-        // 3. Fire due timers
-        auto now = Clock::now();
-        while (!timers.empty() && timers.begin()->first <= now) {
-            auto  node  = timers.extract(timers.begin());
-            auto& timer = node.mapped();
+            // 2. Collect RPC responses and resume waiting coroutines
+            auto resp_queue = responses.update([](auto& q) { return std::exchange(q, {}); });
+            for (auto& resp : resp_queue) {
+                auto it = pending.find(resp.id);
+                if (it == pending.end())
+                    continue;
 
-            // New coroutine thread, anchored in the registry so it survives GC
-            // while suspended. drive() runs it (no initial args).
-            lua_State* co         = lua_newthread(lua);
-            int        thread_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
-            timer.callback.push(); // push the callback onto `lua`
-            lua_xmove(lua, co, 1); // move it onto the coroutine
+                auto& pc = it->second;
+                // Resume the coroutine with (value, err): push both onto its stack.
+                lua_settop(pc.co, 0);
+                if (resp.error.empty()) {
+                    push_json(pc.co, resp.result);
+                    lua_pushnil(pc.co);
+                } else {
+                    lua_pushnil(pc.co);
+                    lua_pushlstring(pc.co, resp.error.data(), resp.error.size());
+                }
 
-            auto rpc_id = drive(co, timer, 0);
-            if (rpc_id) {
-                pending.emplace(*rpc_id, PendingCoroutine{co, thread_ref, std::move(timer), false});
-                now = Clock::now();
-                continue; // timer NOT rescheduled yet
+                auto new_rpc_id = drive(pc.co, pc.timer, 2);
+                if (new_rpc_id) {
+                    auto node  = pending.extract(it);
+                    node.key() = *new_rpc_id;
+                    pending.insert(std::move(node));
+                } else {
+                    luaL_unref(lua, LUA_REGISTRYINDEX, pc.thread_ref);
+                    auto next =
+                        pc.wake_pending ? TimePoint::min() : Clock::now() + pc.timer.interval;
+                    timers.insert({next, std::move(pc.timer)});
+                    pending.erase(it);
+                }
             }
-            // Finished synchronously — release the thread and reschedule.
-            luaL_unref(lua, LUA_REGISTRYINDEX, thread_ref);
-            now        = Clock::now();
-            node.key() = std::max(now, node.key() + timer.interval);
-            timers.insert(std::move(node));
+
+            // 3. Fire due timers
+            auto now = Clock::now();
+            while (!timers.empty() && timers.begin()->first <= now) {
+                auto  node  = timers.extract(timers.begin());
+                auto& timer = node.mapped();
+
+                // New coroutine thread, anchored in the registry so it survives GC
+                // while suspended. drive() runs it (no initial args).
+                lua_State* co         = lua_newthread(lua);
+                int        thread_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
+                timer.callback.push(); // push the callback onto `lua`
+                lua_xmove(lua, co, 1); // move it onto the coroutine
+
+                auto rpc_id = drive(co, timer, 0);
+                if (rpc_id) {
+                    pending.emplace(*rpc_id,
+                                    PendingCoroutine{co, thread_ref, std::move(timer), false});
+                    now = Clock::now();
+                    continue; // timer NOT rescheduled yet
+                }
+                // Finished synchronously — release the thread and reschedule.
+                luaL_unref(lua, LUA_REGISTRYINDEX, thread_ref);
+                now        = Clock::now();
+                node.key() = std::max(now, node.key() + timer.interval);
+                timers.insert(std::move(node));
+            }
+
+            // 4. Flush warnings into shared state, expire old ones
+            auto& warns  = script->warnings();
+            auto  cutoff = Clock::now() - std::chrono::seconds(20);
+            lua_tab_state_.update([&](auto& st) {
+                for (auto& w : warns)
+                    st.warnings.push_back(std::move(w));
+                std::erase_if(st.warnings, [&](const auto& w) { return w.when < cutoff; });
+            });
+            warns.clear();
+
+            // 5. Wake UI
+            wake_ui();
+
+            // 5. Sleep — wait for RPC response or next timer, cap at 1s for log polling
+            auto deadline = Clock::now() + std::chrono::seconds(1);
+            if (!timers.empty())
+                deadline = std::min(deadline, timers.begin()->first);
+            responses.wait_until(deadline, [](auto& q) { return !q.empty(); });
         }
-
-        // 4. Flush warnings into shared state, expire old ones
-        auto& warns  = script->warnings();
-        auto  cutoff = Clock::now() - std::chrono::seconds(20);
-        lua_tab_state_.update([&](auto& st) {
-            for (auto& w : warns)
-                st.warnings.push_back(std::move(w));
-            std::erase_if(st.warnings, [&](const auto& w) { return w.when < cutoff; });
-        });
-        warns.clear();
-
-        // 5. Wake UI
-        wake_ui();
-
-        // 5. Sleep — wait for RPC response or next timer, cap at 1s for log polling
-        auto deadline = Clock::now() + std::chrono::seconds(1);
-        if (!timers.empty())
-            deadline = std::min(deadline, timers.begin()->first);
-        responses.wait_until(deadline, [](auto& q) { return !q.empty(); });
+    } catch (const std::exception& e) {
+        if (debug_out_)
+            DebugLine(debug_out_) << "[lua thread fatal] " << e.what() << "\n";
+        const std::string script_path =
+            tab_options_.contains("script") ? tab_options_["script"].get<std::string>() : "";
+        lua_tab_state_.update(
+            [&](auto& st) { st.init_error = LuaError{script_path, e.what(), Clock::now()}; });
+        stopped_.store(true); // make rpc_thread observe shutdown so join() below returns
     }
 
     // Shutdown: wake rpc thread so it sees !running_ (or stopped_)
@@ -1377,7 +1423,7 @@ LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen, std::atomic<b
     register_lua_api(*script);
     if (auto err = script->load(lua_script)) {
         if (debug_out_)
-            *debug_out_ << "[lua init error] " << lua_script << ": " << *err << "\n" << std::flush;
+            DebugLine(debug_out_) << "[lua init error] " << lua_script << ": " << *err << "\n";
         lua_tab_state_.update(
             [&](auto& st) { st.init_error = LuaError{lua_script, *err, Clock::now()}; });
         return;
@@ -1414,7 +1460,7 @@ bool LuaTab::finished() const { return thread_done_.load(); }
 
 void LuaTab::report_callback_error(int id, const std::string& source_id, const std::string& msg) {
     if (debug_out_)
-        *debug_out_ << "[lua error] " << source_id << ": " << msg << "\n" << std::flush;
+        DebugLine(debug_out_) << "[lua error] " << source_id << ": " << msg << "\n";
     lua_tab_state_.update(
         [&](auto& st) { st.callback_errors[id] = {source_id, msg, Clock::now()}; });
 }
@@ -1432,7 +1478,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 s.input_overlay.buffer.clear();
             });
             input_result_queue_.update([](auto& q) { q.push_back(std::nullopt); });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Return) {
@@ -1443,7 +1489,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 s.input_overlay.buffer.clear();
             });
             input_result_queue_.update([&val](auto& q) { q.push_back(std::move(val)); });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Backspace) {
@@ -1453,7 +1499,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                     --s.input_overlay.cursor;
                 }
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowLeft) {
@@ -1461,7 +1507,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 if (s.input_overlay.cursor > 0)
                     --s.input_overlay.cursor;
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowRight) {
@@ -1469,19 +1515,19 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 if (s.input_overlay.cursor < static_cast<int>(s.input_overlay.buffer.size()))
                     ++s.input_overlay.cursor;
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Home) {
             lua_tab_state_.update([](auto& s) { s.input_overlay.cursor = 0; });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::End) {
             lua_tab_state_.update([](auto& s) {
                 s.input_overlay.cursor = static_cast<int>(s.input_overlay.buffer.size());
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event.is_character()) {
@@ -1490,7 +1536,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 s.input_overlay.buffer.insert(s.input_overlay.cursor, ch);
                 s.input_overlay.cursor += static_cast<int>(ch.size());
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         return true; // consume all events while input overlay is active
@@ -1503,19 +1549,19 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 s.qr_selected     = 0;
                 s.qr_items.clear();
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
         } else if (event == Event::ArrowLeft) {
             lua_tab_state_.update([](auto& s) {
                 if (s.qr_selected > 0)
                     --s.qr_selected;
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
         } else if (event == Event::ArrowRight) {
             lua_tab_state_.update([](auto& s) {
                 if (s.qr_selected < static_cast<int>(s.qr_items.size()) - 1)
                     ++s.qr_selected;
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
         }
         return true;
     }
@@ -1554,7 +1600,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                     if (auto key = tbl->selected_key())
                         select_queue_.update([&](auto& q) { q.push_back(*key); });
                 }
-                screen_.PostEvent(Event::Custom);
+                screen_.Post(Event::Custom);
                 return true;
             }
         }
@@ -1587,7 +1633,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panels[fp]->panel)) {
                     if (auto key = tbl->selected_key()) {
                         select_queue_.update([&](auto& q) { q.push_back(*key); });
-                        screen_.PostEvent(Event::Custom);
+                        screen_.Post(Event::Custom);
                         return true;
                     }
                 }
@@ -1600,7 +1646,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                     if (tbl->selected_row().load() < 0)
                         tbl->selected_row() = 0;
             }
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (scrolling && fp < n) {
@@ -1609,7 +1655,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 panel_scrolling_ = false;
                 if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panel_render->panel))
                     tbl->selected_row() = -1;
-                screen_.PostEvent(Event::Custom);
+                screen_.Post(Event::Custom);
                 return true;
             }
             if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panel_render->panel)) {
@@ -1619,26 +1665,26 @@ bool LuaTab::handle_focused_event(const Event& event) {
                     int cur = tbl->selected_row().load();
                     if (cur < count - 1)
                         tbl->selected_row() = cur + 1;
-                    screen_.PostEvent(Event::Custom);
+                    screen_.Post(Event::Custom);
                     return true;
                 }
                 if (event == Event::ArrowUp) {
                     int cur = tbl->selected_row().load();
                     if (cur > 0)
                         tbl->selected_row() = cur - 1;
-                    screen_.PostEvent(Event::Custom);
+                    screen_.Post(Event::Custom);
                     return true;
                 }
             } else {
                 if (event == Event::ArrowDown) {
                     ++panel_render->scroll_offset;
-                    screen_.PostEvent(Event::Custom);
+                    screen_.Post(Event::Custom);
                     return true;
                 }
                 if (event == Event::ArrowUp) {
                     if (panel_render->scroll_offset > 0)
                         --panel_render->scroll_offset;
-                    screen_.PostEvent(Event::Custom);
+                    screen_.Post(Event::Custom);
                     return true;
                 }
             }
@@ -1648,7 +1694,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
             int next = next_selectable(fp, 1);
             if (next >= 0)
                 focused_panel_ = next;
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowUp) {
@@ -1659,7 +1705,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 focused_panel_   = -1;
                 panel_scrolling_ = false;
             }
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         return false;
@@ -1672,7 +1718,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
             focused_panel_ = first;
         else
             return false;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (event == Event::ArrowUp) {
@@ -1681,7 +1727,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
             focused_panel_ = last;
         else
             return false;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     return false;
@@ -1699,7 +1745,7 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
                        s.input_overlay.buffer.clear();
                    });
                    input_result_queue_.update([&val](auto& q) { q.push_back(std::move(val)); });
-                   screen_.PostEvent(ftxui::Event::Custom);
+                   screen_.Post(ftxui::Event::Custom);
                }},
               {"[Esc] Cancel",
                [this] {
@@ -1708,7 +1754,7 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
                        s.input_overlay.buffer.clear();
                    });
                    input_result_queue_.update([](auto& q) { q.push_back(std::nullopt); });
-                   screen_.PostEvent(ftxui::Event::Custom);
+                   screen_.Post(ftxui::Event::Custom);
                }}}},
             false,
             false};
@@ -1722,7 +1768,7 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
                                     s.qr_selected     = 0;
                                     s.qr_items.clear();
                                 });
-                                screen_.PostEvent(Event::Custom);
+                                screen_.Post(Event::Custom);
                             }}},
                           false,
                           false};

@@ -155,7 +155,7 @@ void ToolsTab::open_broadcast_dialog() {
     tools_input_active = true;
     tools_sel          = 0;
     tools_hex_str_.clear();
-    screen_.PostEvent(Event::Custom);
+    screen_.Post(Event::Custom);
 }
 
 void ToolsTab::trigger_broadcast(const std::string& hex) {
@@ -163,7 +163,7 @@ void ToolsTab::trigger_broadcast(const std::string& hex) {
         return;
     broadcast_in_flight_ = true;
     broadcast_state_.update([&](auto& bs) { bs = BroadcastState{.hex = hex, .submitting = true}; });
-    screen_.PostEvent(Event::Custom);
+    screen_.Post(Event::Custom);
     if (broadcast_thread_.joinable())
         broadcast_thread_.join();
     broadcast_thread_ = std::thread([this, hex] {
@@ -184,7 +184,7 @@ void ToolsTab::trigger_broadcast(const std::string& hex) {
         if (!running_.load())
             return;
         broadcast_state_.update([&](auto& bs) { bs = result; });
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
     });
 }
 
@@ -210,7 +210,7 @@ bool ToolsTab::handle_tools_input(const Event& event) {
     if (event == Event::Escape) {
         tools_input_active = false;
         tools_hex_str_.clear();
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (event == Event::Return) {
@@ -219,13 +219,13 @@ bool ToolsTab::handle_tools_input(const Event& event) {
         tools_hex_str_.clear();
         if (!hex.empty())
             trigger_broadcast(hex);
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (event == Event::Backspace) {
         if (!tools_hex_str_.empty())
             tools_hex_str_.pop_back();
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (event == Event::Tab || event == Event::TabReverse || event == Event::ArrowLeft ||
@@ -233,7 +233,7 @@ bool ToolsTab::handle_tools_input(const Event& event) {
         return true;
     if (event.is_character()) {
         tools_hex_str_ += event.character();
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     return false;
@@ -272,7 +272,7 @@ bool ToolsTab::handle_focused_event(const Event& event) {
             tools_sel = std::min(tools_sel + 1, shutdown_idx);
         else
             tools_sel = std::max(tools_sel - 1, 0);
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     return false;
