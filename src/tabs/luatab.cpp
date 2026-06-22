@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -82,6 +83,35 @@ struct RpcResponse {
 };
 
 namespace {
+
+// All Lua tab/script worker threads share one debug stream. Serialize whole-line
+// writes through this mutex so concurrent threads never splice output mid-line.
+std::mutex g_debug_log_mutex;
+
+// Accumulates a log line and flushes it atomically (under g_debug_log_mutex) when
+// it goes out of scope. A null stream turns every operation into a no-op, so call
+// sites can keep their `if (debug_out_)` guard to avoid building the string at all.
+class DebugLine {
+  public:
+    explicit DebugLine(std::ostream* out) : out_(out) {}
+    DebugLine(const DebugLine&)            = delete;
+    DebugLine& operator=(const DebugLine&) = delete;
+    ~DebugLine() {
+        if (!out_)
+            return;
+        std::lock_guard<std::mutex> lock(g_debug_log_mutex);
+        *out_ << buf_.str() << std::flush;
+    }
+    template <typename T> DebugLine& operator<<(const T& v) {
+        if (out_)
+            buf_ << v;
+        return *this;
+    }
+
+  private:
+    std::ostream*      out_;
+    std::ostringstream buf_;
+};
 
 std::string lua_source_id(lua_State* L) {
     lua_Debug ar;
@@ -305,7 +335,7 @@ LuaScript::LuaScript() {
         end
     )") != LUA_OK) {
         if (debug_out)
-            *debug_out << "[lua bootstrap error] " << lua_tostring(L_, -1) << "\n" << std::flush;
+            DebugLine(debug_out) << "[lua bootstrap error] " << lua_tostring(L_, -1) << "\n";
         lua_pop(L_, 1);
     }
 }
@@ -1150,29 +1180,27 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             // 0. Dispatch footer button clicks posted from the UI thread
             auto clicks = btn_click_queue_.update([](auto& q) { return std::exchange(q, {}); });
             if (debug_out_ && !clicks.empty())
-                *debug_out_ << "[ btn_click_queue ] " << clicks.size() << " clicks\n" << std::flush;
+                DebugLine(debug_out_) << "[ btn_click_queue ] " << clicks.size() << " clicks\n";
             for (int btn_id : clicks) {
                 for (auto& b : script->footer_btns()) {
                     if (b.id != btn_id) {
                         if (debug_out_) {
-                            *debug_out_ << "[ btn_click_queue mismatch] " << b.id << ": " << btn_id
-                                        << "\n"
-                                        << std::flush;
+                            DebugLine(debug_out_)
+                                << "[ btn_click_queue mismatch] " << b.id << ": " << btn_id << "\n";
                         }
                         continue;
                     }
                     if (debug_out_) {
-                        *debug_out_ << "[ btn_click_queue match] " << b.id << ": " << btn_id << "\n"
-                                    << std::flush;
+                        DebugLine(debug_out_)
+                            << "[ btn_click_queue match] " << b.id << ": " << btn_id << "\n";
                     }
                     auto result = b.fn();
                     if (!result) {
                         report_callback_error(btn_id, "footer_btn", result.message());
                     } else {
                         if (debug_out_) {
-                            *debug_out_ << "[ btn_click_queue success] " << b.id << ": " << btn_id
-                                        << "\n"
-                                        << std::flush;
+                            DebugLine(debug_out_)
+                                << "[ btn_click_queue success] " << b.id << ": " << btn_id << "\n";
                         }
                         clear_callback_error(btn_id);
                     }
@@ -1361,7 +1389,7 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
         }
     } catch (const std::exception& e) {
         if (debug_out_)
-            *debug_out_ << "[lua thread fatal] " << e.what() << "\n" << std::flush;
+            DebugLine(debug_out_) << "[lua thread fatal] " << e.what() << "\n";
         const std::string script_path =
             tab_options_.contains("script") ? tab_options_["script"].get<std::string>() : "";
         lua_tab_state_.update(
@@ -1395,7 +1423,7 @@ LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen, std::atomic<b
     register_lua_api(*script);
     if (auto err = script->load(lua_script)) {
         if (debug_out_)
-            *debug_out_ << "[lua init error] " << lua_script << ": " << *err << "\n" << std::flush;
+            DebugLine(debug_out_) << "[lua init error] " << lua_script << ": " << *err << "\n";
         lua_tab_state_.update(
             [&](auto& st) { st.init_error = LuaError{lua_script, *err, Clock::now()}; });
         return;
@@ -1432,7 +1460,7 @@ bool LuaTab::finished() const { return thread_done_.load(); }
 
 void LuaTab::report_callback_error(int id, const std::string& source_id, const std::string& msg) {
     if (debug_out_)
-        *debug_out_ << "[lua error] " << source_id << ": " << msg << "\n" << std::flush;
+        DebugLine(debug_out_) << "[lua error] " << source_id << ": " << msg << "\n";
     lua_tab_state_.update(
         [&](auto& st) { st.callback_errors[id] = {source_id, msg, Clock::now()}; });
 }
