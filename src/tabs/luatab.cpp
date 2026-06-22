@@ -980,7 +980,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
                 st.input_overlay.buffer = default_val;
                 st.input_overlay.cursor = static_cast<int>(default_val.size());
             });
-            screen_.PostEvent(ftxui::Event::Custom);
+            screen_.Post(ftxui::Event::Custom);
         });
 
     luabridge::getGlobalNamespace(L).addFunction("btcui_reload_tabs", [this]() {
@@ -1111,7 +1111,7 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             }
         }
 
-        auto wake_ui = [this] { screen_.PostEvent(ftxui::Event::Custom); };
+        auto wake_ui = [this] { screen_.Post(ftxui::Event::Custom); };
 
         auto submit_rpc = [&](const std::string& method, json params,
                               std::optional<std::string> wallet = std::nullopt) -> int {
@@ -1478,7 +1478,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 s.input_overlay.buffer.clear();
             });
             input_result_queue_.update([](auto& q) { q.push_back(std::nullopt); });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Return) {
@@ -1489,7 +1489,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 s.input_overlay.buffer.clear();
             });
             input_result_queue_.update([&val](auto& q) { q.push_back(std::move(val)); });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Backspace) {
@@ -1499,7 +1499,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                     --s.input_overlay.cursor;
                 }
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowLeft) {
@@ -1507,7 +1507,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 if (s.input_overlay.cursor > 0)
                     --s.input_overlay.cursor;
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowRight) {
@@ -1515,19 +1515,19 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 if (s.input_overlay.cursor < static_cast<int>(s.input_overlay.buffer.size()))
                     ++s.input_overlay.cursor;
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::Home) {
             lua_tab_state_.update([](auto& s) { s.input_overlay.cursor = 0; });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::End) {
             lua_tab_state_.update([](auto& s) {
                 s.input_overlay.cursor = static_cast<int>(s.input_overlay.buffer.size());
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event.is_character()) {
@@ -1536,7 +1536,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 s.input_overlay.buffer.insert(s.input_overlay.cursor, ch);
                 s.input_overlay.cursor += static_cast<int>(ch.size());
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         return true; // consume all events while input overlay is active
@@ -1549,19 +1549,19 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 s.qr_selected     = 0;
                 s.qr_items.clear();
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
         } else if (event == Event::ArrowLeft) {
             lua_tab_state_.update([](auto& s) {
                 if (s.qr_selected > 0)
                     --s.qr_selected;
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
         } else if (event == Event::ArrowRight) {
             lua_tab_state_.update([](auto& s) {
                 if (s.qr_selected < static_cast<int>(s.qr_items.size()) - 1)
                     ++s.qr_selected;
             });
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
         }
         return true;
     }
@@ -1600,7 +1600,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                     if (auto key = tbl->selected_key())
                         select_queue_.update([&](auto& q) { q.push_back(*key); });
                 }
-                screen_.PostEvent(Event::Custom);
+                screen_.Post(Event::Custom);
                 return true;
             }
         }
@@ -1633,7 +1633,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panels[fp]->panel)) {
                     if (auto key = tbl->selected_key()) {
                         select_queue_.update([&](auto& q) { q.push_back(*key); });
-                        screen_.PostEvent(Event::Custom);
+                        screen_.Post(Event::Custom);
                         return true;
                     }
                 }
@@ -1646,7 +1646,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                     if (tbl->selected_row().load() < 0)
                         tbl->selected_row() = 0;
             }
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (scrolling && fp < n) {
@@ -1655,7 +1655,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 panel_scrolling_ = false;
                 if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panel_render->panel))
                     tbl->selected_row() = -1;
-                screen_.PostEvent(Event::Custom);
+                screen_.Post(Event::Custom);
                 return true;
             }
             if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panel_render->panel)) {
@@ -1665,26 +1665,26 @@ bool LuaTab::handle_focused_event(const Event& event) {
                     int cur = tbl->selected_row().load();
                     if (cur < count - 1)
                         tbl->selected_row() = cur + 1;
-                    screen_.PostEvent(Event::Custom);
+                    screen_.Post(Event::Custom);
                     return true;
                 }
                 if (event == Event::ArrowUp) {
                     int cur = tbl->selected_row().load();
                     if (cur > 0)
                         tbl->selected_row() = cur - 1;
-                    screen_.PostEvent(Event::Custom);
+                    screen_.Post(Event::Custom);
                     return true;
                 }
             } else {
                 if (event == Event::ArrowDown) {
                     ++panel_render->scroll_offset;
-                    screen_.PostEvent(Event::Custom);
+                    screen_.Post(Event::Custom);
                     return true;
                 }
                 if (event == Event::ArrowUp) {
                     if (panel_render->scroll_offset > 0)
                         --panel_render->scroll_offset;
-                    screen_.PostEvent(Event::Custom);
+                    screen_.Post(Event::Custom);
                     return true;
                 }
             }
@@ -1694,7 +1694,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
             int next = next_selectable(fp, 1);
             if (next >= 0)
                 focused_panel_ = next;
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowUp) {
@@ -1705,7 +1705,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 focused_panel_   = -1;
                 panel_scrolling_ = false;
             }
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         return false;
@@ -1718,7 +1718,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
             focused_panel_ = first;
         else
             return false;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (event == Event::ArrowUp) {
@@ -1727,7 +1727,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
             focused_panel_ = last;
         else
             return false;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     return false;
@@ -1745,7 +1745,7 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
                        s.input_overlay.buffer.clear();
                    });
                    input_result_queue_.update([&val](auto& q) { q.push_back(std::move(val)); });
-                   screen_.PostEvent(ftxui::Event::Custom);
+                   screen_.Post(ftxui::Event::Custom);
                }},
               {"[Esc] Cancel",
                [this] {
@@ -1754,7 +1754,7 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
                        s.input_overlay.buffer.clear();
                    });
                    input_result_queue_.update([](auto& q) { q.push_back(std::nullopt); });
-                   screen_.PostEvent(ftxui::Event::Custom);
+                   screen_.Post(ftxui::Event::Custom);
                }}}},
             false,
             false};
@@ -1768,7 +1768,7 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
                                     s.qr_selected     = 0;
                                     s.qr_items.clear();
                                 });
-                                screen_.PostEvent(Event::Custom);
+                                screen_.Post(Event::Custom);
                             }}},
                           false,
                           false};

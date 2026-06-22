@@ -145,7 +145,7 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
         sd.state.txid      = query;
         sd.state.searching = true;
     });
-    screen_.PostEvent(Event::Custom);
+    screen_.Post(Event::Custom);
 
     if (search_thread_.joinable())
         search_thread_.join();
@@ -163,7 +163,7 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
         if (!running_.load())
             return;
         search_data_.update([&](auto& sd) { sd.state = result; });
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
     });
 }
 
@@ -387,7 +387,7 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
         if (outputs_open) {
             if (event == Event::Escape) {
                 search_data_.update([](auto& sd) { sd.state.outputs_overlay_open = false; });
-                screen_.PostEvent(Event::Custom);
+                screen_.Post(Event::Custom);
                 return true;
             }
             if (event == Event::ArrowDown || event == Event::ArrowUp) {
@@ -399,7 +399,7 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
                     else
                         sd.state.output_overlay_sel = std::max(sd.state.output_overlay_sel - 1, -1);
                 });
-                screen_.PostEvent(Event::Custom);
+                screen_.Post(Event::Custom);
                 return true;
             }
             if (event == Event::Character('q')) {
@@ -418,7 +418,7 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
         if (inputs_open) {
             if (event == Event::Escape) {
                 search_data_.update([](auto& sd) { sd.state.inputs_overlay_open = false; });
-                screen_.PostEvent(Event::Custom);
+                screen_.Post(Event::Custom);
                 return true;
             }
             if (event == Event::ArrowDown || event == Event::ArrowUp) {
@@ -430,7 +430,7 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
                     else
                         sd.state.input_overlay_sel = std::max(sd.state.input_overlay_sel - 1, -1);
                 });
-                screen_.PostEvent(Event::Custom);
+                screen_.Post(Event::Custom);
                 return true;
             }
             if (event == Event::Return) {
@@ -467,7 +467,7 @@ bool MempoolTab::handle_focused_event(const Event& event) {
             state_.access([](const auto& s) { return static_cast<int>(s.recent_blocks.size()); });
         if (n > 0) {
             mempool_sel = 0;
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
     }
@@ -476,14 +476,14 @@ bool MempoolTab::handle_focused_event(const Event& event) {
             state_.access([](const auto& s) { return static_cast<int>(s.recent_blocks.size()); });
         if (n <= 0) {
             mempool_sel = -1;
-            screen_.PostEvent(Event::Custom);
+            screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowLeft)
             mempool_sel = std::max(mempool_sel - 1, 0);
         else
             mempool_sel = std::min(mempool_sel + 1, n - 1);
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (event == Event::Return && mempool_sel >= 0) {
@@ -500,7 +500,7 @@ bool MempoolTab::handle_focused_event(const Event& event) {
     }
     if (event == Event::Escape && mempool_sel >= 0) {
         mempool_sel = -1;
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     return false;
@@ -521,7 +521,7 @@ bool MempoolTab::handle_io_nav(const Event& event) {
         return false;
     });
     if (handled) {
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     return false;
@@ -551,7 +551,7 @@ bool MempoolTab::handle_enter(const Event& event) {
         }
     });
     if (open_inputs || open_outputs) {
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     if (!query.empty()) {
@@ -577,7 +577,7 @@ bool MempoolTab::handle_escape(const Event& event) {
         return false;
     });
     if (had_overlay) {
-        screen_.PostEvent(Event::Custom);
+        screen_.Post(Event::Custom);
         return true;
     }
     return false;

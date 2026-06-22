@@ -538,7 +538,7 @@ int Application::run() const {
         for (auto& p : lua_tab_ptrs) {
             p->set_reload_callback([&]() {
                 tabs_reload_pending.store(true);
-                screen.PostEvent(Event::Custom);
+                screen.Post(Event::Custom);
             });
         }
         tabs = {&dashboard_tab, &mempool_tab, &peers_tab, &tools_tab};
@@ -568,7 +568,7 @@ int Application::run() const {
         [&] {
             global_search_active = true;
             global_search_str.clear();
-            screen.PostEvent(Event::Custom);
+            screen.Post(Event::Custom);
         },
         [&] { screen.ExitLoopClosure()(); });
 
@@ -860,11 +860,11 @@ int Application::run() const {
                             launch_exit_code = launch_bitcoind(
                                 bitcoind_cmd, datadir, network, [&](const std::string& line) {
                                     launch_output.update([&](auto& v) { v.push_back(line); });
-                                    screen.PostEvent(Event::Custom);
+                                    screen.Post(Event::Custom);
                                 });
                             launch_in_flight = false;
                             launch_done      = true;
-                            screen.PostEvent(Event::Custom);
+                            screen.Post(Event::Custom);
                         });
                     } else if (!launch_in_flight.load()) {
                         screen.ExitLoopClosure()();
@@ -874,7 +874,7 @@ int Application::run() const {
                         conn_overlay_sel = std::max(conn_overlay_sel - 1, 0);
                     else
                         conn_overlay_sel = std::min(conn_overlay_sel + 1, max_sel);
-                    screen.PostEvent(Event::Custom);
+                    screen.Post(Event::Custom);
                 }
                 return true;
             }
@@ -894,7 +894,7 @@ int Application::run() const {
                     int w = static_cast<int>(tab_labels[i].size()) + 2; // " label "
                     if (mx >= x && mx < x + w) {
                         tab_index = i;
-                        screen.PostEvent(Event::Custom);
+                        screen.Post(Event::Custom);
                         return true;
                     }
                     x += w + 1; // +1 for │ separator
@@ -907,7 +907,7 @@ int Application::run() const {
             if (event == Event::Escape) {
                 global_search_active = false;
                 global_search_str.clear();
-                screen.PostEvent(Event::Custom);
+                screen.Post(Event::Custom);
                 return true;
             }
             if (event == Event::Return) {
@@ -916,13 +916,13 @@ int Application::run() const {
                 global_search_str.clear();
                 if (is_txid(q) || is_height(q))
                     mempool_tab.trigger_search(q, true, tab_index);
-                screen.PostEvent(Event::Custom);
+                screen.Post(Event::Custom);
                 return true;
             }
             if (event == Event::Backspace) {
                 if (!global_search_str.empty())
                     global_search_str.pop_back();
-                screen.PostEvent(Event::Custom);
+                screen.Post(Event::Custom);
                 return true;
             }
             if (event == Event::Tab || event == Event::TabReverse || event == Event::ArrowLeft ||
@@ -930,7 +930,7 @@ int Application::run() const {
                 return true;
             if (event.is_character()) {
                 global_search_str += event.character();
-                screen.PostEvent(Event::Custom);
+                screen.Post(Event::Custom);
                 return true;
             }
             return false;
@@ -953,7 +953,7 @@ int Application::run() const {
         if (event == Event::Character('/')) {
             global_search_active = true;
             global_search_str.clear();
-            screen.PostEvent(Event::Custom);
+            screen.Post(Event::Custom);
             return true;
         }
         if (mempool_tab.handle_io_nav(event))
@@ -973,19 +973,19 @@ int Application::run() const {
         return false;
     });
 
-    auto wake_screen = [&] { screen.PostEvent(Event::Custom); };
+    auto wake_screen = [&] { screen.Post(Event::Custom); };
 
     // Background polling thread
     std::thread poll_thread([&] {
         RpcClient rpc(cfg, auth);
 
         state.update([](auto& s) { s.refreshing = true; });
-        screen.PostEvent(Event::Custom);
+        screen.Post(Event::Custom);
 
         poll_rpc(rpc, state, wake_screen);
 
         state.update([](auto& s) { s.refreshing = false; });
-        screen.PostEvent(Event::Custom);
+        screen.Post(Event::Custom);
 
         while (running) {
             for (int i = 0; i < refresh_secs * 10 && running; ++i)
@@ -994,7 +994,7 @@ int Application::run() const {
                 break;
 
             state.update([](auto& s) { s.refreshing = true; });
-            screen.PostEvent(Event::Custom);
+            screen.Post(Event::Custom);
 
             if (!explicit_creds) {
                 bool disconnected = state.access([](const auto& s) { return !s.connected; });
@@ -1014,7 +1014,7 @@ int Application::run() const {
             poll_rpc(rpc, state, wake_screen);
 
             state.update([](auto& s) { s.refreshing = false; });
-            screen.PostEvent(Event::Custom);
+            screen.Post(Event::Custom);
         }
     });
 
@@ -1034,7 +1034,7 @@ int Application::run() const {
                 return false;
             });
             if (needs_redraw)
-                screen.PostEvent(Event::Custom);
+                screen.Post(Event::Custom);
         }
     });
 
