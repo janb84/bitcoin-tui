@@ -467,6 +467,8 @@ static lb::LuaRef read_config_table(lua_State* L) {
     t["host"]        = std::string("127.0.0.1");
     t["port"]        = 8332;
     t["settingstab"] = true;
+    t["debug"]       = false;
+    t["debug_file"]  = std::string("");
     t["exists"]      = false;
 
     std::ifstream f(config_file_path());
@@ -497,7 +499,17 @@ static lb::LuaRef read_config_table(lua_State* L) {
                 val = val.substr(vs);
         }
 
-        enum class Key { Tab, AllowRpc, Refresh, Host, Port, SettingsTab, Unknown };
+        enum class Key {
+            Tab,
+            AllowRpc,
+            Refresh,
+            Host,
+            Port,
+            SettingsTab,
+            Debug,
+            DebugFile,
+            Unknown
+        };
         auto classify = [](const std::string& k) {
             if (k == "tab")
                 return Key::Tab;
@@ -511,6 +523,10 @@ static lb::LuaRef read_config_table(lua_State* L) {
                 return Key::Port;
             if (k == "settingstab")
                 return Key::SettingsTab;
+            if (k == "debug")
+                return Key::Debug;
+            if (k == "debug-file")
+                return Key::DebugFile;
             return Key::Unknown;
         };
 
@@ -547,6 +563,12 @@ static lb::LuaRef read_config_table(lua_State* L) {
         }
         case Key::SettingsTab:
             t["settingstab"] = (parse_toml_scalar(val) == "true");
+            break;
+        case Key::Debug:
+            t["debug"] = (parse_toml_scalar(val) == "true");
+            break;
+        case Key::DebugFile:
+            t["debug_file"] = parse_toml_scalar(val);
             break;
         case Key::Unknown:
             break;
@@ -591,7 +613,8 @@ static bool write_config_table(const lb::LuaRef& cfg) {
         }
     }
 
-    const std::set<std::string> managed = {"tab", "allow-rpc", "refresh", "settingstab"};
+    const std::set<std::string> managed = {"tab",         "allow-rpc", "refresh",
+                                           "settingstab", "debug",     "debug-file"};
     std::set<std::string>       written;
 
     // Returns the replacement line(s) for a managed key. Multi-value keys (tab,
@@ -599,7 +622,7 @@ static bool write_config_table(const lb::LuaRef& cfg) {
     // hand-write and the one CLI11 reads at startup.
     auto emit_key = [&](const std::string& key) -> std::vector<std::string> {
         std::vector<std::string> lines;
-        enum class Key { Tab, AllowRpc, Refresh, SettingsTab, Other };
+        enum class Key { Tab, AllowRpc, Refresh, SettingsTab, Debug, DebugFile, Other };
         auto classify = [](const std::string& k) {
             if (k == "tab")
                 return Key::Tab;
@@ -609,6 +632,10 @@ static bool write_config_table(const lb::LuaRef& cfg) {
                 return Key::Refresh;
             if (k == "settingstab")
                 return Key::SettingsTab;
+            if (k == "debug")
+                return Key::Debug;
+            if (k == "debug-file")
+                return Key::DebugFile;
             return Key::Other;
         };
 
@@ -642,6 +669,25 @@ static bool write_config_table(const lb::LuaRef& cfg) {
             lb::LuaRef b = cfg["settingstab"];
             if (b.isBool() && !b.unsafe_cast<bool>())
                 lines.push_back("settingstab = false");
+            break;
+        }
+        case Key::Debug: {
+            // Default is off; only persist the non-default (true) so a disabled
+            // "debug = true" line is cleaned up when toggled back off.
+            lb::LuaRef b = cfg["debug"];
+            if (b.isBool() && b.unsafe_cast<bool>())
+                lines.push_back("debug = true");
+            break;
+        }
+        case Key::DebugFile: {
+            // Persist the path independently of `debug` so it is remembered while
+            // logging is off; emit nothing for an empty path.
+            lb::LuaRef p = cfg["debug_file"];
+            if (p.isString()) {
+                auto s = p.unsafe_cast<std::string>();
+                if (!s.empty())
+                    lines.push_back("debug-file = " + toml_quote(s));
+            }
             break;
         }
         case Key::Other:
@@ -963,6 +1009,12 @@ void LuaTab::register_lua_api(LuaScript& script) {
     luabridge::getGlobalNamespace(L).addFunction(
         "btcui_config_path", []() -> std::string { return config_file_path(); });
 
+    // True when debug logging is actually active this session (the file stream
+    // was opened at startup). Lets the Settings tab distinguish the persisted
+    // `debug` config flag from the live state, i.e. show "restart to apply".
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_debug_active", [this]() -> bool { return debug_out_ != nullptr; });
+
     luabridge::getGlobalNamespace(L).addFunction(
         "btcui_config_read", [](lua_State* L) -> lb::LuaRef { return read_config_table(L); });
 
@@ -1236,12 +1288,14 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                 }
             }
 
-            // 0d. Dispatch row-activation (Enter / mouse click) selected keys
+            // 0d. Dispatch row-activation selected keys. The callback receives
+            // (key, trigger) where trigger is "enter"/"click" (activate) or
+            // "space" (toggle); older scripts ignoring the 2nd arg still work.
             {
                 auto keys = select_queue_.update([](auto& q) { return std::exchange(q, {}); });
-                for (auto& key : keys) {
+                for (auto& [key, trigger] : keys) {
                     if (script->on_select_fn_) {
-                        auto r = (*script->on_select_fn_)(key);
+                        auto r = (*script->on_select_fn_)(key, trigger);
                         if (!r) {
                             report_callback_error(-3, script->on_select_src_, r.message());
                         } else {
@@ -1598,7 +1652,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 tbl->selected_row()   = row_idx;
                 if (already_selected) {
                     if (auto key = tbl->selected_key())
-                        select_queue_.update([&](auto& q) { q.push_back(*key); });
+                        select_queue_.update([&](auto& q) { q.emplace_back(*key, "click"); });
                 }
                 screen_.Post(Event::Custom);
                 return true;
@@ -1625,19 +1679,25 @@ bool LuaTab::handle_focused_event(const Event& event) {
     };
 
     if (fp >= 0) {
-        if (event == Event::Return) {
-            // Already selecting a row on a table → Enter activates it (fires
-            // btcui_on_select) and keeps selection mode, so the user can act
-            // on several rows in a row.
+        // Space fires the on_select callback with trigger "space" (toggle); unlike
+        // Enter it never enters selection mode on its own. Enter on an already-
+        // selected row fires with trigger "enter" (activate).
+        const bool is_space = event.is_character() && event.character() == " ";
+        if (event == Event::Return || is_space) {
+            // Already selecting a row on a table → fire the callback and keep
+            // selection mode, so the user can act on several rows in a row.
             if (scrolling && fp < n) {
                 if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panels[fp]->panel)) {
                     if (auto key = tbl->selected_key()) {
-                        select_queue_.update([&](auto& q) { q.push_back(*key); });
+                        const char* trigger = is_space ? "space" : "enter";
+                        select_queue_.update([&](auto& q) { q.emplace_back(*key, trigger); });
                         screen_.Post(Event::Custom);
                         return true;
                     }
                 }
             }
+            if (is_space)
+                return false; // Space alone doesn't enter/toggle selection mode
             bool entering    = !scrolling;
             panel_scrolling_ = entering;
             // When entering row-selection mode on a table, start at row 0.

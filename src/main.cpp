@@ -247,7 +247,6 @@ int Application::configure(int argc, char* argv[]) {
                                           "File to write debug output to (requires --debug)")
                                ->group("Debug");
     debug_flag->needs(debug_file_opt);
-    debug_file_opt->needs(debug_flag);
 
     // clang-format off
     app.footer(
