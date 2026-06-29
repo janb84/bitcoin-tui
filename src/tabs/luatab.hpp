@@ -116,9 +116,12 @@ class LuaTab : public Tab {
     std::function<void()>            reload_request_fn_;
     mutable Guarded<std::deque<int>> btn_click_queue_;
     mutable Guarded<std::deque<std::optional<std::string>>> input_result_queue_;
-    mutable Guarded<std::deque<std::string>>                select_queue_;
-    std::atomic<bool>                                       resize_pending_{false};
-    std::atomic<int>                                        last_dimx_{0};
-    std::atomic<int>                                        last_dimy_{0};
-    std::thread                                             lua_thread_;
+    // Row activations awaiting dispatch: (row key, trigger). Trigger is "enter",
+    // "space", or "click" so the Lua callback can treat activate (Enter/click)
+    // and toggle (Space) differently.
+    mutable Guarded<std::deque<std::pair<std::string, std::string>>> select_queue_;
+    std::atomic<bool>                                                resize_pending_{false};
+    std::atomic<int>                                                 last_dimx_{0};
+    std::atomic<int>                                                 last_dimy_{0};
+    std::thread                                                      lua_thread_;
 };

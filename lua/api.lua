@@ -166,17 +166,21 @@ global function btcui_screen_size() end
 ---@param callback fun(width: integer, height: integer)
 global function btcui_on_resize(callback) end
 
---- Register a callback that fires when a table row is activated — either by
---- pressing Enter while the row is selected, or by clicking the row with the
---- mouse. The callback receives the activated row's key (as a string). Row
---- selection mode stays active, so several rows can be activated in sequence.
---- Only one handler can be registered — a second call replaces the previous one.
+--- Register a callback that fires when a table row is activated. The callback
+--- receives the row's key and a trigger string:
+---   "enter" — Enter pressed on the selected row (activate)
+---   "space" — Space pressed on the selected row (toggle)
+---   "click" — the row was clicked with the mouse (activate)
+--- Use the trigger to give Enter/click and Space different meanings (e.g. Space
+--- toggles a boolean, Enter opens a detail/dialog). Row selection mode stays
+--- active, so several rows can be activated in sequence. Only one handler can be
+--- registered — a second call replaces the previous one.
 ---
----   btcui_on_select(function(key)
----     -- act on the row identified by `key`
+---   btcui_on_select(function(key, trigger)
+---     -- act on the row identified by `key` according to `trigger`
 ---   end)
 ---
----@param callback fun(key: string)
+---@param callback fun(key: string, trigger: string)
 global function btcui_on_select(callback) end
 
 --- Return a styled address cell value. The address is rendered with
