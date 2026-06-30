@@ -48,6 +48,7 @@ struct CellValue {
 
 struct Row {
     int                    epoch{0};
+    bool                   selectable{true}; // false → display-only (navigation skips it)
     std::vector<CellValue> cells;
 };
 
@@ -76,9 +77,10 @@ class LuaPanel {
 class LuaTable : public LuaPanel {
   public:
     LuaTable(const std::string& key_column, std::vector<ColumnDef> columns, std::string title = {},
-             bool no_header = false);
+             bool no_header = false, bool selectable = true);
 
-    void update(const CellData& key, const std::map<std::string, CellValue>& data);
+    void update(const CellData& key, const std::map<std::string, CellValue>& data,
+                bool selectable = true);
     bool remove(const CellData& key);
     void start_refresh();
     void finish_refresh();
@@ -89,7 +91,18 @@ class LuaTable : public LuaPanel {
     const std::vector<ColumnDef>& columns() const { return columns_; }
     const std::string&            title() const override { return title_; }
     bool                          no_header() const { return no_header_; }
-    size_t                        key_index() const { return key_index_; }
+    // When false, the table is display-only: keyboard/mouse navigation skips it so
+    // its rows can't be focused, selected, or activated (no btcui_on_select).
+    bool   selectable() const { return selectable_; }
+    size_t key_index() const { return key_index_; }
+
+    // Per-row selectability (a row may opt out via __selectable=false in update()).
+    // Indices are into the current row iteration order (key order).
+    bool any_selectable() const;           // true if at least one row is selectable
+    bool is_row_selectable(int idx) const; // false for out-of-range or display-only rows
+    int  first_selectable_row() const;     // first selectable index, or -1
+    // Next selectable index from `from` moving by `dir` (+1/-1); -1 if none in range.
+    int next_selectable_row(int from, int dir) const;
 
     ColumnType key_type() const { return columns_[key_index_].type; }
 
@@ -113,6 +126,7 @@ class LuaTable : public LuaPanel {
     const std::vector<ColumnDef> columns_;
     const std::string            title_;
     const bool                   no_header_;
+    const bool                   selectable_;
     const size_t                 key_index_;
     Guarded<RowData>             rows_;
     std::atomic<int>             selected_row_{-1};

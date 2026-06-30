@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <map>
 
 std::optional<ColumnType> parse_column_type(const std::string& s) {
@@ -91,9 +92,9 @@ static std::vector<ColumnDef> ensure_key_column(std::vector<ColumnDef> columns,
 }
 
 LuaTable::LuaTable(const std::string& key_column, std::vector<ColumnDef> columns, std::string title,
-                   bool no_header)
+                   bool no_header, bool selectable)
     : columns_(ensure_key_column(std::move(columns), key_column)), title_(std::move(title)),
-      no_header_(no_header), key_index_(col_index(key_column)),
+      no_header_(no_header), selectable_(selectable), key_index_(col_index(key_column)),
       rows_(RowData{std::set<Row, RowCompare>(RowCompare{key_index_}), 0}) {}
 
 size_t LuaTable::col_index(const std::string& name) const {
@@ -104,8 +105,10 @@ size_t LuaTable::col_index(const std::string& name) const {
     return columns_.size();
 }
 
-void LuaTable::update(const CellData& key, const std::map<std::string, CellValue>& data) {
+void LuaTable::update(const CellData& key, const std::map<std::string, CellValue>& data,
+                      bool selectable) {
     Row row;
+    row.selectable = selectable;
     row.cells.resize(columns_.size());
     row.cells[key_index_].data = key;
 
@@ -183,6 +186,47 @@ std::vector<std::string> LuaTable::keys() const {
             result.push_back(format_cell(columns_[key_index_].type, row.cells[key_index_].data));
         }
         return result;
+    });
+}
+
+bool LuaTable::any_selectable() const {
+    return access([](const auto& rows) {
+        for (const auto& row : rows) {
+            if (row.selectable)
+                return true;
+        }
+        return false;
+    });
+}
+
+bool LuaTable::is_row_selectable(int idx) const {
+    return access([&](const auto& rows) {
+        if (idx < 0 || idx >= static_cast<int>(rows.size()))
+            return false;
+        return std::next(rows.begin(), idx)->selectable;
+    });
+}
+
+int LuaTable::first_selectable_row() const {
+    return access([](const auto& rows) {
+        int i = 0;
+        for (const auto& row : rows) {
+            if (row.selectable)
+                return i;
+            ++i;
+        }
+        return -1;
+    });
+}
+
+int LuaTable::next_selectable_row(int from, int dir) const {
+    return access([&](const auto& rows) {
+        int n = static_cast<int>(rows.size());
+        for (int i = from + dir; i >= 0 && i < n; i += dir) {
+            if (std::next(rows.begin(), i)->selectable)
+                return i;
+        }
+        return -1;
     });
 }
 

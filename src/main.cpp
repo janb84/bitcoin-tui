@@ -36,7 +36,6 @@ static void ensure_terminal();
 #include "tabs/luatab.hpp"
 #include "tabs/mempool.hpp"
 #include "tabs/peers.hpp"
-#include "tabs/tools.hpp"
 
 // ============================================================================
 // Cookie authentication helpers
@@ -417,37 +416,56 @@ int Application::configure(int argc, char* argv[]) {
             }
         }
 
-        // Auto-register settings.lua unless the user already added it explicitly
+        // True when `script_path` is already among the user's --tab specs (so we don't
+        // auto-register a second copy of an auto-injected tab the user added by hand).
+        auto already_added = [&](const std::string& script_path) {
+            for (const auto& spec : lua_tabs) {
+                // spec is either JSON or "path[,opts]"
+                std::string script = spec;
+                if (!spec.empty() && spec[0] == '{') {
+                    try {
+                        auto j = json::parse(spec);
+                        if (j.contains("script"))
+                            script = j["script"].get<std::string>();
+                    } catch (...) { // NOLINT(bugprone-empty-catch) — malformed JSON spec
+                        // fall back to treating it as a literal path below.
+                    }
+                } else if (auto comma = spec.find(','); comma != std::string::npos) {
+                    script = spec.substr(0, comma);
+                }
+                try {
+                    if (fs::exists(script) && fs::equivalent(script, script_path))
+                        return true;
+                } catch (...) { // NOLINT(bugprone-empty-catch) — fs::equivalent may throw
+                    // if a path does not exist; treat as not matching and keep going.
+                }
+            }
+            return false;
+        };
+
+        // Auto-register the built-in Lua tabs (tools first, then settings) unless the
+        // user already added them explicitly. Tools needs three mutating RPCs the
+        // global sandbox blocks, so it is injected as a JSON spec carrying a per-tab
+        // allow_rpc grant — keeping those RPCs off-limits to every other Lua script.
         if (!lua_tabs_dir.empty()) {
+            fs::path tools = fs::path(lua_tabs_dir) / "tools.lua";
+            if (fs::exists(tools)) {
+                std::string tools_str = tools.string();
+                if (!already_added(tools_str)) {
+                    json spec;
+                    spec["script"]    = tools_str;
+                    spec["allow_rpc"] = json{std::string("sendrawtransaction"), std::string("stop"),
+                                             std::string("getprivatebroadcastinfo")};
+                    lua_tabs.push_back(spec.dump());
+                    auto_injected_tabs.insert(tools_str); // matches LuaTab::script_path()
+                }
+            }
+
             fs::path settings = fs::path(lua_tabs_dir) / "settings.lua";
             if (fs::exists(settings)) {
                 std::string settings_str = settings.string();
                 settings_tab_path        = settings_str; // recorded even when hidden
-                bool already             = false;
-                for (const auto& spec : lua_tabs) {
-                    // spec is either JSON or "path[,opts]"
-                    std::string script = spec;
-                    if (!spec.empty() && spec[0] == '{') {
-                        try {
-                            auto j = json::parse(spec);
-                            if (j.contains("script"))
-                                script = j["script"].get<std::string>();
-                        } catch (...) { // NOLINT(bugprone-empty-catch) — malformed JSON spec
-                            // fall back to treating it as a literal path below.
-                        }
-                    } else if (auto comma = spec.find(','); comma != std::string::npos) {
-                        script = spec.substr(0, comma);
-                    }
-                    try {
-                        if (fs::exists(script) && fs::equivalent(script, settings_str)) {
-                            already = true;
-                            break;
-                        }
-                    } catch (...) { // NOLINT(bugprone-empty-catch) — fs::equivalent may throw
-                        // if a path does not exist; treat as not matching and keep going.
-                    }
-                }
-                if (!already && show_settings_tab) {
+                if (!already_added(settings_str) && show_settings_tab) {
                     lua_tabs.push_back(settings_str);
                     auto_injected_tabs.insert(settings_str);
                 }
@@ -474,13 +492,11 @@ int Application::run() const {
 
     int tab_index = 0;
 
-    // Tab objects (mempool first — tools captures a reference to it via lambda)
+    // Tab objects. The Tools tab is now a Lua tab (lua/tabs/tools.lua), auto-injected
+    // in configure() with a per-tab allow_rpc grant.
     DashboardTab dashboard_tab(cfg, auth, screen, running, state, refresh_secs);
     MempoolTab   mempool_tab(cfg, auth, screen, running, state, refresh_secs);
     PeersTab     peers_tab(cfg, auth, screen, running, state, refresh_secs);
-    ToolsTab     tools_tab(
-        cfg, auth, screen, running, state, refresh_secs,
-        [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
 
     std::string debug_log = debug_log_file.empty()
                                 ? datadir + "/" + network_subdir(network) + "debug.log"
@@ -507,17 +523,34 @@ int Application::run() const {
         return options;
     };
 
-    // Construct a LuaTab from a parsed options object.
+    // Construct a LuaTab from a parsed options object. A per-tab "allow_rpc" array
+    // in the spec grants extra RPC methods to that tab only (merged with the global
+    // --allow-rpc list); the built-in Tools tab uses this to call sendrawtransaction
+    // /stop without opening those mutating RPCs to every Lua script.
     auto make_lua_tab = [&](json options) -> std::unique_ptr<LuaTab> {
         if (!options.contains("script") || options["script"].get<std::string>().empty())
             throw std::runtime_error("--tab: missing script path");
+        std::vector<std::string> tab_rpcs = extra_rpcs;
+        if (options.contains("allow_rpc") && options["allow_rpc"].is_array()) {
+            for (const auto& m : options["allow_rpc"]) {
+                if (m.is_string())
+                    tab_rpcs.push_back(m.get<std::string>());
+            }
+        }
         return std::make_unique<LuaTab>(cfg, auth, screen, running, state, refresh_secs, debug_log,
-                                        std::move(options), extra_rpcs,
+                                        std::move(options), tab_rpcs,
                                         debug_enabled ? &debug_out : nullptr);
     };
 
     // Pending tab live-reload flag (set by btcui_reload_tabs() from any Lua thread).
     std::atomic<bool> tabs_reload_pending{false};
+
+    // Pending btcui_quit() / btcui_search() requests from a Lua worker thread. The
+    // callbacks fire off-thread; these marshal the action onto the UI thread in the
+    // renderer (the same pattern tabs_reload_pending uses), since ExitLoopClosure
+    // and trigger_search must run on the UI/event thread.
+    std::atomic<bool>    lua_quit_pending{false};
+    Guarded<std::string> lua_search_pending; // non-empty when a search is queued
 
     // Dead tabs: removed from the UI but their threads are still winding down.
     // Joined at shutdown when running becomes false.
@@ -539,8 +572,16 @@ int Application::run() const {
                 tabs_reload_pending.store(true);
                 screen.Post(Event::Custom);
             });
+            p->set_quit_callback([&]() {
+                lua_quit_pending.store(true);
+                screen.Post(Event::Custom);
+            });
+            p->set_search_callback([&](const std::string& query) {
+                lua_search_pending.update([&](auto& q) { q = query; });
+                screen.Post(Event::Custom);
+            });
         }
-        tabs = {&dashboard_tab, &mempool_tab, &peers_tab, &tools_tab};
+        tabs = {&dashboard_tab, &mempool_tab, &peers_tab};
         for (auto& p : lua_tab_ptrs)
             tabs.push_back(p.get());
         tab_labels.clear();
@@ -574,6 +615,22 @@ int Application::run() const {
     auto layout = Container::Vertical({tab_toggle, footer_bar});
 
     auto renderer = Renderer(layout, [&]() -> Element {
+        // btcui_quit() from a Lua tab — exit the loop on the UI thread.
+        if (lua_quit_pending.exchange(false))
+            screen.ExitLoopClosure()();
+
+        // btcui_search() from a Lua tab — run the global tx search on the UI thread,
+        // switching to the search view (same path as the global search bar).
+        {
+            std::string query = lua_search_pending.update([](auto& q) {
+                std::string out = std::move(q);
+                q.clear();
+                return out;
+            });
+            if (!query.empty())
+                mempool_tab.trigger_search(query, true, tab_index);
+        }
+
         // Live tab reload — triggered by btcui_reload_tabs() from any Lua script
         if (tabs_reload_pending.exchange(false)) {
             // Remember which tab is focused so we can keep the user on it after the
@@ -936,8 +993,6 @@ int Application::run() const {
         }
 
         // Tab-specific event dispatch (priority order — see MEMORY.md CatchEvent note)
-        if (tools_tab.handle_tools_input(event))
-            return true;
         if (auto r = mempool_tab.handle_tx_overlay(event); r.has_value())
             return *r;
         if (peers_tab.handle_addnode_input(event))

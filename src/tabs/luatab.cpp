@@ -759,14 +759,21 @@ void LuaTab::register_lua_api(LuaScript& script) {
         .addFunction("update",
                      [](LuaTable* self, const lb::LuaRef& key, const lb::LuaRef& data) {
                          std::map<std::string, CellValue> cells;
-                         const auto&                      cols = self->columns();
+                         bool                             selectable = true;
+                         const auto&                      cols       = self->columns();
                          for (lb::Iterator it(data); !it.isNil(); ++it) {
                              lb::LuaRef v = it.value();
                              if (v.isNil())
                                  continue;
                              std::string col_name = it.key().unsafe_cast<std::string>();
-                             ColumnType  ct       = ColumnType::String;
-                             int         dec      = -1;
+                             // Reserved row-level flag: mark a row display-only so
+                             // navigation skips it (see btcui_table selectable option).
+                             if (col_name == "__selectable") {
+                                 selectable = !v.isBool() || v.unsafe_cast<bool>();
+                                 continue;
+                             }
+                             ColumnType ct  = ColumnType::String;
+                             int        dec = -1;
                              for (const auto& col : cols) {
                                  if (col.name == col_name) {
                                      ct  = col.type;
@@ -776,7 +783,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
                              }
                              cells[col_name] = LuaScript::to_cell_value(ct, dec, v);
                          }
-                         self->update(LuaScript::to_key(*self, key), cells);
+                         self->update(LuaScript::to_key(*self, key), cells, selectable);
                      })
         .addFunction("remove",
                      [](LuaTable* self, const lb::LuaRef& key) {
@@ -819,8 +826,9 @@ void LuaTab::register_lua_api(LuaScript& script) {
             std::string key_column = field_or(opts, "key", std::move(def_key));
             std::string title      = field_or(opts, "title", std::string{});
             bool        no_header  = field_or(opts, "no_header", false);
+            bool        selectable = field_or(opts, "selectable", true);
             auto tbl = std::make_shared<LuaTable>(key_column, std::move(cols), std::move(title),
-                                                  no_header);
+                                                  no_header, selectable);
             lua_tab_state_.update(
                 [&](auto& st) { st.lua_panels.push_back(std::make_shared<LuaPanelRender>(tbl)); });
             return tbl;
@@ -1038,6 +1046,16 @@ void LuaTab::register_lua_api(LuaScript& script) {
     luabridge::getGlobalNamespace(L).addFunction("btcui_reload_tabs", [this]() {
         if (reload_request_fn_)
             reload_request_fn_();
+    });
+
+    luabridge::getGlobalNamespace(L).addFunction("btcui_quit", [this]() {
+        if (quit_request_fn_)
+            quit_request_fn_();
+    });
+
+    luabridge::getGlobalNamespace(L).addFunction("btcui_search", [this](const std::string& query) {
+        if (search_request_fn_)
+            search_request_fn_(query);
     });
 
     luabridge::getGlobalNamespace(L).addFunction(
@@ -1504,6 +1522,12 @@ std::string LuaTab::script_path() const {
 
 void LuaTab::set_reload_callback(std::function<void()> fn) { reload_request_fn_ = std::move(fn); }
 
+void LuaTab::set_quit_callback(std::function<void()> fn) { quit_request_fn_ = std::move(fn); }
+
+void LuaTab::set_search_callback(std::function<void(const std::string&)> fn) {
+    search_request_fn_ = std::move(fn);
+}
+
 void LuaTab::stop() {
     stopped_.store(true);
     // The lua thread polls at a ≤1s cadence (responses.wait_until cap), so it
@@ -1640,10 +1664,10 @@ bool LuaTab::handle_focused_event(const Event& event) {
             auto mpanels = lua_tab_state_.access([](const auto& s) { return s.lua_panels; });
             for (int pi = 0; pi < static_cast<int>(mpanels.size()); ++pi) {
                 auto tbl = std::dynamic_pointer_cast<LuaTable>(mpanels[pi]->panel);
-                if (!tbl)
+                if (!tbl || !tbl->selectable())
                     continue;
                 int row_idx = mpanels[pi]->row_hits.hit(me.x, me.y);
-                if (row_idx < 0)
+                if (row_idx < 0 || !tbl->is_row_selectable(row_idx))
                     continue;
                 bool already_selected = (focused_panel_.load() == pi && panel_scrolling_.load() &&
                                          tbl->selected_row().load() == row_idx);
@@ -1669,10 +1693,14 @@ bool LuaTab::handle_focused_event(const Event& event) {
     int  fp        = focused_panel_.load();
     bool scrolling = panel_scrolling_.load();
 
-    // Tables are always selectable; other panels only when scrollable.
+    // A table is reachable only when it's selectable AND has at least one selectable
+    // row (display-only tables, and tables whose rows are all opted out, are skipped);
+    // non-table panels (summaries) are reachable only when scrollable.
     auto next_selectable = [&](int from, int dir) -> int {
         for (int i = from + dir; i >= 0 && i < n; i += dir) {
-            if (std::dynamic_pointer_cast<LuaTable>(panels[i]->panel) || panels[i]->scrollable)
+            auto tbl = std::dynamic_pointer_cast<LuaTable>(panels[i]->panel);
+            if ((tbl && tbl->selectable() && tbl->any_selectable()) ||
+                (!tbl && panels[i]->scrollable))
                 return i;
         }
         return -1;
@@ -1685,14 +1713,17 @@ bool LuaTab::handle_focused_event(const Event& event) {
         const bool is_space = event.is_character() && event.character() == " ";
         if (event == Event::Return || is_space) {
             // Already selecting a row on a table → fire the callback and keep
-            // selection mode, so the user can act on several rows in a row.
+            // selection mode, so the user can act on several rows in a row. Only
+            // fire on selectable rows (a display-only row never activates).
             if (scrolling && fp < n) {
                 if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panels[fp]->panel)) {
-                    if (auto key = tbl->selected_key()) {
-                        const char* trigger = is_space ? "space" : "enter";
-                        select_queue_.update([&](auto& q) { q.emplace_back(*key, trigger); });
-                        screen_.Post(Event::Custom);
-                        return true;
+                    if (tbl->is_row_selectable(tbl->selected_row().load())) {
+                        if (auto key = tbl->selected_key()) {
+                            const char* trigger = is_space ? "space" : "enter";
+                            select_queue_.update([&](auto& q) { q.emplace_back(*key, trigger); });
+                            screen_.Post(Event::Custom);
+                            return true;
+                        }
                     }
                 }
             }
@@ -1700,11 +1731,12 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 return false; // Space alone doesn't enter/toggle selection mode
             bool entering    = !scrolling;
             panel_scrolling_ = entering;
-            // When entering row-selection mode on a table, start at row 0.
+            // When entering row-selection mode on a table, start at the first
+            // selectable row (skip leading display-only rows).
             if (entering && fp < n) {
                 if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panels[fp]->panel))
                     if (tbl->selected_row().load() < 0)
-                        tbl->selected_row() = 0;
+                        tbl->selected_row() = std::max(0, tbl->first_selectable_row());
             }
             screen_.Post(Event::Custom);
             return true;
@@ -1719,19 +1751,17 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 return true;
             }
             if (auto tbl = std::dynamic_pointer_cast<LuaTable>(panel_render->panel)) {
-                int count =
-                    static_cast<int>(tbl->access([](const auto& rows) { return rows.size(); }));
                 if (event == Event::ArrowDown) {
-                    int cur = tbl->selected_row().load();
-                    if (cur < count - 1)
-                        tbl->selected_row() = cur + 1;
+                    int next = tbl->next_selectable_row(tbl->selected_row().load(), 1);
+                    if (next >= 0)
+                        tbl->selected_row() = next;
                     screen_.Post(Event::Custom);
                     return true;
                 }
                 if (event == Event::ArrowUp) {
-                    int cur = tbl->selected_row().load();
-                    if (cur > 0)
-                        tbl->selected_row() = cur - 1;
+                    int prev = tbl->next_selectable_row(tbl->selected_row().load(), -1);
+                    if (prev >= 0)
+                        tbl->selected_row() = prev;
                     screen_.Post(Event::Custom);
                     return true;
                 }
