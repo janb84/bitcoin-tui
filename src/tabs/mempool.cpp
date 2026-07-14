@@ -134,7 +134,7 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
         return;
     search_in_flight_ = true;
     if (switch_tab)
-        tab_index_out = 1;
+        tab_index_out = 0;
     search_data_.update([&](auto& sd) {
         if (switch_tab) {
             sd.history.clear();
