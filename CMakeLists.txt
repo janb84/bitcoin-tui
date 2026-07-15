@@ -73,6 +73,9 @@ add_library(lua_static STATIC ${LUA_SOURCES})
 target_include_directories(lua_static PUBLIC ${lua_SOURCE_DIR})
 if(NOT WIN32)
   target_compile_definitions(lua_static PRIVATE LUA_USE_POSIX)
+  # Lua's math library needs libm. On macOS it lives in libc, but on Linux it
+  # is a separate lib — link it PUBLIC so consumers (e.g. lua-interp) inherit it.
+  target_link_libraries(lua_static PUBLIC m)
 endif()
 
 # LuaBridge3
