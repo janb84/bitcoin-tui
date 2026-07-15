@@ -42,6 +42,18 @@ static void ensure_terminal();
 
 static std::string default_config_dir() { return paths::config_dir(); }
 
+// The Tools tab is injected as a JSON spec carrying a per-tab allow_rpc grant for
+// the three mutating RPCs it needs — keeping those RPCs off-limits to every other
+// Lua script. Shared by startup auto-injection (configure) and live re-injection
+// when the tab is toggled back on (run).
+static json tools_tab_spec(const std::string& script_path) {
+    json spec;
+    spec["script"]    = script_path;
+    spec["allow_rpc"] = json{std::string("sendrawtransaction"), std::string("stop"),
+                             std::string("getprivatebroadcastinfo")};
+    return spec;
+}
+
 static std::string default_datadir() {
 #ifdef _WIN32
     // Match Bitcoin Core's GetDefaultDataDir(): check legacy APPDATA location first,
@@ -140,6 +152,12 @@ class Application {
     // Honored both at startup (auto-inject gating) and on live reload.
     bool        show_settings_tab{true};
     std::string settings_tab_path; // resolved settings.lua path (for reload gating)
+    // Whether the auto-loaded Tools tab is shown. Controlled by `toolstab` in
+    // config.toml and the --toolstab=true|false CLI option (default true). Honored
+    // both at startup (auto-inject gating) and on live reload. Tools must be
+    // auto-injected rather than user-added because it carries the allow_rpc grant.
+    bool        show_tools_tab{true};
+    std::string tools_tab_path; // resolved tools.lua path (for reload gating)
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -225,6 +243,9 @@ int Application::configure(int argc, char* argv[]) {
         ->delimiter(',');
     app.add_option("--settingstab", show_settings_tab,
                    "Show the Settings tab (true/false, default true)")
+        ->default_val(true)
+        ->group("Lua");
+    app.add_option("--toolstab", show_tools_tab, "Show the Tools tab (true/false, default true)")
         ->default_val(true)
         ->group("Lua");
     app.add_option("--lua-dir", lua_dir,
@@ -443,19 +464,16 @@ int Application::configure(int argc, char* argv[]) {
         };
 
         // Auto-register the built-in Lua tabs (tools first, then settings) unless the
-        // user already added them explicitly. Tools needs three mutating RPCs the
-        // global sandbox blocks, so it is injected as a JSON spec carrying a per-tab
-        // allow_rpc grant — keeping those RPCs off-limits to every other Lua script.
+        // user already added them explicitly, or disabled them via config/CLI. Tools
+        // is gated on `toolstab` (default true), remembered for reload gating even when
+        // hidden; see tools_tab_spec() for why it must be auto-injected.
         if (!lua_tabs_dir.empty()) {
             fs::path tools = fs::path(lua_tabs_dir) / "tools.lua";
             if (fs::exists(tools)) {
                 std::string tools_str = tools.string();
-                if (!already_added(tools_str)) {
-                    json spec;
-                    spec["script"]    = tools_str;
-                    spec["allow_rpc"] = json{std::string("sendrawtransaction"), std::string("stop"),
-                                             std::string("getprivatebroadcastinfo")};
-                    lua_tabs.push_back(spec.dump());
+                tools_tab_path        = tools_str; // recorded even when hidden
+                if (!already_added(tools_str) && show_tools_tab) {
+                    lua_tabs.push_back(tools_tab_spec(tools_str).dump());
                     auto_injected_tabs.insert(tools_str); // matches LuaTab::script_path()
                 }
             }
@@ -639,9 +657,10 @@ int Application::run() const {
 
             // Read the updated tab list from config.toml
             std::vector<std::string> new_specs;
-            // Re-read the settingstab visibility flag so the Settings tab can hide
-            // itself live; the CLI --no-settingstab default carries over when absent.
+            // Re-read the settingstab/toolstab visibility flags so those tabs can be
+            // shown/hidden live; the CLI defaults carry over when a flag is absent.
             bool settings_visible = show_settings_tab;
+            bool tools_visible    = show_tools_tab;
             {
                 std::string cfg_path = paths::config_file();
                 if (!cfg_path.empty()) {
@@ -665,6 +684,13 @@ int Application::run() const {
                             std::string val = line.substr(eq + 1);
                             auto        vs  = val.find_first_not_of(" \t");
                             settings_visible =
+                                vs != std::string::npos && val.compare(vs, 4, "true") == 0;
+                            continue;
+                        }
+                        if (key == "toolstab") {
+                            std::string val = line.substr(eq + 1);
+                            auto        vs  = val.find_first_not_of(" \t");
+                            tools_visible =
                                 vs != std::string::npos && val.compare(vs, 4, "true") == 0;
                             continue;
                         }
@@ -728,11 +754,35 @@ int Application::run() const {
                     continue;
                 bool is_settings =
                     !settings_tab_path.empty() && p->script_path() == settings_tab_path;
-                if (auto_tab_paths.count(p->script_path()) && !(is_settings && !settings_visible)) {
+                bool is_tools = !tools_tab_path.empty() && p->script_path() == tools_tab_path;
+                bool hidden_by_flag =
+                    (is_settings && !settings_visible) || (is_tools && !tools_visible);
+                if (auto_tab_paths.count(p->script_path()) && !hidden_by_flag) {
                     lua_tab_ptrs.push_back(std::move(p));
                 } else {
                     p->stop(); // wind the worker thread down (~1s)
                     dead_lua_tabs.push_back(std::move(p));
+                }
+            }
+
+            // Tools is flag-controlled (toolstab): if it was toggled back on and is no
+            // longer present, re-inject it with its allow_rpc grant so re-enabling works
+            // live, not only on restart.
+            if (tools_visible && !tools_tab_path.empty() &&
+                std::filesystem::exists(tools_tab_path)) {
+                bool present = false;
+                for (auto& p : lua_tab_ptrs)
+                    if (p && p->script_path() == tools_tab_path) {
+                        present = true;
+                        break;
+                    }
+                if (!present) {
+                    try {
+                        lua_tab_ptrs.push_back(make_lua_tab(tools_tab_spec(tools_tab_path)));
+                        auto_tab_paths.insert(tools_tab_path);
+                    } catch (const std::exception& e) {
+                        (void)e; // bad path shows its own error panel
+                    }
                 }
             }
 

@@ -467,6 +467,7 @@ static lb::LuaRef read_config_table(lua_State* L) {
     t["host"]        = std::string("127.0.0.1");
     t["port"]        = 8332;
     t["settingstab"] = true;
+    t["toolstab"]    = true;
     t["debug"]       = false;
     t["debug_file"]  = std::string("");
     t["exists"]      = false;
@@ -506,6 +507,7 @@ static lb::LuaRef read_config_table(lua_State* L) {
             Host,
             Port,
             SettingsTab,
+            ToolsTab,
             Debug,
             DebugFile,
             Unknown
@@ -523,6 +525,8 @@ static lb::LuaRef read_config_table(lua_State* L) {
                 return Key::Port;
             if (k == "settingstab")
                 return Key::SettingsTab;
+            if (k == "toolstab")
+                return Key::ToolsTab;
             if (k == "debug")
                 return Key::Debug;
             if (k == "debug-file")
@@ -563,6 +567,9 @@ static lb::LuaRef read_config_table(lua_State* L) {
         }
         case Key::SettingsTab:
             t["settingstab"] = (parse_toml_scalar(val) == "true");
+            break;
+        case Key::ToolsTab:
+            t["toolstab"] = (parse_toml_scalar(val) == "true");
             break;
         case Key::Debug:
             t["debug"] = (parse_toml_scalar(val) == "true");
@@ -613,8 +620,8 @@ static bool write_config_table(const lb::LuaRef& cfg) {
         }
     }
 
-    const std::set<std::string> managed = {"tab",         "allow-rpc", "refresh",
-                                           "settingstab", "debug",     "debug-file"};
+    const std::set<std::string> managed = {"tab",      "allow-rpc", "refresh",   "settingstab",
+                                           "toolstab", "debug",     "debug-file"};
     std::set<std::string>       written;
 
     // Returns the replacement line(s) for a managed key. Multi-value keys (tab,
@@ -622,7 +629,7 @@ static bool write_config_table(const lb::LuaRef& cfg) {
     // hand-write and the one CLI11 reads at startup.
     auto emit_key = [&](const std::string& key) -> std::vector<std::string> {
         std::vector<std::string> lines;
-        enum class Key { Tab, AllowRpc, Refresh, SettingsTab, Debug, DebugFile, Other };
+        enum class Key { Tab, AllowRpc, Refresh, SettingsTab, ToolsTab, Debug, DebugFile, Other };
         auto classify = [](const std::string& k) {
             if (k == "tab")
                 return Key::Tab;
@@ -632,6 +639,8 @@ static bool write_config_table(const lb::LuaRef& cfg) {
                 return Key::Refresh;
             if (k == "settingstab")
                 return Key::SettingsTab;
+            if (k == "toolstab")
+                return Key::ToolsTab;
             if (k == "debug")
                 return Key::Debug;
             if (k == "debug-file")
@@ -669,6 +678,17 @@ static bool write_config_table(const lb::LuaRef& cfg) {
             lb::LuaRef b = cfg["settingstab"];
             if (b.isBool() && !b.unsafe_cast<bool>())
                 lines.push_back("settingstab = false");
+            break;
+        }
+        case Key::ToolsTab: {
+            // Persist both states explicitly (unlike settingstab, which is only ever
+            // disabled from the UI): Tools can be toggled on AND off from the list, so
+            // an absent line must not be re-read against a --toolstab=false startup
+            // default when the tab is re-enabled live.
+            lb::LuaRef b = cfg["toolstab"];
+            if (b.isBool())
+                lines.push_back(std::string("toolstab = ") +
+                                (b.unsafe_cast<bool>() ? "true" : "false"));
             break;
         }
         case Key::Debug: {

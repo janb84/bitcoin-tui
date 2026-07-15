@@ -73,6 +73,13 @@ local function get_config()
     return enabled, cfg
 end
 
+-- True when `path` points at the built-in tools.lua. Tools is auto-injected with an
+-- allow_rpc grant, so it is toggled via the `toolstab` flag rather than a `tab =`
+-- config entry like ordinary tabs.
+local function is_tools_path(path)
+    return path:match("([^/\\]+)$") == "tools.lua"
+end
+
 -- A cell rendering an on/off boolean.
 local function on_cell(on)
     return on and { value = "✓", color = "green", bold = true }
@@ -110,7 +117,14 @@ local function refresh_display()
     tabs_panel:start_refresh()
     for _, f in ipairs(files) do
         if f.name ~= "settings" then  -- hide self from the list
-            local on = enabled[f.path]
+            -- Tools reflects the `toolstab` flag (default on); every other tab
+            -- reflects its presence in the `tab =` config list.
+            local on
+            if f.name == "tools" then
+                on = cfg.toolstab ~= false
+            else
+                on = enabled[f.path]
+            end
             tabs_panel:update(f.path, {
                 path = f.path,
                 on   = on_cell(on),
@@ -272,6 +286,18 @@ local function toggle_selected(key, trigger)
     end
 
     local enabled, cfg = get_config()
+
+    -- Tools is toggled via the `toolstab` flag, not a `tab =` entry, so it keeps its
+    -- auto-injected allow_rpc grant whether shown or hidden.
+    if is_tools_path(key) then
+        local now    = not (cfg.toolstab ~= false)
+        cfg.toolstab = now
+        status_msg   = now and "Tools tab shown." or "Tools tab hidden."
+        save_config(cfg)
+        refresh_display()
+        return
+    end
+
     local tabs = cfg.tabs or {}
 
     if enabled[key] then
