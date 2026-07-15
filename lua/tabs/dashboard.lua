@@ -1,11 +1,11 @@
--- Dashboard — Lua port of the built-in C++ Dashboard tab (src/tabs/dashboard.cpp).
+-- Dashboard — blockchain, network and mempool summary at a glance.
 --
 -- Demonstrates summary panels, the 2+1 layout (new_row), and progress bars
 -- via btcui_gauge(). Reads getblockchaininfo / getnetworkinfo / getmempoolinfo;
 -- hashrate is derived from difficulty (difficulty * 2^32 / 600), matching core.
 --
--- Load with: --tab lua/examples/dashboard.lua
--- Optional refresh interval (seconds): --tab lua/examples/dashboard.lua,interval=2
+-- Load with: --tab lua/tabs/dashboard.lua (or enable it from the Settings tab)
+-- Optional refresh interval (seconds): --tab lua/tabs/dashboard.lua,interval=2
 
 -- Lua 5.5 strict globals: a typo in any name below is caught at load time.
 global btcui_gauge, btcui_option, btcui_rpc, btcui_set_interval, btcui_set_name,

@@ -7,7 +7,7 @@
 
 // Renders a horizontal progress bar: an optional bold prefix label, a flexing
 // gauge that fills the available width, and a trailing percentage. The frac is
-// clamped to [0, 1]. Used by the dashboard (sync / memory usage rows) and
+// clamped to [0, 1]. Used by the Mempool stats panel (memory usage row) and
 // exposed to Lua tabs via btcui_gauge().
 inline ftxui::Element gauge_element(double frac, ftxui::Color bar_color,
                                     const std::string& prefix = "") {

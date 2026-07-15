@@ -18,7 +18,7 @@ class MempoolTab : public Tab {
                std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs);
     ~MempoolTab() override = default;
 
-    // switch_tab=true sets tab_index_out=1 before launching the search thread
+    // switch_tab=true sets tab_index_out=0 (the Mempool tab) before launching the search thread
     void trigger_search(const std::string& query, bool switch_tab, int& tab_index_out);
 
     std::string    name() const override { return "Mempool"; }

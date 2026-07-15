@@ -32,7 +32,6 @@ static void ensure_terminal();
 #include "render.hpp"
 #include "rpc_client.hpp"
 #include "state.hpp"
-#include "tabs/dashboard.hpp"
 #include "tabs/luatab.hpp"
 #include "tabs/mempool.hpp"
 #include "tabs/peers.hpp"
@@ -475,10 +474,9 @@ int Application::run() const {
     int tab_index = 0;
 
     // Tab objects (mempool first — tools captures a reference to it via lambda)
-    DashboardTab dashboard_tab(cfg, auth, screen, running, state, refresh_secs);
-    MempoolTab   mempool_tab(cfg, auth, screen, running, state, refresh_secs);
-    PeersTab     peers_tab(cfg, auth, screen, running, state, refresh_secs);
-    ToolsTab     tools_tab(
+    MempoolTab mempool_tab(cfg, auth, screen, running, state, refresh_secs);
+    PeersTab   peers_tab(cfg, auth, screen, running, state, refresh_secs);
+    ToolsTab   tools_tab(
         cfg, auth, screen, running, state, refresh_secs,
         [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
 
@@ -540,7 +538,7 @@ int Application::run() const {
                 screen.Post(Event::Custom);
             });
         }
-        tabs = {&dashboard_tab, &mempool_tab, &peers_tab, &tools_tab};
+        tabs = {&mempool_tab, &peers_tab, &tools_tab};
         for (auto& p : lua_tab_ptrs)
             tabs.push_back(p.get());
         tab_labels.clear();
