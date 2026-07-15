@@ -23,27 +23,6 @@ struct BlockStat {
     int64_t time         = 0;
 };
 
-struct PeerInfo {
-    int         id = 0;
-    std::string addr;
-    std::string network;
-    std::string subver;
-    bool        inbound       = false;
-    int64_t     bytes_sent    = 0;
-    int64_t     bytes_recv    = 0;
-    double      ping_ms       = -1.0;
-    int         version       = 0;
-    int64_t     synced_blocks = 0;
-    int64_t     conntime      = 0;
-    std::string services;
-    bool        bip152_hb_from = false;
-    bool        bip152_hb_to   = false;
-    std::string connection_type;
-    std::string transport;
-    int64_t     addr_processed = 0;
-    double      min_ping_ms    = -1.0;
-};
-
 struct AppState {
     // Blockchain
     std::string chain      = "—";
@@ -74,9 +53,6 @@ struct AppState {
 
     // Mining
     double network_hashps = 0.0;
-
-    // Peers
-    std::vector<PeerInfo> peers;
 
     // Recent blocks (index 0 = newest, populated by getblockstats)
     std::vector<BlockStat> recent_blocks;
@@ -168,39 +144,6 @@ struct TxSearchState {
     // Outputs overlay (opened by pressing Enter on the Outputs row)
     bool outputs_overlay_open = false;
     int  output_overlay_sel   = -1;
-};
-
-struct AddNodeState {
-    int         cmd_idx    = 0; // 0=onetry, 1=add, 2=remove
-    bool        pending    = false;
-    bool        has_result = false;
-    bool        success    = false;
-    std::string result_message;
-};
-
-struct BanNodeState {
-    bool        is_remove  = false; // false=ban, true=unban
-    bool        pending    = false;
-    bool        has_result = false;
-    bool        success    = false;
-    std::string result_message;
-};
-
-struct PeerActionResult {
-    bool        has_result = false;
-    bool        success    = false;
-    std::string message;
-};
-
-struct AddedNodeInfo {
-    std::string addednode;
-    bool        connected = false;
-};
-
-struct BannedEntry {
-    std::string address;
-    int64_t     banned_until = 0;
-    std::string ban_reason;
 };
 
 // ============================================================================

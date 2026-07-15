@@ -16,12 +16,10 @@ void poll_rpc(RpcClient& rpc, Guarded<AppState>& state,
         auto bc  = rpc.call("getblockchaininfo")["result"];
         auto net = rpc.call("getnetworkinfo")["result"];
         auto mp  = rpc.call("getmempoolinfo")["result"];
-        auto pi  = rpc.call("getpeerinfo")["result"];
 
         int64_t new_tip = bc.value("blocks", 0LL);
 
         // Commit core state immediately so the UI can render before block stats arrive.
-        // TODO: build peers list outside the lock to reduce hold time
         state.update([&](auto& s) {
             // Blockchain
             s.chain         = bc.value("chain", "—");
@@ -53,47 +51,6 @@ void poll_rpc(RpcClient& rpc, Guarded<AppState>& state,
             // Hashrate derived from difficulty (saves a getmininginfo round-trip):
             // difficulty × 2³² / 600  ≈  expected hashes per second at current difficulty
             s.network_hashps = bc.value("difficulty", 0.0) * 4294967296.0 / 600.0;
-
-            // Peers
-            s.peers.clear();
-            for (const auto& p : pi) {
-                PeerInfo peer;
-                peer.id              = p.value("id", 0);
-                peer.addr            = p.value("addr", "");
-                peer.network         = p.value("network", "");
-                peer.subver          = p.value("subver", "");
-                peer.inbound         = p.value("inbound", false);
-                peer.bytes_sent      = p.value("bytessent", 0LL);
-                peer.bytes_recv      = p.value("bytesrecv", 0LL);
-                peer.version         = p.value("version", 0);
-                peer.synced_blocks   = p.value("synced_blocks", 0LL);
-                peer.conntime        = p.value("conntime", 0LL);
-                peer.connection_type = p.value("connection_type", "");
-                peer.transport       = p.value("transport_protocol_type", "");
-                peer.addr_processed  = p.value("addr_processed", 0LL);
-                if (p.contains("servicesnames") && p["servicesnames"].is_array()) {
-                    std::string svc;
-                    for (const auto& sv : p["servicesnames"]) {
-                        if (!svc.empty())
-                            svc += ", ";
-                        svc += sv.get<std::string>();
-                    }
-                    peer.services = svc;
-                }
-                if (p.contains("pingtime") && p["pingtime"].is_number()) {
-                    peer.ping_ms = p["pingtime"].get<double>() * 1000.0;
-                }
-                if (p.contains("minping") && p["minping"].is_number()) {
-                    peer.min_ping_ms = p["minping"].get<double>() * 1000.0;
-                }
-                if (p.contains("bip152_hb_from") && p["bip152_hb_from"].is_bool()) {
-                    peer.bip152_hb_from = p["bip152_hb_from"].get<bool>();
-                }
-                if (p.contains("bip152_hb_to") && p["bip152_hb_to"].is_bool()) {
-                    peer.bip152_hb_to = p["bip152_hb_to"].get<bool>();
-                }
-                s.peers.push_back(std::move(peer));
-            }
 
             s.connected = true;
             s.error_message.clear();

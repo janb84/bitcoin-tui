@@ -14,6 +14,7 @@
 
 #include <ftxui/ftxui.hpp>
 
+#include "components/dialog.hpp"
 #include "components/hit_list.hpp"
 #include "components/qr_item.hpp"
 #include "guarded.hpp"
@@ -67,6 +68,8 @@ struct LuaTabState {
         int         cursor = 0;
     };
     InputOverlay input_overlay;
+    // modal dialog overlay (btcui_dialog)
+    components::DialogState dialog;
 };
 
 class LuaScript;
@@ -127,8 +130,13 @@ class LuaTab : public Tab {
     // "space", or "click" so the Lua callback can treat activate (Enter/click)
     // and toggle (Space) differently.
     mutable Guarded<std::deque<std::pair<std::string, std::string>>> select_queue_;
-    std::atomic<bool>                                                resize_pending_{false};
-    std::atomic<int>                                                 last_dimx_{0};
-    std::atomic<int>                                                 last_dimy_{0};
-    std::thread                                                      lua_thread_;
+    // Dialog activations/keypresses awaiting dispatch to the Lua thread.
+    mutable Guarded<std::deque<components::DialogEvent>> dialog_event_queue_;
+    // Dialog button/item rectangles from the last render, for mouse hit-testing.
+    // UI-thread only (written by render(), read by handle_focused_event()).
+    components::DialogHits dialog_hits_;
+    std::atomic<bool>      resize_pending_{false};
+    std::atomic<int>       last_dimx_{0};
+    std::atomic<int>       last_dimy_{0};
+    std::thread            lua_thread_;
 };

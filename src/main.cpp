@@ -34,7 +34,6 @@ static void ensure_terminal();
 #include "state.hpp"
 #include "tabs/luatab.hpp"
 #include "tabs/mempool.hpp"
-#include "tabs/peers.hpp"
 
 // ============================================================================
 // Cookie authentication helpers
@@ -42,16 +41,58 @@ static void ensure_terminal();
 
 static std::string default_config_dir() { return paths::config_dir(); }
 
-// The Tools tab is injected as a JSON spec carrying a per-tab allow_rpc grant for
-// the three mutating RPCs it needs — keeping those RPCs off-limits to every other
-// Lua script. Shared by startup auto-injection (configure) and live re-injection
-// when the tab is toggled back on (run).
-static json tools_tab_spec(const std::string& script_path) {
-    json spec;
-    spec["script"]    = script_path;
-    spec["allow_rpc"] = json{std::string("sendrawtransaction"), std::string("stop"),
-                             std::string("getprivatebroadcastinfo")};
-    return spec;
+// Per-tab allow_rpc grants for the bundled tab scripts that need mutating RPCs
+// (Tools: broadcast/shutdown, Peers: disconnect/ban/addnode). The grant is keyed
+// on the script's identity in lua_tabs_dir and attached wherever the tab is
+// constructed — config.toml `tab =` entry, --tab, or Settings-tab toggle — so
+// those RPCs stay off-limits to every other Lua script while the bundled tabs
+// remain ordinary, freely toggleable tabs.
+static std::vector<std::string> builtin_tab_rpcs(const std::string& script_path,
+                                                 const std::string& lua_tabs_dir) {
+    if (lua_tabs_dir.empty())
+        return {};
+    namespace fs = std::filesystem;
+    auto is      = [&](const char* name) {
+        std::error_code ec;
+        bool            eq = fs::equivalent(script_path, fs::path(lua_tabs_dir) / name, ec);
+        return eq && !ec;
+    };
+    if (is("tools.lua"))
+        return {"sendrawtransaction", "stop", "getprivatebroadcastinfo"};
+    if (is("peers.lua"))
+        return {"addnode", "disconnectnode", "setban"};
+    return {};
+}
+
+// Read the `settingstab` visibility flag from config.toml on live tab reload,
+// returning `def` when the file or key is absent.
+static bool read_config_flag(const std::string& cfg_path, const std::string& name, bool def) {
+    if (cfg_path.empty())
+        return def;
+    std::ifstream f(cfg_path);
+    std::string   line;
+    bool          result = def;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty() || line[0] == ';' || line[0] == '#')
+            continue;
+        auto eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string key = line.substr(0, eq);
+        auto        ks  = key.find_first_not_of(" \t");
+        auto        ke  = key.find_last_not_of(" \t");
+        if (ks == std::string::npos)
+            continue;
+        key = key.substr(ks, ke - ks + 1);
+        if (key != name)
+            continue;
+        std::string val = line.substr(eq + 1);
+        auto        vs  = val.find_first_not_of(" \t");
+        result          = vs != std::string::npos && val.compare(vs, 4, "true") == 0;
+    }
+    return result;
 }
 
 static std::string default_datadir() {
@@ -152,12 +193,6 @@ class Application {
     // Honored both at startup (auto-inject gating) and on live reload.
     bool        show_settings_tab{true};
     std::string settings_tab_path; // resolved settings.lua path (for reload gating)
-    // Whether the auto-loaded Tools tab is shown. Controlled by `toolstab` in
-    // config.toml and the --toolstab=true|false CLI option (default true). Honored
-    // both at startup (auto-inject gating) and on live reload. Tools must be
-    // auto-injected rather than user-added because it carries the allow_rpc grant.
-    bool        show_tools_tab{true};
-    std::string tools_tab_path; // resolved tools.lua path (for reload gating)
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -243,9 +278,6 @@ int Application::configure(int argc, char* argv[]) {
         ->delimiter(',');
     app.add_option("--settingstab", show_settings_tab,
                    "Show the Settings tab (true/false, default true)")
-        ->default_val(true)
-        ->group("Lua");
-    app.add_option("--toolstab", show_tools_tab, "Show the Tools tab (true/false, default true)")
         ->default_val(true)
         ->group("Lua");
     app.add_option("--lua-dir", lua_dir,
@@ -463,21 +495,11 @@ int Application::configure(int argc, char* argv[]) {
             return false;
         };
 
-        // Auto-register the built-in Lua tabs (tools first, then settings) unless the
-        // user already added them explicitly, or disabled them via config/CLI. Tools
-        // is gated on `toolstab` (default true), remembered for reload gating even when
-        // hidden; see tools_tab_spec() for why it must be auto-injected.
+        // Auto-register the built-in Settings tab unless the user already added it
+        // explicitly or disabled it via config/CLI. The other bundled tabs (peers,
+        // tools, dashboard, …) are ordinary tabs enabled with `tab =` entries from
+        // the Settings tab; their allow_rpc grants come from builtin_tab_rpcs().
         if (!lua_tabs_dir.empty()) {
-            fs::path tools = fs::path(lua_tabs_dir) / "tools.lua";
-            if (fs::exists(tools)) {
-                std::string tools_str = tools.string();
-                tools_tab_path        = tools_str; // recorded even when hidden
-                if (!already_added(tools_str) && show_tools_tab) {
-                    lua_tabs.push_back(tools_tab_spec(tools_str).dump());
-                    auto_injected_tabs.insert(tools_str); // matches LuaTab::script_path()
-                }
-            }
-
             fs::path settings = fs::path(lua_tabs_dir) / "settings.lua";
             if (fs::exists(settings)) {
                 std::string settings_str = settings.string();
@@ -509,10 +531,9 @@ int Application::run() const {
 
     int tab_index = 0;
 
-    // Tab objects. Dashboard and Tools are now Lua tabs (lua/tabs/*.lua),
+    // Tab objects. Dashboard, Peers and Tools are now Lua tabs (lua/tabs/*.lua),
     // auto-injected in configure() with per-tab allow_rpc grants where needed.
     MempoolTab mempool_tab(cfg, auth, screen, running, state, refresh_secs);
-    PeersTab   peers_tab(cfg, auth, screen, running, state, refresh_secs);
 
     std::string debug_log = debug_log_file.empty()
                                 ? datadir + "/" + network_subdir(network) + "debug.log"
@@ -541,12 +562,14 @@ int Application::run() const {
 
     // Construct a LuaTab from a parsed options object. A per-tab "allow_rpc" array
     // in the spec grants extra RPC methods to that tab only (merged with the global
-    // --allow-rpc list); the built-in Tools tab uses this to call sendrawtransaction
-    // /stop without opening those mutating RPCs to every Lua script.
+    // --allow-rpc list). The bundled Tools/Peers tabs get their mutating-RPC grants
+    // attached automatically by script identity — see builtin_tab_rpcs().
     auto make_lua_tab = [&](json options) -> std::unique_ptr<LuaTab> {
         if (!options.contains("script") || options["script"].get<std::string>().empty())
             throw std::runtime_error("--tab: missing script path");
         std::vector<std::string> tab_rpcs = extra_rpcs;
+        for (auto& m : builtin_tab_rpcs(options["script"].get<std::string>(), lua_tabs_dir))
+            tab_rpcs.push_back(std::move(m));
         if (options.contains("allow_rpc") && options["allow_rpc"].is_array()) {
             for (const auto& m : options["allow_rpc"]) {
                 if (m.is_string())
@@ -597,7 +620,7 @@ int Application::run() const {
                 screen.Post(Event::Custom);
             });
         }
-        tabs = {&mempool_tab, &peers_tab};
+        tabs = {&mempool_tab};
         for (auto& p : lua_tab_ptrs)
             tabs.push_back(p.get());
         tab_labels.clear();
@@ -657,12 +680,11 @@ int Application::run() const {
 
             // Read the updated tab list from config.toml
             std::vector<std::string> new_specs;
-            // Re-read the settingstab/toolstab visibility flags so those tabs can be
-            // shown/hidden live; the CLI defaults carry over when a flag is absent.
-            bool settings_visible = show_settings_tab;
-            bool tools_visible    = show_tools_tab;
+            // Re-read the settingstab visibility flag so the Settings tab can hide
+            // itself live; the startup value carries over when absent.
+            const std::string cfg_path = paths::config_file();
+            bool settings_visible = read_config_flag(cfg_path, "settingstab", show_settings_tab);
             {
-                std::string cfg_path = paths::config_file();
                 if (!cfg_path.empty()) {
                     std::ifstream f(cfg_path);
                     std::string   line;
@@ -680,20 +702,6 @@ int Application::run() const {
                         if (ks == std::string::npos)
                             continue;
                         key = key.substr(ks, ke - ks + 1);
-                        if (key == "settingstab") {
-                            std::string val = line.substr(eq + 1);
-                            auto        vs  = val.find_first_not_of(" \t");
-                            settings_visible =
-                                vs != std::string::npos && val.compare(vs, 4, "true") == 0;
-                            continue;
-                        }
-                        if (key == "toolstab") {
-                            std::string val = line.substr(eq + 1);
-                            auto        vs  = val.find_first_not_of(" \t");
-                            tools_visible =
-                                vs != std::string::npos && val.compare(vs, 4, "true") == 0;
-                            continue;
-                        }
                         if (key != "tab")
                             continue;
                         std::string val = line.substr(eq + 1);
@@ -754,35 +762,12 @@ int Application::run() const {
                     continue;
                 bool is_settings =
                     !settings_tab_path.empty() && p->script_path() == settings_tab_path;
-                bool is_tools = !tools_tab_path.empty() && p->script_path() == tools_tab_path;
-                bool hidden_by_flag =
-                    (is_settings && !settings_visible) || (is_tools && !tools_visible);
+                bool hidden_by_flag = is_settings && !settings_visible;
                 if (auto_tab_paths.count(p->script_path()) && !hidden_by_flag) {
                     lua_tab_ptrs.push_back(std::move(p));
                 } else {
                     p->stop(); // wind the worker thread down (~1s)
                     dead_lua_tabs.push_back(std::move(p));
-                }
-            }
-
-            // Tools is flag-controlled (toolstab): if it was toggled back on and is no
-            // longer present, re-inject it with its allow_rpc grant so re-enabling works
-            // live, not only on restart.
-            if (tools_visible && !tools_tab_path.empty() &&
-                std::filesystem::exists(tools_tab_path)) {
-                bool present = false;
-                for (auto& p : lua_tab_ptrs)
-                    if (p && p->script_path() == tools_tab_path) {
-                        present = true;
-                        break;
-                    }
-                if (!present) {
-                    try {
-                        lua_tab_ptrs.push_back(make_lua_tab(tools_tab_spec(tools_tab_path)));
-                        auto_tab_paths.insert(tools_tab_path);
-                    } catch (const std::exception& e) {
-                        (void)e; // bad path shows its own error panel
-                    }
                 }
             }
 
@@ -939,9 +924,10 @@ int Application::run() const {
         });
     });
 
-    // Event handler — ordering matches the critical constraint documented in memory:
-    // global_search → tools_input → tx overlays → addnode_input → ban_input
-    // → tab3 nav → mempool nav → normal keys
+    // Event handler — ordering matters: overlay handlers must run before tab
+    // navigation. global_search -> tx overlays -> focused tab -> mempool nav ->
+    // normal keys. (Lua tab overlays — dialogs, text input, QR — are handled
+    // inside LuaTab::handle_focused_event.)
     auto event_handler = CatchEvent(renderer, [&](const Event& event) -> bool {
         // Connection overlay: consumes all events when disconnected
         {
@@ -988,8 +974,14 @@ int Application::run() const {
         // Note: Event::mouse() is not const-qualified in FTXUI v6
         if (event.is_mouse()) {
             auto& me = const_cast<Event&>(event);
-            if (me.mouse().motion == Mouse::Moved)
+            if (me.mouse().motion == Mouse::Moved) {
+                // Let the active tab update pointer-driven state (e.g. a dialog's
+                // hover highlight), then let the move propagate so the footer bar
+                // can update its own hover too.
+                if (tab_index >= 0 && tab_index < static_cast<int>(tabs.size()))
+                    tabs[tab_index]->handle_focused_event(event);
                 return false;
+            }
             if (me.mouse().button == Mouse::Left && me.mouse().motion == Mouse::Pressed &&
                 me.mouse().y == 4) {
                 int mx = me.mouse().x;
@@ -1043,10 +1035,6 @@ int Application::run() const {
         // Tab-specific event dispatch (priority order — see MEMORY.md CatchEvent note)
         if (auto r = mempool_tab.handle_tx_overlay(event); r.has_value())
             return *r;
-        if (peers_tab.handle_addnode_input(event))
-            return true;
-        if (peers_tab.handle_ban_input(event))
-            return true;
         if (tab_index >= 0 && tab_index < static_cast<int>(tabs.size()) &&
             tabs[tab_index]->handle_focused_event(event))
             return true;

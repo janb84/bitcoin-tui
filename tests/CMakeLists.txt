@@ -12,15 +12,28 @@ add_executable(bitcoin-tui-tests
   test_bitcoind.cpp
   test_footer_spec.cpp
   test_paths.cpp
+  test_dialog.cpp
+  ${PROJECT_SOURCE_DIR}/src/render.cpp
 )
 target_include_directories(bitcoin-tui-tests PRIVATE ${PROJECT_SOURCE_DIR}/src/)
 target_link_libraries(bitcoin-tui-tests PRIVATE
   rpc_client_obj
   bitcoind_obj
+  ftxui::ftxui
   Catch2::Catch2WithMain
   Threads::Threads
 )
 add_test(NAME bitcoin-tui-tests COMMAND bitcoin-tui-tests)
+
+# Script-level tests for the bundled Lua tabs: a plain Lua 5.5 interpreter
+# (built from the same fetched sources as lua_static) runs each tests/lua/
+# harness, which stubs the btcui_* API and drives the tab's flows.
+add_executable(lua-interp ${lua_SOURCE_DIR}/lua.c)
+target_link_libraries(lua-interp PRIVATE lua_static)
+add_test(NAME test_peers_tab
+  COMMAND lua-interp ${CMAKE_CURRENT_SOURCE_DIR}/lua/test_peers_tab.lua
+          ${PROJECT_SOURCE_DIR}/lua/tabs/peers.lua
+)
 
 add_executable(test_cli test_cli.cpp)
 target_link_libraries(test_cli PRIVATE Catch2::Catch2WithMain)

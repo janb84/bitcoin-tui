@@ -409,6 +409,55 @@ global function btcui_quit() end
 ---@param query string   A txid (64 hex chars) or a block height
 global function btcui_search(query) end
 
+--- Return the current unix time in seconds. The Lua sandbox has no os library,
+--- so use this for age / remaining-time math (e.g. peer uptime, ban expiry).
+---@return integer
+global function btcui_now() end
+
+--- Open (or replace) a modal dialog overlay. The dialog is a centered titled
+--- panel that swallows the keyboard while open; the rest of the tab keeps
+--- refreshing behind it. Calling btcui_dialog() again replaces the dialog
+--- (the idiomatic way to update its contents), btcui_dialog_close() closes it.
+---
+--- Options:
+---   title     string     Panel title
+---   width     integer    Panel width in cells (default: 64)
+---   closable  boolean    When false, Esc is swallowed (default: true)
+---   rows      DialogRow[] Content rows (see below)
+---   choice    { label, options, index }   Optional value cycled with ←/→
+---                        (options: string[], index: 1-based default)
+---   input     { label, value }            Optional text field, typed on the
+---                        UI thread; Enter submits and freezes the field
+---   buttons   string[]   Optional ←/→-selectable button row (Enter activates)
+---   hint      string     Gray key-hint line at the bottom
+---   on_event  fun(ev)    Event callback (runs on the Lua thread)
+---
+--- Rows (each entry of `rows`):
+---   "---"                                  separator line
+---   "plain text"                           text row
+---   { text=, color=, bold= }               styled text row
+---   { spans={ {text=,color=,bold=}, … } }  multi-styled text row
+---   { label=, value=, color= }             gray label + bold value line
+---   { key=, text=|spans=, right=, right_color= }
+---       selectable item row: ↑/↓ navigates items, Enter activates
+---       (fires on_event "select"); `right` is right-aligned trailing text
+---
+--- on_event receives one table argument:
+---   { type="submit", text=…, choice=… }  Enter with an input field (choice is
+---                                        the 1-based choice index, if any)
+---   { type="select", key=… }             Enter on a selectable item row
+---   { type="button", index=…, label=… }  Enter on a button (1-based index)
+---   { type="key", key=… }                unhandled key ("a", "q", "left", …)
+---   { type="close" }                     Esc closed the dialog
+---
+--- Like btcui_on_select callbacks, on_event is a plain call — it cannot use
+--- btcui_rpc() directly; set a pending flag and btcui_wake() a timer instead.
+---@param opts table
+global function btcui_dialog(opts) end
+
+--- Close the modal dialog overlay, if open. No "close" event is delivered.
+global function btcui_dialog_close() end
+
 --- Show a modal text-input overlay. The callback receives the entered string on
 --- confirm (Enter), or nil when the user cancels (Esc). Can be called from
 --- footer-button callbacks and timer callbacks (not from coroutines mid-RPC).
@@ -472,7 +521,7 @@ global function btcui_text_input(label, default, on_confirm) end
 ---
 --- Network:
 ---   getpeerinfo, getnetworkinfo, getnettotals,
----   getconnectioncount, getnodeaddresses
+---   getconnectioncount, getnodeaddresses, getaddednodeinfo, listbanned
 ---
 --- Mining:
 ---   getmininginfo, getnetworkhashps
@@ -486,5 +535,7 @@ global function btcui_text_input(label, default, on_confirm) end
 --- Extra methods can be granted globally with --allow-rpc, or to a single tab via
 --- an `allow_rpc` array in its --tab spec (JSON form), e.g.
 ---   --tab '{"script":"my.lua","allow_rpc":["sendrawtransaction"]}'
---- The built-in Tools tab uses a per-tab grant for sendrawtransaction, stop and
---- getprivatebroadcastinfo; those mutating methods stay off-limits to other scripts.
+--- The bundled Tools tab (sendrawtransaction, stop, getprivatebroadcastinfo) and
+--- Peers tab (addnode, disconnectnode, setban) get their per-tab grants attached
+--- automatically by script identity when loaded from lua/tabs/; those mutating
+--- methods stay off-limits to every other script.
