@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -22,6 +23,7 @@ extern "C" {
 #include <LuaBridge/Vector.h>
 
 #include "components/address.hpp"
+#include "components/dialog.hpp"
 #include "components/gauge.hpp"
 #include "components/qr_item.hpp"
 #include "components/qr_overlay.hpp"
@@ -38,6 +40,7 @@ static const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
     "decoderawtransaction",
     "decodescript",
     "estimatesmartfee",
+    "getaddednodeinfo",
     "getbestblockhash",
     "getblock",
     "getblockchaininfo",
@@ -65,6 +68,7 @@ static const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
     "getrawtransaction",
     "gettxout",
     "gettxoutsetinfo",
+    "listbanned",
     "logging",
     "uptime",
 };
@@ -253,6 +257,7 @@ class LuaScript {
         on_resize_fn_.reset();
         input_confirm_fn_.reset();
         on_select_fn_.reset();
+        dialog_fn_.reset();
         if (L_)
             lua_close(L_);
     }
@@ -300,6 +305,8 @@ class LuaScript {
     std::optional<luabridge::LuaRef> input_confirm_fn_; // set by btcui_text_input
     std::string                      on_select_src_;
     std::optional<luabridge::LuaRef> on_select_fn_; // set by btcui_on_select
+    std::string                      dialog_src_;
+    std::optional<luabridge::LuaRef> dialog_fn_; // set by btcui_dialog (on_event)
 };
 
 LuaScript::LuaScript() {
@@ -467,7 +474,6 @@ static lb::LuaRef read_config_table(lua_State* L) {
     t["host"]        = std::string("127.0.0.1");
     t["port"]        = 8332;
     t["settingstab"] = true;
-    t["toolstab"]    = true;
     t["debug"]       = false;
     t["debug_file"]  = std::string("");
     t["exists"]      = false;
@@ -507,7 +513,6 @@ static lb::LuaRef read_config_table(lua_State* L) {
             Host,
             Port,
             SettingsTab,
-            ToolsTab,
             Debug,
             DebugFile,
             Unknown
@@ -525,8 +530,6 @@ static lb::LuaRef read_config_table(lua_State* L) {
                 return Key::Port;
             if (k == "settingstab")
                 return Key::SettingsTab;
-            if (k == "toolstab")
-                return Key::ToolsTab;
             if (k == "debug")
                 return Key::Debug;
             if (k == "debug-file")
@@ -567,9 +570,6 @@ static lb::LuaRef read_config_table(lua_State* L) {
         }
         case Key::SettingsTab:
             t["settingstab"] = (parse_toml_scalar(val) == "true");
-            break;
-        case Key::ToolsTab:
-            t["toolstab"] = (parse_toml_scalar(val) == "true");
             break;
         case Key::Debug:
             t["debug"] = (parse_toml_scalar(val) == "true");
@@ -620,8 +620,8 @@ static bool write_config_table(const lb::LuaRef& cfg) {
         }
     }
 
-    const std::set<std::string> managed = {"tab",      "allow-rpc", "refresh",   "settingstab",
-                                           "toolstab", "debug",     "debug-file"};
+    const std::set<std::string> managed = {"tab",         "allow-rpc", "refresh",
+                                           "settingstab", "debug",     "debug-file"};
     std::set<std::string>       written;
 
     // Returns the replacement line(s) for a managed key. Multi-value keys (tab,
@@ -629,7 +629,7 @@ static bool write_config_table(const lb::LuaRef& cfg) {
     // hand-write and the one CLI11 reads at startup.
     auto emit_key = [&](const std::string& key) -> std::vector<std::string> {
         std::vector<std::string> lines;
-        enum class Key { Tab, AllowRpc, Refresh, SettingsTab, ToolsTab, Debug, DebugFile, Other };
+        enum class Key { Tab, AllowRpc, Refresh, SettingsTab, Debug, DebugFile, Other };
         auto classify = [](const std::string& k) {
             if (k == "tab")
                 return Key::Tab;
@@ -639,8 +639,6 @@ static bool write_config_table(const lb::LuaRef& cfg) {
                 return Key::Refresh;
             if (k == "settingstab")
                 return Key::SettingsTab;
-            if (k == "toolstab")
-                return Key::ToolsTab;
             if (k == "debug")
                 return Key::Debug;
             if (k == "debug-file")
@@ -678,17 +676,6 @@ static bool write_config_table(const lb::LuaRef& cfg) {
             lb::LuaRef b = cfg["settingstab"];
             if (b.isBool() && !b.unsafe_cast<bool>())
                 lines.push_back("settingstab = false");
-            break;
-        }
-        case Key::ToolsTab: {
-            // Persist both states explicitly (unlike settingstab, which is only ever
-            // disabled from the UI): Tools can be toggled on AND off from the list, so
-            // an absent line must not be re-read against a --toolstab=false startup
-            // default when the tab is re-enabled live.
-            lb::LuaRef b = cfg["toolstab"];
-            if (b.isBool())
-                lines.push_back(std::string("toolstab = ") +
-                                (b.unsafe_cast<bool>() ? "true" : "false"));
             break;
         }
         case Key::Debug: {
@@ -761,6 +748,106 @@ static bool write_config_table(const lb::LuaRef& cfg) {
     f.close();
     paths::chown_to_invoking_user(path);
     return true;
+}
+
+// ============================================================================
+// Dialog overlay parsing (btcui_dialog)
+// ============================================================================
+
+// Parse one row spec: "---" (separator), a plain string, or a table with
+// label/value, text/spans, an optional right-aligned part and an optional
+// `key` that makes the row a selectable item.
+static components::DialogRow parse_dialog_row(const lb::LuaRef& v) {
+    using components::DialogRow;
+    DialogRow row;
+    if (v.isString()) {
+        std::string s = v.unsafe_cast<std::string>();
+        if (s == "---")
+            row.kind = DialogRow::Kind::Separator;
+        else
+            row.spans.push_back({std::move(s), "", false});
+        return row;
+    }
+    if (!v.isTable())
+        return row;
+    lb::LuaRef label = v["label"];
+    lb::LuaRef value = v["value"];
+    if (label.isString() && value.isString()) {
+        row.kind        = DialogRow::Kind::LabelValue;
+        row.label       = label.unsafe_cast<std::string>();
+        row.value       = value.unsafe_cast<std::string>();
+        row.value_color = field_or(v, "color", std::string{});
+        return row;
+    }
+    row.key          = field_or(v, "key", std::string{});
+    row.kind         = row.key.empty() ? DialogRow::Kind::Text : DialogRow::Kind::Item;
+    lb::LuaRef spans = v["spans"];
+    if (spans.isTable()) {
+        for (int i = 1; i <= static_cast<int>(spans.length()); ++i) {
+            lb::LuaRef sp = spans[i];
+            row.spans.push_back({field_or(sp, "text", std::string{}),
+                                 field_or(sp, "color", std::string{}),
+                                 field_or(sp, "bold", false)});
+        }
+    } else {
+        row.spans.push_back({field_or(v, "text", std::string{}),
+                             field_or(v, "color", std::string{}), field_or(v, "bold", false)});
+    }
+    row.right       = field_or(v, "right", std::string{});
+    row.right_color = field_or(v, "right_color", std::string{});
+    return row;
+}
+
+static components::DialogState parse_dialog_opts(const lb::LuaRef& opts) {
+    components::DialogState d;
+    d.active        = true;
+    d.title         = field_or(opts, "title", std::string{});
+    d.width         = field_or(opts, "width", 64);
+    d.closable      = field_or(opts, "closable", true);
+    d.hint          = field_or(opts, "hint", std::string{});
+    lb::LuaRef rows = opts["rows"];
+    if (rows.isTable()) {
+        for (int i = 1; i <= static_cast<int>(rows.length()); ++i) {
+            auto row = parse_dialog_row(rows[i]);
+            if (row.kind == components::DialogRow::Kind::Item)
+                d.item_keys.push_back(row.key);
+            d.rows.push_back(std::move(row));
+        }
+    }
+    lb::LuaRef choice = opts["choice"];
+    if (choice.isTable()) {
+        components::DialogChoice c;
+        c.label       = field_or(choice, "label", std::string{});
+        lb::LuaRef co = choice["options"];
+        if (co.isTable()) {
+            for (int i = 1; i <= static_cast<int>(co.length()); ++i) {
+                lb::LuaRef o = co[i];
+                if (o.isString())
+                    c.options.push_back(o.unsafe_cast<std::string>());
+            }
+        }
+        if (!c.options.empty()) {
+            c.index  = std::clamp(field_or(choice, "index", 1) - 1, 0,
+                                  static_cast<int>(c.options.size()) - 1);
+            d.choice = std::move(c);
+        }
+    }
+    lb::LuaRef input = opts["input"];
+    if (input.isTable()) {
+        components::DialogInput in;
+        in.label  = field_or(input, "label", std::string{});
+        in.buffer = field_or(input, "value", std::string{});
+        d.input   = std::move(in);
+    }
+    lb::LuaRef btns = opts["buttons"];
+    if (btns.isTable()) {
+        for (int i = 1; i <= static_cast<int>(btns.length()); ++i) {
+            lb::LuaRef b = btns[i];
+            if (b.isString())
+                d.buttons.push_back(b.unsafe_cast<std::string>());
+        }
+    }
+    return d;
 }
 
 void LuaTab::register_lua_api(LuaScript& script) {
@@ -1078,6 +1165,30 @@ void LuaTab::register_lua_api(LuaScript& script) {
             search_request_fn_(query);
     });
 
+    // Current unix time in seconds. The Lua sandbox has no os library, so
+    // scripts use this for ages/remaining-time math (e.g. peer uptime).
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_now", []() -> int64_t { return static_cast<int64_t>(std::time(nullptr)); });
+
+    // Open (or replace) the modal dialog overlay. See components/dialog.hpp for
+    // the option/row grammar. The on_event callback runs on the Lua thread.
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_dialog", [this, &script](const lb::LuaRef& opts, lua_State* L2) {
+            auto       d  = parse_dialog_opts(opts);
+            lb::LuaRef fn = opts["on_event"];
+            if (fn.isFunction()) {
+                script.dialog_src_ = lua_source_id(L2);
+                script.dialog_fn_  = std::move(fn);
+            }
+            lua_tab_state_.update([&](auto& st) { st.dialog = std::move(d); });
+            screen_.Post(ftxui::Event::Custom);
+        });
+
+    luabridge::getGlobalNamespace(L).addFunction("btcui_dialog_close", [this]() {
+        lua_tab_state_.update([](auto& st) { st.dialog = components::DialogState{}; });
+        screen_.Post(ftxui::Event::Custom);
+    });
+
     luabridge::getGlobalNamespace(L).addFunction(
         "btcui_open_qr_overlay", [this](const lb::LuaRef& arg) {
             QrItems items;
@@ -1339,6 +1450,35 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                         } else {
                             clear_callback_error(-3);
                         }
+                    }
+                }
+            }
+
+            // 0e. Dispatch modal-dialog events (btcui_dialog on_event callbacks).
+            // The event is a table: {type, text?, key?, label?, index?, choice?}.
+            {
+                auto devs =
+                    dialog_event_queue_.update([](auto& q) { return std::exchange(q, {}); });
+                for (auto& ev : devs) {
+                    if (!script->dialog_fn_)
+                        continue;
+                    lb::LuaRef t = lb::newTable(lua);
+                    t["type"]    = ev.type;
+                    if (ev.type == "submit")
+                        t["text"] = ev.text;
+                    if (!ev.key.empty())
+                        t["key"] = ev.key;
+                    if (!ev.label.empty())
+                        t["label"] = ev.label;
+                    if (ev.index > 0)
+                        t["index"] = ev.index;
+                    if (ev.choice > 0)
+                        t["choice"] = ev.choice;
+                    auto r = (*script->dialog_fn_)(t);
+                    if (!r) {
+                        report_callback_error(-4, script->dialog_src_, r.message());
+                    } else {
+                        clear_callback_error(-4);
                     }
                 }
             }
@@ -1640,6 +1780,248 @@ bool LuaTab::handle_focused_event(const Event& event) {
         return true; // consume all events while input overlay is active
     }
 
+    // Modal dialog overlay (btcui_dialog) — swallows the keyboard while active.
+    // Navigation (items/buttons/choice/input) is handled here on the UI thread;
+    // activations are queued as DialogEvents for the Lua thread.
+    if (lua_tab_state_.access([](const auto& s) { return s.dialog.active; })) {
+        auto queue_event = [this](components::DialogEvent ev) {
+            dialog_event_queue_.update([&](auto& q) { q.push_back(std::move(ev)); });
+        };
+        // Shared by the Escape key and a click on an "[Esc] …" hint segment.
+        auto do_escape = [&] {
+            bool closed = lua_tab_state_.update([](auto& s) {
+                if (!s.dialog.closable)
+                    return false;
+                s.dialog = components::DialogState{};
+                return true;
+            });
+            if (closed)
+                queue_event({.type = "close"});
+            screen_.Post(Event::Custom);
+            return true;
+        };
+        // Shared by the Return key and a click on a "[⏎] …" hint segment.
+        // Priority: submit the input, else activate the selected item, else
+        // fire the selected button.
+        auto do_return = [&] {
+            std::optional<components::DialogEvent> ev;
+            lua_tab_state_.update([&](auto& s) {
+                auto& d = s.dialog;
+                if (d.input && !d.input->done) {
+                    d.input->done = true;
+                    components::DialogEvent e{.type = "submit", .text = d.input->buffer};
+                    if (d.choice)
+                        e.choice = d.choice->index + 1;
+                    ev = std::move(e);
+                } else if (!d.item_keys.empty()) {
+                    if (d.item_sel >= 0 && d.item_sel < static_cast<int>(d.item_keys.size()))
+                        ev = components::DialogEvent{.type = "select",
+                                                     .key  = d.item_keys[d.item_sel]};
+                } else if (!d.buttons.empty()) {
+                    ev = components::DialogEvent{.type  = "button",
+                                                 .label = d.buttons[d.button_sel],
+                                                 .index = d.button_sel + 1};
+                }
+            });
+            if (ev)
+                queue_event(std::move(*ev));
+            screen_.Post(Event::Custom);
+            return true;
+        };
+        if (event.is_mouse()) {
+            auto& me = const_cast<Event&>(event).mouse();
+            // Refresh the hover highlight from the pointer position (any mouse
+            // event, including motion). Only redraw when the target changes.
+            {
+                using HK = components::DialogState::HoverKind;
+                HK  hk   = HK::None;
+                int hi   = -1;
+                if (dialog_hits_.panel.Contain(me.x, me.y)) {
+                    if (int bi = dialog_hits_.buttons.hit(me.x, me.y); bi >= 0) {
+                        hk = HK::Button;
+                        hi = bi;
+                    } else if (dialog_hits_.items_frame.Contain(me.x, me.y)) {
+                        if (int ii = dialog_hits_.items.hit(me.x, me.y); ii >= 0) {
+                            hk = HK::Item;
+                            hi = ii;
+                        }
+                    }
+                    if (hk == HK::None) {
+                        if (int hh = dialog_hits_.hint.hit(me.x, me.y); hh >= 0) {
+                            hk = HK::Hint;
+                            hi = hh;
+                        }
+                    }
+                }
+                bool changed = lua_tab_state_.update([&](auto& s) {
+                    if (s.dialog.hover_kind == hk && s.dialog.hover_index == hi)
+                        return false;
+                    s.dialog.hover_kind  = hk;
+                    s.dialog.hover_index = hi;
+                    return true;
+                });
+                if (changed)
+                    screen_.Post(Event::Custom);
+            }
+            if (!dialog_hits_.panel.Contain(me.x, me.y))
+                return false; // outside the dialog: footer buttons / tab bar stay clickable
+            if (me.button == Mouse::WheelUp || me.button == Mouse::WheelDown) {
+                const int dir = (me.button == Mouse::WheelDown) ? 1 : -1;
+                lua_tab_state_.update([&](auto& s) {
+                    auto& d       = s.dialog;
+                    int   n_items = static_cast<int>(d.item_keys.size());
+                    if (n_items > 0)
+                        d.item_sel = std::clamp(std::max(d.item_sel, 0) + dir, 0, n_items - 1);
+                });
+                screen_.Post(Event::Custom);
+                return true;
+            }
+            if (me.button == Mouse::Left && me.motion == Mouse::Pressed) {
+                // A button click selects and activates it, like Enter.
+                if (int bi = dialog_hits_.buttons.hit(me.x, me.y); bi >= 0) {
+                    std::optional<components::DialogEvent> ev;
+                    lua_tab_state_.update([&](auto& s) {
+                        auto& d = s.dialog;
+                        if (bi < static_cast<int>(d.buttons.size())) {
+                            d.button_sel = bi;
+                            ev           = components::DialogEvent{
+                                          .type = "button", .label = d.buttons[bi], .index = bi + 1};
+                        }
+                    });
+                    if (ev)
+                        queue_event(std::move(*ev));
+                    screen_.Post(Event::Custom);
+                    return true;
+                }
+                // An item click selects the row; a second click on the already-
+                // selected row activates it — mirroring the table-row mouse flow.
+                if (dialog_hits_.items_frame.Contain(me.x, me.y)) {
+                    if (int ii = dialog_hits_.items.hit(me.x, me.y); ii >= 0) {
+                        std::optional<components::DialogEvent> ev;
+                        lua_tab_state_.update([&](auto& s) {
+                            auto& d = s.dialog;
+                            if (ii < static_cast<int>(d.item_keys.size())) {
+                                if (d.item_sel == ii)
+                                    ev = components::DialogEvent{.type = "select",
+                                                                 .key  = d.item_keys[ii]};
+                                else
+                                    d.item_sel = ii;
+                            }
+                        });
+                        if (ev)
+                            queue_event(std::move(*ev));
+                        screen_.Post(Event::Custom);
+                        return true;
+                    }
+                }
+                // A click on a "[key] label" hint segment acts like pressing
+                // that key.
+                if (int hi = dialog_hits_.hint.hit(me.x, me.y);
+                    hi >= 0 && hi < static_cast<int>(dialog_hits_.hint_keys.size())) {
+                    const std::string& k = dialog_hits_.hint_keys[hi];
+                    if (k == "Esc" || k == "esc")
+                        return do_escape();
+                    if (k == "⏎" || k == "Enter")
+                        return do_return();
+                    if (k == "←/→") { // cycle the choice / button selection forward
+                        lua_tab_state_.update([](auto& s) {
+                            auto& d = s.dialog;
+                            if (d.choice && (!d.input || !d.input->done)) {
+                                int n           = static_cast<int>(d.choice->options.size());
+                                d.choice->index = (d.choice->index + 1) % n;
+                            } else if (d.buttons.size() >= 2) {
+                                int n        = static_cast<int>(d.buttons.size());
+                                d.button_sel = (d.button_sel + 1) % n;
+                            }
+                        });
+                        screen_.Post(Event::Custom);
+                        return true;
+                    }
+                    if (k == "↑/↓") // pure navigation hint: nothing to activate
+                        return true;
+                    // Plain key hint (e.g. "[a] add node") — queue the keypress,
+                    // unless an input field is capturing characters.
+                    bool typing = lua_tab_state_.access(
+                        [](const auto& s) { return s.dialog.input && !s.dialog.input->done; });
+                    if (!typing)
+                        queue_event({.type = "key", .key = k});
+                    screen_.Post(Event::Custom);
+                    return true;
+                }
+            }
+            return true; // events inside the dialog don't leak to what's underneath
+        }
+        if (event == Event::Escape)
+            return do_escape();
+        if (event == Event::Return)
+            return do_return();
+        if (event == Event::ArrowLeft || event == Event::ArrowRight) {
+            const int dir       = (event == Event::ArrowRight) ? 1 : -1;
+            bool      forwarded = false;
+            lua_tab_state_.update([&](auto& s) {
+                auto& d = s.dialog;
+                if (d.choice && (!d.input || !d.input->done)) {
+                    int n           = static_cast<int>(d.choice->options.size());
+                    d.choice->index = (d.choice->index + dir + n) % n;
+                } else if (d.buttons.size() >= 2) {
+                    int n        = static_cast<int>(d.buttons.size());
+                    d.button_sel = (d.button_sel + dir + n) % n;
+                } else {
+                    forwarded = true;
+                }
+            });
+            if (forwarded)
+                queue_event({.type = "key", .key = dir > 0 ? "right" : "left"});
+            screen_.Post(Event::Custom);
+            return true;
+        }
+        if (event == Event::ArrowUp || event == Event::ArrowDown) {
+            const int dir = (event == Event::ArrowDown) ? 1 : -1;
+            lua_tab_state_.update([&](auto& s) {
+                auto& d       = s.dialog;
+                int   n_items = static_cast<int>(d.item_keys.size());
+                if (n_items > 0) {
+                    if (d.item_sel < 0)
+                        d.item_sel = 0;
+                    else
+                        d.item_sel = std::clamp(d.item_sel + dir, 0, n_items - 1);
+                } else if (d.buttons.size() >= 2) {
+                    int n        = static_cast<int>(d.buttons.size());
+                    d.button_sel = (d.button_sel + dir + n) % n;
+                }
+            });
+            screen_.Post(Event::Custom);
+            return true;
+        }
+        if (event == Event::Backspace) {
+            lua_tab_state_.update([](auto& s) {
+                auto& d = s.dialog;
+                if (d.input && !d.input->done && !d.input->buffer.empty())
+                    d.input->buffer.pop_back();
+            });
+            screen_.Post(Event::Custom);
+            return true;
+        }
+        if (event == Event::Tab || event == Event::TabReverse)
+            return true;
+        if (event.is_character()) {
+            std::string ch    = event.character();
+            bool        typed = lua_tab_state_.update([&](auto& s) {
+                auto& d = s.dialog;
+                if (d.input && !d.input->done) {
+                    d.input->buffer += ch;
+                    return true;
+                }
+                return false;
+            });
+            if (!typed)
+                queue_event({.type = "key", .key = ch});
+            screen_.Post(Event::Custom);
+            return true;
+        }
+        return true; // swallow all other keys while the dialog is open
+    }
+
     if (lua_tab_state_.access([](const auto& s) { return s.show_qr_overlay; })) {
         if (event == Event::Escape) {
             lua_tab_state_.update([](auto& s) {
@@ -1870,6 +2252,28 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
             false};
     }
 
+    {
+        struct DlgSnap {
+            bool active;
+            bool typing; // input field present and still accepting text
+            bool closable;
+        };
+        auto ds = lua_tab_state_.access([](const auto& s) {
+            return DlgSnap{s.dialog.active, s.dialog.input && !s.dialog.input->done,
+                           s.dialog.closable};
+        });
+        if (ds.active) {
+            std::vector<FooterButton> btns;
+            if (ds.typing)
+                btns.push_back(
+                    {"[⏎] Submit", [this] { handle_focused_event(ftxui::Event::Return); }});
+            if (ds.closable)
+                btns.push_back({ds.typing ? "[Esc] Cancel" : "[Esc] Close",
+                                [this] { handle_focused_event(ftxui::Event::Escape); }});
+            return FooterSpec{std::move(btns), false, false};
+        }
+    }
+
     if (lua_tab_state_.access([](const auto& s) { return s.show_qr_overlay; })) {
         return FooterSpec{{{"[Esc] Close",
                             [this] {
@@ -1906,24 +2310,9 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
     return FooterSpec{std::move(btns), st.show_search, st.show_quit};
 }
 
-// Map a Lua color name to an FTXUI color, falling back when unset/unknown.
-static Color color_from_name(const std::string& name, Color fallback) {
-    if (name == "red")
-        return Color::Red;
-    if (name == "green")
-        return Color::Green;
-    if (name == "yellow")
-        return Color::Yellow;
-    if (name == "cyan")
-        return Color::Cyan;
-    if (name == "gray")
-        return Color::GrayDark;
-    return fallback;
-}
-
 static Element apply_style(Element el, const CellValue& cv) {
     if (!cv.color.empty())
-        el = el | color(color_from_name(cv.color, Color::Default));
+        el = el | color(components::lua_color(cv.color, Color::Default));
     if (cv.bold)
         el = el | ftxui::bold;
     return el;
@@ -1941,7 +2330,7 @@ static Element render_cell_element(const std::string& prefix, const CellValue& c
     }
     if (std::holds_alternative<Gauge>(cv.data)) {
         const auto& g = std::get<Gauge>(cv.data);
-        return gauge_element(g.frac, color_from_name(cv.color, Color::Cyan), g.prefix);
+        return gauge_element(g.frac, components::lua_color(cv.color, Color::Cyan), g.prefix);
     }
     return apply_style(text(prefix + format_cell(type, cv.data, decimals)), cv);
 }
@@ -2007,6 +2396,12 @@ Element LuaTab::render(const AppState& /*snap*/) {
             color(Color::White));
 
         return center_overlay(build_titled_panel(" Input ", "", std::move(dialog_rows), width));
+    }
+
+    {
+        auto dlg = lua_tab_state_.access([](const auto& s) { return s.dialog; });
+        if (dlg.active)
+            return components::dialog_element(dlg, &dialog_hits_);
     }
 
     for (int pi = 0; pi < static_cast<int>(panels_vec.size()); ++pi) {
