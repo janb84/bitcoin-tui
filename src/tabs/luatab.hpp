@@ -89,6 +89,11 @@ class LuaTab : public Tab {
 
     std::string script_path() const;
     void        set_reload_callback(std::function<void()> fn);
+    // Exit the whole TUI (btcui_quit). Wired by main to ExitLoopClosure.
+    void set_quit_callback(std::function<void()> fn);
+    // Run the global transaction search for `query` (btcui_search). Wired by main
+    // to the mempool tab's trigger_search (switching to the search view).
+    void set_search_callback(std::function<void(const std::string&)> fn);
 
     // Per-instance shutdown, independent of the shared `running` flag. Used when a
     // tab is de-loaded at runtime: the worker threads wind down within ~1s.
@@ -105,16 +110,18 @@ class LuaTab : public Tab {
     void clear_callback_error(int id);
     void open_qr_overlay(const std::string& data);
 
-    const std::string                debug_log_path_;
-    const json                       tab_options_;
-    const std::set<std::string>      rpc_allowlist_;
-    Guarded<LuaTabState>             lua_tab_state_;
-    std::atomic<int>                 focused_panel_{-1};
-    std::atomic<bool>                panel_scrolling_{false};
-    std::atomic<bool>                stopped_{false};     // per-tab shutdown request
-    std::atomic<bool>                thread_done_{false}; // set when lua_thread_ exits
-    std::function<void()>            reload_request_fn_;
-    mutable Guarded<std::deque<int>> btn_click_queue_;
+    const std::string                       debug_log_path_;
+    const json                              tab_options_;
+    const std::set<std::string>             rpc_allowlist_;
+    Guarded<LuaTabState>                    lua_tab_state_;
+    std::atomic<int>                        focused_panel_{-1};
+    std::atomic<bool>                       panel_scrolling_{false};
+    std::atomic<bool>                       stopped_{false};     // per-tab shutdown request
+    std::atomic<bool>                       thread_done_{false}; // set when lua_thread_ exits
+    std::function<void()>                   reload_request_fn_;
+    std::function<void()>                   quit_request_fn_;
+    std::function<void(const std::string&)> search_request_fn_;
+    mutable Guarded<std::deque<int>>        btn_click_queue_;
     mutable Guarded<std::deque<std::optional<std::string>>> input_result_queue_;
     // Row activations awaiting dispatch: (row key, trigger). Trigger is "enter",
     // "space", or "click" so the Lua callback can treat activate (Enter/click)

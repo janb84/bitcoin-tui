@@ -119,7 +119,6 @@ add_executable(bitcoin-tui
   src/components/footer_bar.cpp
   src/tabs/mempool.cpp
   src/tabs/peers.cpp
-  src/tabs/tools.cpp
   src/luatable.cpp
   src/tabs/luatab.cpp
   src/vendor/qrcodegen.cpp
