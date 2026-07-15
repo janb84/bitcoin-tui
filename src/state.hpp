@@ -92,9 +92,6 @@ struct AppState {
     std::string error_message;
     bool        connected  = false;
     bool        refreshing = false;
-
-    // Private broadcast queue (Bitcoin Core PR #29415)
-    std::vector<std::string> privbcast_txids;
 };
 
 struct SoftFork {
@@ -171,15 +168,6 @@ struct TxSearchState {
     // Outputs overlay (opened by pressing Enter on the Outputs row)
     bool outputs_overlay_open = false;
     int  output_overlay_sel   = -1;
-};
-
-struct BroadcastState {
-    std::string hex;
-    bool        submitting = false;
-    std::string result_txid;
-    std::string result_error;
-    bool        success    = false;
-    bool        has_result = false;
 };
 
 struct AddNodeState {

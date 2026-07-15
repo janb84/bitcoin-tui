@@ -100,22 +100,6 @@ void poll_rpc(RpcClient& rpc, Guarded<AppState>& state,
             s.last_update = now_string();
         });
 
-        // Private broadcast queue (Bitcoin Core PR #29415 — skipped on older nodes)
-        try {
-            auto                     pbinfo = rpc.call("getprivatebroadcastinfo")["result"];
-            std::vector<std::string> txids;
-            if (pbinfo.is_array()) {
-                for (const auto& entry : pbinfo) {
-                    if (entry.is_string())
-                        txids.push_back(entry.get<std::string>());
-                    else if (entry.is_object() && entry.contains("txid"))
-                        txids.push_back(entry["txid"].get<std::string>());
-                }
-            }
-            state.update([&](auto& s) { s.privbcast_txids = std::move(txids); });
-        } catch (...) { // NOLINT(bugprone-empty-catch) — RPC absent on older nodes
-        }
-
         // Let the UI render with core data while block stats are fetched.
         if (on_core_ready)
             on_core_ready();

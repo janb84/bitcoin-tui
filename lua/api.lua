@@ -16,10 +16,13 @@
 
 --- Create a managed table for display. Returns a Table object.
 --- Options:
----   key       string   Column name used as row key (default: first column)
----   title     string   Section title (default: "Lua Table")
----   no_header boolean  Hide the header row (default: false)
----   columns   ColumnDef[]  Column definitions (required)
+---   key        string   Column name used as row key (default: first column)
+---   title      string   Section title (default: "Lua Table")
+---   no_header  boolean  Hide the header row (default: false)
+---   selectable boolean  Allow row focus/selection/activation (default: true).
+---                       Set false for display-only tables (navigation skips them,
+---                       so btcui_on_select never fires for their rows).
+---   columns    ColumnDef[]  Column definitions (required)
 ---@param opts TableOpts
 ---@return Table
 global function btcui_table(opts) end
@@ -237,8 +240,13 @@ local Table = {}
 --- Insert or update a row by key. Values can be plain values or
 --- styled tables with { value = v, color = "red", bold = true }.
 --- Nil values are skipped (column keeps its previous value).
+---
+--- Pass the reserved key __selectable=false in `data` to make this single row
+--- display-only: keyboard/mouse navigation skips it, so it can't be focused,
+--- selected, or activated (no btcui_on_select). Useful for mixing help/status
+--- text and actionable rows in one table. Defaults to true (selectable).
 ---@param key any       Key value (matches key column type)
----@param data table    Column values as { name = value, ... }
+---@param data table    Column values as { name = value, ... } (+ optional __selectable)
 function Table:update(key, data) end
 
 --- Remove a row by key. Returns true if a row was removed.
@@ -314,10 +322,11 @@ function Summary:set(data) end
 ----------------------------------------------------------------------
 
 ---@class TableOpts
----@field key?       string       Key column name (default: first column)
----@field title?     string       Section title
----@field no_header? boolean      Hide header row
----@field columns    ColumnDef[]  Column definitions
+---@field key?        string       Key column name (default: first column)
+---@field title?      string       Section title
+---@field no_header?  boolean      Hide header row
+---@field selectable? boolean      Allow row focus/selection/activation (default: true)
+---@field columns     ColumnDef[]  Column definitions
 
 ----------------------------------------------------------------------
 -- Column definitions
@@ -387,6 +396,18 @@ global function btcui_config_write(cfg) end
 --- Typically called right after btcui_config_write() to apply changes live.
 --- Safe to call from footer-button and timer callbacks.
 global function btcui_reload_tabs() end
+
+--- Exit the TUI (and stop polling). Equivalent to the global [q] quit button.
+--- The action is marshalled onto the UI thread, so it is safe to call from
+--- footer-button, on_select and timer callbacks.
+global function btcui_quit() end
+
+--- Run the global transaction search for `query` (a txid or block height) and
+--- switch to the search view, exactly like typing it in the "/" search bar. The
+--- action is marshalled onto the UI thread, so it is safe to call from
+--- footer-button, on_select and timer callbacks.
+---@param query string   A txid (64 hex chars) or a block height
+global function btcui_search(query) end
 
 --- Show a modal text-input overlay. The callback receives the entered string on
 --- confirm (Enter), or nil when the user cancels (Esc). Can be called from
@@ -461,3 +482,9 @@ global function btcui_text_input(label, default, on_confirm) end
 ---
 --- Raw transactions (read-only):
 ---   getrawtransaction, decoderawtransaction, decodescript
+---
+--- Extra methods can be granted globally with --allow-rpc, or to a single tab via
+--- an `allow_rpc` array in its --tab spec (JSON form), e.g.
+---   --tab '{"script":"my.lua","allow_rpc":["sendrawtransaction"]}'
+--- The built-in Tools tab uses a per-tab grant for sendrawtransaction, stop and
+--- getprivatebroadcastinfo; those mutating methods stay off-limits to other scripts.
