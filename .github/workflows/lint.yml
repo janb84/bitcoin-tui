@@ -8,9 +8,9 @@ on:
 
 jobs:
   clang-tidy:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install tools
         run: sudo apt-get install -y clang clang-tidy
@@ -25,15 +25,15 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Run clang-tidy
-        run: find src tests -name '*.cpp' -print0 | xargs -0 clang-tidy -p build
+        run: find src tests -name '*.cpp' -not -path 'src/vendor/*' -print0 | xargs -0 clang-tidy -p build
 
   clang-format:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install tools
         run: sudo apt-get install -y clang-format
 
       - name: Check formatting
-        run: git ls-files -- '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
+        run: git ls-files -- '*.cpp' '*.hpp' ':!src/vendor/*' | xargs clang-format --dry-run --Werror
