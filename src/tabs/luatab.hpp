@@ -95,8 +95,14 @@ class LuaTab : public Tab {
     // Exit the whole TUI (btcui_quit). Wired by main to ExitLoopClosure.
     void set_quit_callback(std::function<void()> fn);
     // Run the global transaction search for `query` (btcui_search). Wired by main
-    // to the mempool tab's trigger_search (switching to the search view).
+    // to the tab that registered btcui_on_search (switching to that tab).
     void set_search_callback(std::function<void(const std::string&)> fn);
+
+    // True once the script has registered a btcui_on_search handler (the bundled
+    // Mempool tab). main routes global-search queries to the first such tab.
+    bool handles_search() const { return has_search_handler_.load(); }
+    // Queue a search query for the script's btcui_on_search callback.
+    void trigger_search(const std::string& query);
 
     // Per-instance shutdown, independent of the shared `running` flag. Used when a
     // tab is de-loaded at runtime: the worker threads wind down within ~1s.
@@ -124,8 +130,11 @@ class LuaTab : public Tab {
     std::function<void()>                   reload_request_fn_;
     std::function<void()>                   quit_request_fn_;
     std::function<void(const std::string&)> search_request_fn_;
+    std::atomic<bool>                       has_search_handler_{false};
     mutable Guarded<std::deque<int>>        btn_click_queue_;
     mutable Guarded<std::deque<std::optional<std::string>>> input_result_queue_;
+    // Search queries awaiting dispatch to the btcui_on_search callback.
+    mutable Guarded<std::deque<std::string>> search_query_queue_;
     // Row activations awaiting dispatch: (row key, trigger). Trigger is "enter",
     // "space", or "click" so the Lua callback can treat activate (Enter/click)
     // and toggle (Space) differently.

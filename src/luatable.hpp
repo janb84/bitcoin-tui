@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +13,7 @@
 #include <variant>
 #include <vector>
 
+#include "components/blockbars.hpp"
 #include "guarded.hpp"
 
 enum class ColumnType { String, Number, DateTime, Date, Time, TimeMS };
@@ -132,6 +135,45 @@ class LuaTable : public LuaPanel {
     std::atomic<int>             selected_row_{-1};
 
     size_t col_index(const std::string& name) const;
+};
+
+// The "recent blocks" bar panel (see components/blockbars.hpp for the visual).
+// The Lua thread replaces the whole list via set(); the UI thread owns the
+// horizontal selection. A leading-key change starts the slide animation.
+class LuaBlocks : public LuaPanel {
+  public:
+    explicit LuaBlocks(std::string title);
+
+    // Replace the block list (newest first). When the first block's key changes
+    // and the previous list was non-empty, the slide animation starts.
+    void set(std::vector<components::BlockBar> blocks);
+
+    const std::string& title() const override { return title_; }
+    int                count() const;
+
+    // Horizontal selection (UI thread writes, Lua thread reads via selected_key()).
+    std::atomic<int>&          selected() { return selected_; }
+    std::optional<std::string> selected_key() const;
+
+    // Render snapshot. anim_progress < 0 → idle; otherwise the slide animation
+    // is running and anim_old holds the pre-arrival blocks.
+    struct Snapshot {
+        std::vector<components::BlockBar> blocks;
+        std::vector<components::BlockBar> anim_old;
+        double                            anim_progress = -1.0;
+    };
+    Snapshot snapshot() const;
+
+  private:
+    struct Data {
+        std::vector<components::BlockBar>     blocks;
+        std::vector<components::BlockBar>     anim_old;
+        std::chrono::steady_clock::time_point anim_start{};
+        bool                                  anim_active = false;
+    };
+    const std::string     title_;
+    mutable Guarded<Data> data_;
+    std::atomic<int>      selected_{-1};
 };
 
 class LuaSummary : public LuaPanel {

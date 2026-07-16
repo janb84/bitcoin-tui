@@ -33,7 +33,6 @@ static void ensure_terminal();
 #include "rpc_client.hpp"
 #include "state.hpp"
 #include "tabs/luatab.hpp"
-#include "tabs/mempool.hpp"
 
 // ============================================================================
 // Cookie authentication helpers
@@ -193,6 +192,7 @@ class Application {
     // Honored both at startup (auto-inject gating) and on live reload.
     bool        show_settings_tab{true};
     std::string settings_tab_path; // resolved settings.lua path (for reload gating)
+    std::string mempool_tab_path;  // resolved mempool.lua path (kept first on reload)
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -495,6 +495,21 @@ int Application::configure(int argc, char* argv[]) {
             return false;
         };
 
+        // Auto-register the built-in Mempool tab (the home tab and global-search
+        // target — the Lua port of the old C++ tab) unless the user already added
+        // it explicitly. It goes first, like the C++ tab it replaced.
+        if (!lua_tabs_dir.empty()) {
+            fs::path mempool = fs::path(lua_tabs_dir) / "mempool.lua";
+            if (fs::exists(mempool)) {
+                std::string mempool_str = mempool.string();
+                mempool_tab_path        = mempool_str;
+                if (!already_added(mempool_str)) {
+                    lua_tabs.insert(lua_tabs.begin(), mempool_str);
+                    auto_injected_tabs.insert(mempool_str);
+                }
+            }
+        }
+
         // Auto-register the built-in Settings tab unless the user already added it
         // explicitly or disabled it via config/CLI. The other bundled tabs (peers,
         // tools, dashboard, …) are ordinary tabs enabled with `tab =` entries from
@@ -531,10 +546,9 @@ int Application::run() const {
 
     int tab_index = 0;
 
-    // Tab objects. Dashboard, Peers and Tools are now Lua tabs (lua/tabs/*.lua),
-    // auto-injected in configure() with per-tab allow_rpc grants where needed.
-    MempoolTab mempool_tab(cfg, auth, screen, running, state, refresh_secs);
-
+    // All tabs are Lua tabs (lua/tabs/*.lua). Mempool and Settings are
+    // auto-injected in configure(); the others are enabled with `tab =` config
+    // entries and get per-tab allow_rpc grants where needed.
     std::string debug_log = debug_log_file.empty()
                                 ? datadir + "/" + network_subdir(network) + "debug.log"
                                 : debug_log_file;
@@ -620,12 +634,25 @@ int Application::run() const {
                 screen.Post(Event::Custom);
             });
         }
-        tabs = {&mempool_tab};
+        tabs.clear();
         for (auto& p : lua_tab_ptrs)
             tabs.push_back(p.get());
         tab_labels.clear();
         for (auto* t : tabs)
             tab_labels.push_back(t->name());
+    };
+
+    // Route a search query to the first tab that registered btcui_on_search
+    // (the bundled Mempool tab), switching to it — the old C++ search view flow.
+    auto dispatch_search = [&](const std::string& query) {
+        for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
+            auto* lt = dynamic_cast<LuaTab*>(tabs[i]);
+            if (lt && lt->handles_search()) {
+                tab_index = i;
+                lt->trigger_search(query);
+                return;
+            }
+        }
     };
 
     // Tabs auto-injected by configure() (e.g. settings.lua) are never removed on
@@ -642,7 +669,11 @@ int Application::run() const {
 
     // Footer bar — per-tab buttons + global search/quit, all mouse-clickable
     auto footer_bar = make_footer_bar(
-        [&]() -> FooterSpec { return tabs[tab_index]->footer_buttons(state.get()); },
+        [&]() -> FooterSpec {
+            if (tab_index < 0 || tab_index >= static_cast<int>(tabs.size()))
+                return FooterSpec{};
+            return tabs[tab_index]->footer_buttons(state.get());
+        },
         [&]() -> bool { return global_search_active; },
         [&] {
             global_search_active = true;
@@ -658,8 +689,8 @@ int Application::run() const {
         if (lua_quit_pending.exchange(false))
             screen.ExitLoopClosure()();
 
-        // btcui_search() from a Lua tab — run the global tx search on the UI thread,
-        // switching to the search view (same path as the global search bar).
+        // btcui_search() from a Lua tab — route to the search-handling tab on the
+        // UI thread, switching to it (same path as the global search bar).
         {
             std::string query = lua_search_pending.update([](auto& q) {
                 std::string out = std::move(q);
@@ -667,7 +698,7 @@ int Application::run() const {
                 return out;
             });
             if (!query.empty())
-                mempool_tab.trigger_search(query, true, tab_index);
+                dispatch_search(query);
         }
 
         // Live tab reload — triggered by btcui_reload_tabs() from any Lua script
@@ -755,8 +786,9 @@ int Application::run() const {
                 }
             }
 
-            // Leftovers: keep auto-injected tabs (appended after config tabs),
-            // retire everything else into dead_lua_tabs so its threads wind down.
+            // Leftovers: keep auto-injected tabs (Mempool stays first, the rest are
+            // appended after config tabs), retire everything else into
+            // dead_lua_tabs so its threads wind down.
             for (auto& p : pool) {
                 if (!p)
                     continue;
@@ -764,7 +796,12 @@ int Application::run() const {
                     !settings_tab_path.empty() && p->script_path() == settings_tab_path;
                 bool hidden_by_flag = is_settings && !settings_visible;
                 if (auto_tab_paths.count(p->script_path()) && !hidden_by_flag) {
-                    lua_tab_ptrs.push_back(std::move(p));
+                    bool is_mempool =
+                        !mempool_tab_path.empty() && p->script_path() == mempool_tab_path;
+                    if (is_mempool)
+                        lua_tab_ptrs.insert(lua_tab_ptrs.begin(), std::move(p));
+                    else
+                        lua_tab_ptrs.push_back(std::move(p));
                 } else {
                     p->stop(); // wind the worker thread down (~1s)
                     dead_lua_tabs.push_back(std::move(p));
@@ -1011,7 +1048,7 @@ int Application::run() const {
                 global_search_active = false;
                 global_search_str.clear();
                 if (is_txid(q) || is_height(q))
-                    mempool_tab.trigger_search(q, true, tab_index);
+                    dispatch_search(q);
                 screen.Post(Event::Custom);
                 return true;
             }
@@ -1032,9 +1069,9 @@ int Application::run() const {
             return false;
         }
 
-        // Tab-specific event dispatch (priority order — see MEMORY.md CatchEvent note)
-        if (auto r = mempool_tab.handle_tx_overlay(event); r.has_value())
-            return *r;
+        // Tab-specific event dispatch (priority order — see MEMORY.md CatchEvent
+        // note; Lua tab overlays — dialogs, text input, QR — are handled inside
+        // LuaTab::handle_focused_event)
         if (tab_index >= 0 && tab_index < static_cast<int>(tabs.size()) &&
             tabs[tab_index]->handle_focused_event(event))
             return true;
@@ -1046,13 +1083,7 @@ int Application::run() const {
             screen.Post(Event::Custom);
             return true;
         }
-        if (mempool_tab.handle_io_nav(event))
-            return true;
-        if (mempool_tab.handle_enter(event))
-            return true;
         if (event == Event::Escape) {
-            if (mempool_tab.handle_escape(event))
-                return true;
             screen.ExitLoopClosure()();
             return true;
         }
@@ -1108,26 +1139,6 @@ int Application::run() const {
         }
     });
 
-    // Animation ticker
-    std::thread anim_thread([&] {
-        while (running) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(40));
-            if (!running)
-                break;
-            bool needs_redraw = state.update([](auto& s) {
-                if (s.block_anim_active) {
-                    s.block_anim_frame++;
-                    if (s.block_anim_frame >= BLOCK_ANIM_TOTAL_FRAMES)
-                        s.block_anim_active = false;
-                    return true;
-                }
-                return false;
-            });
-            if (needs_redraw)
-                screen.Post(Event::Custom);
-        }
-    });
-
     screen.Loop(event_handler);
 
     running = false;
@@ -1138,7 +1149,6 @@ int Application::run() const {
     if (launch_thread.joinable())
         launch_thread.join();
     poll_thread.join();
-    anim_thread.join();
 
     return 0;
 }

@@ -109,7 +109,8 @@ local function refresh_display()
 
     tabs_panel:start_refresh()
     for _, f in ipairs(files) do
-        if f.name ~= "settings" then  -- hide self from the list
+        -- hide self and the always-on Mempool tab from the list
+        if f.name ~= "settings" and f.name ~= "mempool" then
             tabs_panel:update(f.path, {
                 path = f.path,
                 on   = on_cell(enabled[f.path]),

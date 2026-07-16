@@ -176,6 +176,63 @@ void LuaSummary::set(const std::map<std::string, CellValue>& values) {
     });
 }
 
+// --- LuaBlocks ---
+
+LuaBlocks::LuaBlocks(std::string title) : title_(std::move(title)), data_(Data{}) {}
+
+void LuaBlocks::set(std::vector<components::BlockBar> blocks) {
+    int n = static_cast<int>(blocks.size());
+    data_.update([&](Data& d) {
+        bool new_block =
+            !d.blocks.empty() && !blocks.empty() && d.blocks.front().key != blocks.front().key;
+        if (new_block) {
+            d.anim_old    = std::move(d.blocks);
+            d.anim_start  = std::chrono::steady_clock::now();
+            d.anim_active = true;
+        }
+        d.blocks = std::move(blocks);
+    });
+    // Keep the selection in range when the list shrinks.
+    int sel = selected_.load();
+    if (sel >= n)
+        selected_ = n - 1;
+}
+
+int LuaBlocks::count() const {
+    return data_.access([](const Data& d) { return static_cast<int>(d.blocks.size()); });
+}
+
+std::optional<std::string> LuaBlocks::selected_key() const {
+    int idx = selected_.load();
+    return data_.access([&](const Data& d) -> std::optional<std::string> {
+        if (idx < 0 || idx >= static_cast<int>(d.blocks.size()))
+            return std::nullopt;
+        return d.blocks[idx].key;
+    });
+}
+
+LuaBlocks::Snapshot LuaBlocks::snapshot() const {
+    // Matches the old C++ tab's 12 frames × 40 ms slide.
+    constexpr double kSlideSeconds = 0.48;
+    return data_.update([&](Data& d) {
+        Snapshot s;
+        s.blocks = d.blocks;
+        if (d.anim_active) {
+            double elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - d.anim_start)
+                    .count();
+            if (elapsed >= kSlideSeconds) {
+                d.anim_active = false;
+                d.anim_old.clear();
+            } else {
+                s.anim_old      = d.anim_old;
+                s.anim_progress = elapsed / kSlideSeconds;
+            }
+        }
+        return s;
+    });
+}
+
 // --- LuaTable ---
 
 std::vector<std::string> LuaTable::keys() const {
