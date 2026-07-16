@@ -7,6 +7,8 @@
 
 #include <ftxui/ftxui.hpp>
 
+#include "components/hit_list.hpp"
+
 // Composable "recent blocks" visualization: one column per block, a vertical
 // fill bar on top (colored by how full the block is), the block label below
 // (inverted when selected) and gray sub-lines under it. Exposed to Lua tabs
@@ -25,9 +27,11 @@ struct BlockBar {
 
 // `anim_old` + `progress` in [0,1): slide phase — render the pre-arrival blocks
 // minus the last one, padded left so the row glides one column to the right.
+// `hits` (optional) records each column's screen rectangle for mouse clicks;
+// nothing is tracked while the slide runs (the columns are mid-flight).
 inline ftxui::Element blockbars_element(const std::vector<BlockBar>& blocks, int selected,
                                         const std::vector<BlockBar>* anim_old = nullptr,
-                                        double                       progress = 0.0) {
+                                        double progress = 0.0, HitList* hits = nullptr) {
     using namespace ftxui;
     constexpr int BAR_HEIGHT = 6;
     constexpr int COL_WIDTH  = 10;
@@ -71,7 +75,10 @@ inline ftxui::Element blockbars_element(const std::vector<BlockBar>& blocks, int
                                   : text(b.label) | center);
         for (const auto& line : b.lines)
             col.push_back(text(line) | center | color(Color::GrayDark));
-        block_cols.push_back(vbox(std::move(col)) | size(WIDTH, EQUAL, COL_WIDTH));
+        auto col_el = vbox(std::move(col)) | size(WIDTH, EQUAL, COL_WIDTH);
+        if (hits && !slide)
+            col_el = hits->track(std::move(col_el), i);
+        block_cols.push_back(std::move(col_el));
     }
 
     return left_pad > 0 ? hbox({text(std::string(left_pad, ' ')), hbox(std::move(block_cols))})

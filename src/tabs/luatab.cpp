@@ -2206,6 +2206,28 @@ bool LuaTab::handle_focused_event(const Event& event) {
                 screen_.Post(Event::Custom);
                 return true;
             }
+            // Blocks panel: a click on a column selects that block; a second
+            // click on the already-selected block activates it — same flow as
+            // ←/→ + Enter.
+            for (int pi = 0; pi < static_cast<int>(mpanels.size()); ++pi) {
+                auto blk = std::dynamic_pointer_cast<LuaBlocks>(mpanels[pi]->panel);
+                if (!blk)
+                    continue;
+                int idx = mpanels[pi]->row_hits.hit(me.x, me.y);
+                if (idx < 0 || idx >= blk->count())
+                    continue;
+                bool already_selected =
+                    (focused_panel_.load() == pi && blk->selected().load() == idx);
+                focused_panel_   = pi;
+                panel_scrolling_ = false;
+                blk->selected()  = idx;
+                if (already_selected) {
+                    if (auto key = blk->selected_key())
+                        select_queue_.update([&](auto& q) { q.emplace_back(*key, "click"); });
+                }
+                screen_.Post(Event::Custom);
+                return true;
+            }
         }
         return false;
     }
@@ -2733,13 +2755,15 @@ Element LuaTab::render(const AppState& /*snap*/) {
             if (bs.anim_progress >= 0.0)
                 screen_.RequestAnimationFrame();
 
+            // Capture per-column screen rectangles so the mouse can hit-test blocks.
+            panel_render->row_hits.clear();
             Element bars =
                 bs.blocks.empty()
                     ? text("  Fetching…") | color(Color::GrayDark)
                     : hbox({text("  "), components::blockbars_element(
                                             bs.blocks, blk->selected().load(),
                                             bs.anim_progress >= 0.0 ? &bs.anim_old : nullptr,
-                                            bs.anim_progress)});
+                                            bs.anim_progress, &panel_render->row_hits)});
 
             Elements    content;
             const auto& box_title = blk->title();
@@ -2875,8 +2899,10 @@ Element LuaTab::render(const AppState& /*snap*/) {
 
         if (lp.data_rows.empty()) {
             // Summary group, or a table with no rows — clear any stale hitboxes so
-            // a mouse click can't land on a row that's no longer there.
-            if (lp.panel_index >= 0 && lp.panel_index < static_cast<int>(panels_vec.size()))
+            // a mouse click can't land on a row that's no longer there. Blocks
+            // panels are chrome-only too, but their column hitboxes must survive.
+            if (lp.panel_index >= 0 && lp.panel_index < static_cast<int>(panels_vec.size()) &&
+                !std::dynamic_pointer_cast<LuaBlocks>(panels_vec[lp.panel_index]->panel))
                 panels_vec[lp.panel_index]->row_hits.clear();
             Elements content(std::move(lp.chrome));
             auto     elem = vbox(std::move(content));
