@@ -257,6 +257,7 @@ class LuaScript {
         on_resize_fn_.reset();
         input_confirm_fn_.reset();
         on_select_fn_.reset();
+        on_search_fn_.reset();
         dialog_fn_.reset();
         if (L_)
             lua_close(L_);
@@ -289,6 +290,16 @@ class LuaScript {
         warnings_.push_back({std::move(source_id), std::move(msg), Clock::now()});
     }
 
+    // Re-anchor a captured callback to the main state. A LuaRef holds the
+    // lua_State it was created on; refs captured while a timer coroutine is
+    // running (e.g. btcui_dialog's on_event) would dangle once that coroutine
+    // is collected — calling them then crashes in lua_gettop.
+    luabridge::LuaRef anchor(luabridge::LuaRef fn) {
+        if (fn.state() != L_)
+            fn.moveTo(L_);
+        return fn;
+    }
+
   private:
     lua_State*                             L_ = nullptr; // owned; closed in destructor
     std::vector<std::unique_ptr<LogWatch>> log_watches_;
@@ -305,6 +316,8 @@ class LuaScript {
     std::optional<luabridge::LuaRef> input_confirm_fn_; // set by btcui_text_input
     std::string                      on_select_src_;
     std::optional<luabridge::LuaRef> on_select_fn_; // set by btcui_on_select
+    std::string                      on_search_src_;
+    std::optional<luabridge::LuaRef> on_search_fn_; // set by btcui_on_search
     std::string                      dialog_src_;
     std::optional<luabridge::LuaRef> dialog_fn_; // set by btcui_dialog (on_event)
 };
@@ -350,20 +363,20 @@ LuaScript::LuaScript() {
 void LuaScript::add_log_watch(const std::string& pattern, luabridge::LuaRef fn,
                               std::string source_id, int64_t backlog) {
     int id = ++next_callback_id_;
-    log_watches_.push_back(
-        std::make_unique<LogWatch>(id, pattern, std::move(fn), std::move(source_id), backlog));
+    log_watches_.push_back(std::make_unique<LogWatch>(id, pattern, anchor(std::move(fn)),
+                                                      std::move(source_id), backlog));
 }
 
 TimerHandle LuaScript::add_timer(Clock::duration interval, luabridge::LuaRef fn,
                                  std::string source_id) {
     int id = ++next_callback_id_;
-    timers_.insert({Clock::now(), {id, interval, std::move(fn), std::move(source_id)}});
+    timers_.insert({Clock::now(), {id, interval, anchor(std::move(fn)), std::move(source_id)}});
     return {id};
 }
 
 int LuaScript::add_footer_btn(std::string label, std::string key, luabridge::LuaRef fn) {
     int id = ++next_callback_id_;
-    footer_btns_.push_back({id, std::move(label), std::move(key), std::move(fn)});
+    footer_btns_.push_back({id, std::move(label), std::move(key), anchor(std::move(fn))});
     return id;
 }
 
@@ -785,6 +798,13 @@ static components::DialogRow parse_dialog_row(const lb::LuaRef& v) {
     if (spans.isTable()) {
         for (int i = 1; i <= static_cast<int>(spans.length()); ++i) {
             lb::LuaRef sp = spans[i];
+            // { address = "bc1…" } renders via address_element() (grouped bold/dim).
+            std::string addr = field_or(sp, "address", std::string{});
+            if (!addr.empty()) {
+                row.spans.push_back({std::move(addr), field_or(sp, "color", std::string{}),
+                                     field_or(sp, "bold", false), true});
+                continue;
+            }
             row.spans.push_back({field_or(sp, "text", std::string{}),
                                  field_or(sp, "color", std::string{}),
                                  field_or(sp, "bold", false)});
@@ -802,6 +822,7 @@ static components::DialogState parse_dialog_opts(const lb::LuaRef& opts) {
     components::DialogState d;
     d.active        = true;
     d.title         = field_or(opts, "title", std::string{});
+    d.right_label   = field_or(opts, "right_label", std::string{});
     d.width         = field_or(opts, "width", 64);
     d.closable      = field_or(opts, "closable", true);
     d.hint          = field_or(opts, "hint", std::string{});
@@ -998,6 +1019,44 @@ void LuaTab::register_lua_api(LuaScript& script) {
             return sum;
         });
 
+    luabridge::getGlobalNamespace(L)
+        .beginClass<LuaBlocks>("LuaBlocks")
+        .addFunction("set",
+                     [](LuaBlocks* self, const lb::LuaRef& data) {
+                         std::vector<components::BlockBar> blocks;
+                         for (int i = 1; i <= static_cast<int>(data.length()); ++i) {
+                             lb::LuaRef           b = data[i];
+                             components::BlockBar bar;
+                             bar.key         = field_or(b, "key", std::string{});
+                             bar.label       = field_or(b, "label", bar.key);
+                             lb::LuaRef fill = b["fill"];
+                             if (fill.isNumber())
+                                 bar.fill = fill.unsafe_cast<double>();
+                             lb::LuaRef lines = b["lines"];
+                             if (lines.isTable()) {
+                                 for (int j = 1; j <= static_cast<int>(lines.length()); ++j) {
+                                     lb::LuaRef line = lines[j];
+                                     bar.lines.push_back(line.isString()
+                                                             ? line.unsafe_cast<std::string>()
+                                                             : std::string{});
+                                 }
+                             }
+                             blocks.push_back(std::move(bar));
+                         }
+                         self->set(std::move(blocks));
+                     })
+        .endClass();
+
+    // The "recent blocks" bar panel. Selection/activation flows through the same
+    // btcui_on_select callback as tables, keyed by each block's `key`.
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_blocks", [this](const lb::LuaRef& opts) -> std::shared_ptr<LuaBlocks> {
+            auto blk = std::make_shared<LuaBlocks>(field_or(opts, "title", std::string{}));
+            lua_tab_state_.update(
+                [&](auto& st) { st.lua_panels.push_back(std::make_shared<LuaPanelRender>(blk)); });
+            return blk;
+        });
+
     luabridge::getGlobalNamespace(L).addFunction("btcui_key_hint", [this](std::string hint) {
         lua_tab_state_.update([&](auto& st) { st.lua_status = hint; });
     });
@@ -1046,17 +1105,26 @@ void LuaTab::register_lua_api(LuaScript& script) {
         "btcui_screen_size",
         [this]() -> std::tuple<int, int> { return {screen_.dimx(), screen_.dimy()}; });
 
-    luabridge::getGlobalNamespace(L).addFunction("btcui_on_resize",
-                                                 [&script](lb::LuaRef fn, lua_State* L) {
-                                                     script.on_resize_src_ = lua_source_id(L);
-                                                     script.on_resize_fn_  = std::move(fn);
-                                                 });
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_on_resize", [&script](lb::LuaRef fn, lua_State* L) {
+            script.on_resize_src_ = lua_source_id(L);
+            script.on_resize_fn_  = script.anchor(std::move(fn));
+        });
 
-    luabridge::getGlobalNamespace(L).addFunction("btcui_on_select",
-                                                 [&script](lb::LuaRef fn, lua_State* L) {
-                                                     script.on_select_src_ = lua_source_id(L);
-                                                     script.on_select_fn_  = std::move(fn);
-                                                 });
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_on_select", [&script](lb::LuaRef fn, lua_State* L) {
+            script.on_select_src_ = lua_source_id(L);
+            script.on_select_fn_  = script.anchor(std::move(fn));
+        });
+
+    // Receive global-search queries (the "/" bar and btcui_search from other
+    // tabs). main routes queries to the first tab that registered a handler.
+    luabridge::getGlobalNamespace(L).addFunction(
+        "btcui_on_search", [&script, this](lb::LuaRef fn, lua_State* L) {
+            script.on_search_src_ = lua_source_id(L);
+            script.on_search_fn_  = script.anchor(std::move(fn));
+            has_search_handler_.store(true);
+        });
 
     luabridge::getGlobalNamespace(L).addFunction(
         "btcui_option",
@@ -1140,7 +1208,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
     luabridge::getGlobalNamespace(L).addFunction(
         "btcui_text_input",
         [this, &script](std::string label, std::string default_val, lb::LuaRef on_confirm) {
-            script.input_confirm_fn_ = std::move(on_confirm);
+            script.input_confirm_fn_ = script.anchor(std::move(on_confirm));
             lua_tab_state_.update([&](auto& st) {
                 st.input_overlay.active = true;
                 st.input_overlay.label  = label;
@@ -1170,6 +1238,12 @@ void LuaTab::register_lua_api(LuaScript& script) {
     luabridge::getGlobalNamespace(L).addFunction(
         "btcui_now", []() -> int64_t { return static_cast<int64_t>(std::time(nullptr)); });
 
+    // Format a unix timestamp as a local "YYYY-MM-DD HH:MM:SS" string. The Lua
+    // sandbox has no os.date, and timezone handling has to happen in C++.
+    luabridge::getGlobalNamespace(L).addFunction("btcui_localtime", [](int64_t ts) -> std::string {
+        return fmt_localtime(to_time_point(static_cast<double>(ts)), TimeFmt::YMDHMS);
+    });
+
     // Open (or replace) the modal dialog overlay. See components/dialog.hpp for
     // the option/row grammar. The on_event callback runs on the Lua thread.
     luabridge::getGlobalNamespace(L).addFunction(
@@ -1178,7 +1252,7 @@ void LuaTab::register_lua_api(LuaScript& script) {
             lb::LuaRef fn = opts["on_event"];
             if (fn.isFunction()) {
                 script.dialog_src_ = lua_source_id(L2);
-                script.dialog_fn_  = std::move(fn);
+                script.dialog_fn_  = script.anchor(std::move(fn));
             }
             lua_tab_state_.update([&](auto& st) { st.dialog = std::move(d); });
             screen_.Post(ftxui::Event::Custom);
@@ -1249,6 +1323,45 @@ void LuaTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>&  requests,
     }
 }
 
+// Convert the Lua value at absolute stack index `idx` to json. Tables with a
+// non-zero sequence length become arrays; other tables become objects keyed by
+// their string keys. Unsupported values map to null.
+static json lua_value_to_json(lua_State* co, int idx) {
+    idx = lua_absindex(co, idx);
+    switch (lua_type(co, idx)) {
+    case LUA_TBOOLEAN:
+        return json(static_cast<bool>(lua_toboolean(co, idx)));
+    case LUA_TNUMBER:
+        if (lua_isinteger(co, idx))
+            return json(static_cast<int64_t>(lua_tointeger(co, idx)));
+        return json(static_cast<double>(lua_tonumber(co, idx)));
+    case LUA_TSTRING:
+        return json(std::string(lua_tostring(co, idx)));
+    case LUA_TTABLE: {
+        int n = static_cast<int>(lua_rawlen(co, idx));
+        if (n > 0) {
+            std::vector<json> arr;
+            for (int i = 1; i <= n; ++i) {
+                lua_rawgeti(co, idx, i);
+                arr.push_back(lua_value_to_json(co, -1));
+                lua_pop(co, 1);
+            }
+            return json(std::move(arr));
+        }
+        json obj = json::object();
+        lua_pushnil(co);
+        while (lua_next(co, idx) != 0) {
+            if (lua_type(co, -2) == LUA_TSTRING)
+                obj[lua_tostring(co, -2)] = lua_value_to_json(co, -1);
+            lua_pop(co, 1);
+        }
+        return obj;
+    }
+    default:
+        return json();
+    }
+}
+
 // Read an RPC params array (a Lua table at absolute stack index `idx` on `co`)
 // into json, preserving the integer/float distinction via the Lua number subtype.
 static json extract_rpc_params(lua_State* co, int idx) {
@@ -1256,22 +1369,7 @@ static json extract_rpc_params(lua_State* co, int idx) {
     int               n = static_cast<int>(lua_rawlen(co, idx));
     for (int i = 1; i <= n; ++i) {
         lua_rawgeti(co, idx, i);
-        switch (lua_type(co, -1)) {
-        case LUA_TBOOLEAN:
-            pv.emplace_back(static_cast<bool>(lua_toboolean(co, -1)));
-            break;
-        case LUA_TNUMBER:
-            if (lua_isinteger(co, -1))
-                pv.emplace_back(static_cast<int64_t>(lua_tointeger(co, -1)));
-            else
-                pv.emplace_back(static_cast<double>(lua_tonumber(co, -1)));
-            break;
-        case LUA_TSTRING:
-            pv.emplace_back(std::string(lua_tostring(co, -1)));
-            break;
-        default:
-            break;
-        }
+        pv.push_back(lua_value_to_json(co, -1));
         lua_pop(co, 1);
     }
     return json(std::move(pv));
@@ -1454,7 +1552,23 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                 }
             }
 
-            // 0e. Dispatch modal-dialog events (btcui_dialog on_event callbacks).
+            // 0e. Dispatch global-search queries to the btcui_on_search callback.
+            {
+                auto queries =
+                    search_query_queue_.update([](auto& q) { return std::exchange(q, {}); });
+                for (auto& query : queries) {
+                    if (script->on_search_fn_) {
+                        auto r = (*script->on_search_fn_)(query);
+                        if (!r) {
+                            report_callback_error(-5, script->on_search_src_, r.message());
+                        } else {
+                            clear_callback_error(-5);
+                        }
+                    }
+                }
+            }
+
+            // 0f. Dispatch modal-dialog events (btcui_dialog on_event callbacks).
             // The event is a table: {type, text?, key?, label?, index?, choice?}.
             {
                 auto devs =
@@ -1686,6 +1800,11 @@ void LuaTab::set_quit_callback(std::function<void()> fn) { quit_request_fn_ = st
 
 void LuaTab::set_search_callback(std::function<void(const std::string&)> fn) {
     search_request_fn_ = std::move(fn);
+}
+
+void LuaTab::trigger_search(const std::string& query) {
+    search_query_queue_.update([&](auto& q) { q.push_back(query); });
+    screen_.Post(ftxui::Event::Custom);
 }
 
 void LuaTab::stop() {
@@ -2075,7 +2194,11 @@ bool LuaTab::handle_focused_event(const Event& event) {
                                          tbl->selected_row().load() == row_idx);
                 focused_panel_        = pi;
                 panel_scrolling_      = true;
-                tbl->selected_row()   = row_idx;
+                // Focus left any blocks panel — drop its stale block highlight.
+                for (auto& p : mpanels)
+                    if (auto b = std::dynamic_pointer_cast<LuaBlocks>(p->panel))
+                        b->selected() = -1;
+                tbl->selected_row() = row_idx;
                 if (already_selected) {
                     if (auto key = tbl->selected_key())
                         select_queue_.update([&](auto& q) { q.emplace_back(*key, "click"); });
@@ -2097,18 +2220,62 @@ bool LuaTab::handle_focused_event(const Event& event) {
 
     // A table is reachable only when it's selectable AND has at least one selectable
     // row (display-only tables, and tables whose rows are all opted out, are skipped);
-    // non-table panels (summaries) are reachable only when scrollable.
+    // blocks panels are reachable when non-empty; other panels (summaries) only
+    // when scrollable.
     auto next_selectable = [&](int from, int dir) -> int {
         for (int i = from + dir; i >= 0 && i < n; i += dir) {
             auto tbl = std::dynamic_pointer_cast<LuaTable>(panels[i]->panel);
-            if ((tbl && tbl->selectable() && tbl->any_selectable()) ||
-                (!tbl && panels[i]->scrollable))
+            auto blk = std::dynamic_pointer_cast<LuaBlocks>(panels[i]->panel);
+            if ((tbl && tbl->selectable() && tbl->any_selectable()) || (blk && blk->count() > 0) ||
+                (!tbl && !blk && panels[i]->scrollable))
                 return i;
         }
         return -1;
     };
 
+    // Blocks panels are selected the moment they gain focus (matching the old
+    // C++ Mempool tab where ↓ highlighted the newest block directly) and
+    // deselected when focus moves away.
+    auto blocks_at = [&](int i) -> std::shared_ptr<LuaBlocks> {
+        if (i < 0 || i >= n)
+            return nullptr;
+        return std::dynamic_pointer_cast<LuaBlocks>(panels[i]->panel);
+    };
+    auto move_focus = [&](int new_fp) {
+        int old_fp = focused_panel_.exchange(new_fp);
+        if (auto b = blocks_at(old_fp); b && old_fp != new_fp)
+            b->selected() = -1;
+        if (auto b = blocks_at(new_fp); b && b->selected().load() < 0)
+            b->selected() = 0;
+    };
+
     if (fp >= 0) {
+        // Blocks panel: ←/→ move the horizontal selection, Enter activates the
+        // selected block (fires btcui_on_select), Esc leaves the panel;
+        // ↑/↓ fall through to the panel-focus moves below.
+        if (auto blk = blocks_at(fp)) {
+            if (event == Event::ArrowLeft || event == Event::ArrowRight) {
+                int cnt = blk->count();
+                if (cnt > 0) {
+                    int cur         = blk->selected().load();
+                    blk->selected() = (event == Event::ArrowLeft) ? std::max(cur - 1, 0)
+                                                                  : std::min(cur + 1, cnt - 1);
+                }
+                screen_.Post(Event::Custom);
+                return true;
+            }
+            if (event == Event::Return) {
+                if (auto key = blk->selected_key())
+                    select_queue_.update([&](auto& q) { q.emplace_back(*key, "enter"); });
+                screen_.Post(Event::Custom);
+                return true;
+            }
+            if (event == Event::Escape) {
+                move_focus(-1);
+                screen_.Post(Event::Custom);
+                return true;
+            }
+        }
         // Space fires the on_select callback with trigger "space" (toggle); unlike
         // Enter it never enters selection mode on its own. Enter on an already-
         // selected row fires with trigger "enter" (activate).
@@ -2185,16 +2352,16 @@ bool LuaTab::handle_focused_event(const Event& event) {
         if (event == Event::ArrowDown) {
             int next = next_selectable(fp, 1);
             if (next >= 0)
-                focused_panel_ = next;
+                move_focus(next);
             screen_.Post(Event::Custom);
             return true;
         }
         if (event == Event::ArrowUp) {
             int prev = next_selectable(fp, -1);
             if (prev >= 0) {
-                focused_panel_ = prev;
+                move_focus(prev);
             } else {
-                focused_panel_   = -1;
+                move_focus(-1);
                 panel_scrolling_ = false;
             }
             screen_.Post(Event::Custom);
@@ -2207,7 +2374,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
     if (event == Event::ArrowDown) {
         int first = next_selectable(-1, 1);
         if (first >= 0)
-            focused_panel_ = first;
+            move_focus(first);
         else
             return false;
         screen_.Post(Event::Custom);
@@ -2216,7 +2383,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
     if (event == Event::ArrowUp) {
         int last = next_selectable(n, -1);
         if (last >= 0)
-            focused_panel_ = last;
+            move_focus(last);
         else
             return false;
         screen_.Post(Event::Custom);
@@ -2559,6 +2726,36 @@ Element LuaTab::render(const AppState& /*snap*/) {
             });
 
             lua_elems.push_back({std::move(chrome), std::move(data_rows), chrome_h, pi});
+        } else if (auto blk = std::dynamic_pointer_cast<LuaBlocks>(panel)) {
+            flush_summaries();
+            auto bs = blk->snapshot();
+            // Keep animation frames coming until the slide finishes.
+            if (bs.anim_progress >= 0.0)
+                screen_.RequestAnimationFrame();
+
+            Element bars =
+                bs.blocks.empty()
+                    ? text("  Fetching…") | color(Color::GrayDark)
+                    : hbox({text("  "), components::blockbars_element(
+                                            bs.blocks, blk->selected().load(),
+                                            bs.anim_progress >= 0.0 ? &bs.anim_old : nullptr,
+                                            bs.anim_progress)});
+
+            Elements    content;
+            const auto& box_title = blk->title();
+            if (!box_title.empty())
+                content.push_back(text(" " + box_title + " ") | bold | color(Color::Gold1));
+            content.push_back(text(""));
+            int body_rows =
+                bs.blocks.empty() ? 1 : 7 + static_cast<int>(bs.blocks.front().lines.size());
+            content.push_back(std::move(bars));
+
+            int  nat_h      = 2 + (box_title.empty() ? 0 : 1) + 1 + body_rows;
+            bool is_focused = (focused_panel_.load() == pi);
+            auto el         = is_focused ? window(text("***") | bold | color(Color::Cyan),
+                                                  vbox(std::move(content)))
+                                         : vbox(std::move(content)) | border;
+            lua_elems.push_back({{std::move(el)}, {}, nat_h, pi});
         } else if (auto sum = std::dynamic_pointer_cast<LuaSummary>(panel)) {
             if (sum->new_row())
                 flush_summaries();

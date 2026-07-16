@@ -34,6 +34,10 @@ add_test(NAME test_peers_tab
   COMMAND lua-interp ${CMAKE_CURRENT_SOURCE_DIR}/lua/test_peers_tab.lua
           ${PROJECT_SOURCE_DIR}/lua/tabs/peers.lua
 )
+add_test(NAME test_mempool_tab
+  COMMAND lua-interp ${CMAKE_CURRENT_SOURCE_DIR}/lua/test_mempool_tab.lua
+          ${PROJECT_SOURCE_DIR}/lua/tabs/mempool.lua
+)
 
 add_executable(test_cli test_cli.cpp)
 target_link_libraries(test_cli PRIVATE Catch2::Catch2WithMain)

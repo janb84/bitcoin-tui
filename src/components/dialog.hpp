@@ -7,6 +7,7 @@
 
 #include <ftxui/ftxui.hpp>
 
+#include "components/address.hpp"
 #include "components/hit_list.hpp"
 #include "render.hpp"
 
@@ -44,7 +45,8 @@ inline ftxui::Color lua_color(const std::string& name, ftxui::Color fallback) {
 struct DialogSpan {
     std::string text;
     std::string color; // Lua color name; empty = default
-    bool        bold = false;
+    bool        bold    = false;
+    bool        address = false; // render text via address_element()
 };
 
 struct DialogRow {
@@ -71,6 +73,7 @@ struct DialogInput {
 struct DialogState {
     bool                        active = false;
     std::string                 title;
+    std::string                 right_label; // gray text right of the title
     int                         width = 64;
     std::vector<DialogRow>      rows;
     std::optional<DialogChoice> choice;
@@ -125,7 +128,7 @@ inline ftxui::Element dialog_spans(const std::vector<DialogSpan>& spans) {
     using namespace ftxui;
     Elements parts;
     for (const auto& s : spans) {
-        auto e = text(s.text);
+        auto e = s.address ? address_element(s.text) : text(s.text);
         if (!s.color.empty())
             e = e | color(lua_color(s.color, Color::Default));
         if (s.bold)
@@ -275,7 +278,7 @@ inline ftxui::Element dialog_element(const DialogState& d, DialogHits* hits = nu
         }
     }
 
-    auto panel = build_titled_panel(" " + d.title + " ", "", std::move(rows), d.width);
+    auto panel = build_titled_panel(" " + d.title + " ", d.right_label, std::move(rows), d.width);
     if (hits)
         panel = std::move(panel) | reflect(hits->panel);
     return center_overlay(std::move(panel));
