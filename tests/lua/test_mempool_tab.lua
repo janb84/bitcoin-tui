@@ -133,7 +133,7 @@ local blocks = blocks_panels[1]
 check(stats.values.transactions == "41,234", "tx count grouped")
 check(stats.values.vsize == "17.0 MB", "virtual size")
 check(stats.values.total_fees == "0.53210000 BTC", "total fees")
-check(stats.values.min_relay == "1.0 sat/vB", "min relay fee in sat/vB")
+check(stats.values.min_fee == "1.0 sat/vB", "mempool min fee in sat/vB")
 check(type(stats.values.memory) == "table" and stats.values.memory.gauge > 0.8,
       "memory usage gauge")
 check(count_calls("getblockstats") == 3, "block stats fetched for heights 2..0")

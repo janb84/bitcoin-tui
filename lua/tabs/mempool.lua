@@ -141,7 +141,10 @@ local mempool_panel = btcui_summary({
         { name = "transactions", label = "Transactions" },
         { name = "vsize",        label = "Virtual size" },
         { name = "total_fees",   label = "Total fees" },
-        { name = "min_relay",    label = "Min relay fee" },
+        -- mempoolminfee, not minrelaytxfee: it tracks minrelaytxfee until the
+        -- mempool fills up and starts evicting, then rises above it. Labelling it
+        -- "Min relay fee" made a rising eviction floor look like a config change.
+        { name = "min_fee",      label = "Mempool min fee" },
         { name = "memory",       label = "Memory usage" },
     },
 })
@@ -546,7 +549,7 @@ local function refresh()
             transactions = fmt_int(mp.size or 0),
             vsize        = fmt_bytes(mp.bytes or 0),
             total_fees   = fmt_btc(mp.total_fee),
-            min_relay    = fmt_satsvb(mp.mempoolminfee),
+            min_fee      = fmt_satsvb(mp.mempoolminfee),
             memory       = btcui_gauge(frac, {
                 color  = mcolor,
                 prefix = fmt_bytes(usage) .. " / " .. fmt_bytes(maxmem),

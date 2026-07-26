@@ -116,7 +116,8 @@ local mempool_panel = btcui_summary({
         { name = "transactions", label = "Transactions" },
         { name = "vsize",        label = "Virtual size" },
         { name = "total_fees",   label = "Total fees" },
-        { name = "min_relay",    label = "Min relay fee" },
+        -- mempoolminfee (dynamic eviction floor), not the minrelaytxfee setting.
+        { name = "min_fee",      label = "Mempool min fee" },
         { name = "memory",       label = "Memory usage" },
     },
 })
@@ -166,7 +167,7 @@ btcui_set_interval(REFRESH, function()
             transactions = fmt_int(mp.size or 0),
             vsize        = fmt_bytes(mp.bytes or 0),
             total_fees   = fmt_btc(mp.total_fee),
-            min_relay    = fmt_satsvb(mp.mempoolminfee),
+            min_fee      = fmt_satsvb(mp.mempoolminfee),
             memory       = btcui_gauge(frac, {
                 color  = mcolor,
                 prefix = fmt_bytes(usage) .. " / " .. fmt_bytes(maxmem),
