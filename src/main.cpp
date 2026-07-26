@@ -27,13 +27,13 @@ static void ensure_terminal();
 #include "components/footer_bar.hpp"
 #include "format.hpp"
 #include "guarded.hpp"
+#include "luatab.hpp"
 #include "paths.hpp"
 #include "poll.hpp"
 #include "render.hpp"
 #include "rpc_client.hpp"
 #include "search_query.hpp"
 #include "state.hpp"
-#include "tabs/luatab.hpp"
 
 // ============================================================================
 // Cookie authentication helpers
