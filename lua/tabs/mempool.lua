@@ -122,6 +122,7 @@ local function extract_miner(hex)
 end
 
 local function is_height(q) return q:match("^%d+$") ~= nil end
+local function is_hash256(q) return #q == 64 and q:match("^%x+$") ~= nil end
 
 local function abbrev(q) return ellipsize_middle(q, 40, 20, 20) end
 
@@ -424,6 +425,7 @@ end
 
 -- Height → block; else mempool entry → confirmed tx (txindex) → block hash.
 local function run_search(query)
+    local tx_error
     if is_height(query) then
         local ok, hash = pcall(btcui_rpc, "getblockhash", tonumber(query))
         if not ok then return { kind = "error", error = tostring(hash) } end
@@ -447,6 +449,12 @@ local function run_search(query)
     end
 
     local ok2, tx = pcall(btcui_rpc, "getrawtransaction", query, true)
+    if not ok2 then
+        -- Remember why the tx lookup failed. Falling through to the block-hash
+        -- probe below would otherwise replace Core's message (which names -txindex
+        -- when the node has no index) with a bare "Block not found".
+        tx_error = tostring(tx)
+    end
     if ok2 and type(tx) == "table" then
         local r = {
             kind          = "confirmed",
@@ -482,7 +490,14 @@ local function run_search(query)
         return r
     end
 
-    return fetch_block(query)
+    -- Not in the mempool and not a retrievable tx: it may still be a block hash.
+    local r = fetch_block(query)
+    if r.kind == "error" and tx_error and is_hash256(query) then
+        -- 64 hex chars that is neither a block nor a fetchable tx: the tx lookup
+        -- error is the useful one (it tells the operator to enable -txindex).
+        r.error = tx_error
+    end
+    return r
 end
 
 ----------------------------------------------------------------------

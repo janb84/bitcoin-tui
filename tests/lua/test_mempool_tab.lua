@@ -247,11 +247,20 @@ check(last_dialog.title == "Block Search" and dialog_has_text("⛏ BLOCK"),
 check(rpc_calls[#rpc_calls - 3].method == "getblockhash", "height resolved via getblockhash")
 last_dialog.on_event({ type = "close" })
 
--- 9. Unknown query surfaces the RPC error; 'q' inside a dialog quits
+-- 9. A 64-hex query that is neither tx nor block reports the TX error, not the
+-- block one: on a node without -txindex that message is Core's "Use -txindex…"
+-- hint, which is the actionable one.
 rpc_results["getblock"] = "ERROR"
 on_search_fn(string.rep("ff", 32))
 timer_fn()
-check(dialog_has_text("rpc failed: getblock"), "error overlay")
+check(dialog_has_text("rpc failed: getrawtransaction"), "txid error overlay")
+
+-- 10. A query that cannot be a txid still reports the block-lookup error.
+on_search_fn("notahash")
+timer_fn()
+check(dialog_has_text("rpc failed: getblock"), "non-hex query keeps the block error")
+
+-- 11. 'q' inside a dialog quits
 last_dialog.on_event({ type = "key", key = "q" })
 check(quit_called, "q in dialog quits")
 
