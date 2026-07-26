@@ -7,20 +7,24 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <ostream>
 #include <set>
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include <ftxui/ftxui.hpp>
 
 #include "components/dialog.hpp"
+#include "components/footer_spec.hpp"
 #include "components/hit_list.hpp"
 #include "components/qr_item.hpp"
 #include "guarded.hpp"
 #include "json.hpp"
 #include "luatable.hpp"
-#include "tabs/tab.hpp"
+#include "rpc_client.hpp"
 
 struct LuaError {
     std::string                           source_id; // e.g. "SLOWBLOCKS.lua:5"
@@ -76,19 +80,21 @@ class LuaScript;
 struct RpcRequest;
 struct RpcResponse;
 
-class LuaTab : public Tab {
+// Hosts one Lua tab script: owns its worker threads, the btcui_* API bindings and
+// the UI state the script drives. Every tab in the app is one of these; there is
+// no tab abstraction above it.
+class LuaTab {
   public:
     LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::App& screen, std::atomic<bool>& running,
-           Guarded<AppState>& state, int refresh_secs, std::string debug_log_path,
-           json tab_options = {}, std::span<const std::string> extra_rpcs = {},
-           std::ostream* debug_out = nullptr);
-    ~LuaTab() override = default;
+           int refresh_secs, std::string debug_log_path, json tab_options = {},
+           std::span<const std::string> extra_rpcs = {}, std::ostream* debug_out = nullptr);
 
-    std::string    name() const override;
-    ftxui::Element render(const AppState& snap) override;
-    FooterSpec     footer_buttons(const AppState& snap) override;
-    bool           handle_focused_event(const ftxui::Event& event) override;
-    void           join() override;
+    std::string    name() const;
+    ftxui::Element render();
+    // `refreshing` drives the footer's refresh indicator (owned by the poll loop).
+    FooterSpec footer_buttons(bool refreshing);
+    bool       handle_focused_event(const ftxui::Event& event);
+    void       join();
 
     std::string script_path() const;
     void        set_reload_callback(std::function<void()> fn);
@@ -119,6 +125,12 @@ class LuaTab : public Tab {
     void clear_callback_error(int id);
     void open_qr_overlay(const std::string& data);
 
+    const RpcConfig                         cfg_;
+    Guarded<RpcAuth>&                       auth_;
+    ftxui::App&                             screen_;
+    std::atomic<bool>&                      running_;
+    const int                               refresh_secs_;
+    std::ostream* const                     debug_out_;
     const std::string                       debug_log_path_;
     const json                              tab_options_;
     const std::set<std::string>             rpc_allowlist_;

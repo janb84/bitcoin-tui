@@ -590,7 +590,7 @@ int Application::run() const {
                     tab_rpcs.push_back(m.get<std::string>());
             }
         }
-        return std::make_unique<LuaTab>(cfg, auth, screen, running, state, refresh_secs, debug_log,
+        return std::make_unique<LuaTab>(cfg, auth, screen, running, refresh_secs, debug_log,
                                         std::move(options), tab_rpcs,
                                         debug_enabled ? &debug_out : nullptr);
     };
@@ -613,11 +613,12 @@ int Application::run() const {
     std::set<std::string> auto_tab_paths;
 
     // Rebuild helper: wires up the reload callback on every LuaTab and
-    // synchronises tabs / tab_labels with lua_tab_ptrs.
+    // synchronises tab_labels with lua_tab_ptrs (the tab list itself).
     // Called once after initial construction and again after each live reload.
-    std::vector<Tab*>                    tabs;
     std::vector<std::string>             tab_labels;
     std::vector<std::unique_ptr<LuaTab>> lua_tab_ptrs;
+
+    auto tab_count = [&] { return static_cast<int>(lua_tab_ptrs.size()); };
 
     auto rebuild_tab_lists = [&]() {
         for (auto& p : lua_tab_ptrs) {
@@ -634,22 +635,18 @@ int Application::run() const {
                 screen.Post(Event::Custom);
             });
         }
-        tabs.clear();
-        for (auto& p : lua_tab_ptrs)
-            tabs.push_back(p.get());
         tab_labels.clear();
-        for (auto* t : tabs)
-            tab_labels.push_back(t->name());
+        for (auto& p : lua_tab_ptrs)
+            tab_labels.push_back(p->name());
     };
 
     // Route a search query to the first tab that registered btcui_on_search
-    // (the bundled Mempool tab), switching to it — the old C++ search view flow.
+    // (the bundled Mempool tab), switching to it.
     auto dispatch_search = [&](const std::string& query) {
-        for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
-            auto* lt = dynamic_cast<LuaTab*>(tabs[i]);
-            if (lt && lt->handles_search()) {
+        for (int i = 0; i < tab_count(); ++i) {
+            if (lua_tab_ptrs[i]->handles_search()) {
                 tab_index = i;
-                lt->trigger_search(query);
+                lua_tab_ptrs[i]->trigger_search(query);
                 return;
             }
         }
@@ -670,9 +667,10 @@ int Application::run() const {
     // Footer bar — per-tab buttons + global search/quit, all mouse-clickable
     auto footer_bar = make_footer_bar(
         [&]() -> FooterSpec {
-            if (tab_index < 0 || tab_index >= static_cast<int>(tabs.size()))
+            if (tab_index < 0 || tab_index >= tab_count())
                 return FooterSpec{};
-            return tabs[tab_index]->footer_buttons(state.get());
+            return lua_tab_ptrs[tab_index]->footer_buttons(
+                state.access([](const auto& s) { return s.refreshing; }));
         },
         [&]() -> bool { return global_search_active; },
         [&] {
@@ -705,9 +703,9 @@ int Application::run() const {
         if (tabs_reload_pending.exchange(false)) {
             // Remember which tab is focused so we can keep the user on it after the
             // list is rebuilt (config tabs shift position when one is added/removed).
-            Tab* focused_tab = (tab_index >= 0 && tab_index < static_cast<int>(tabs.size()))
-                                   ? tabs[tab_index]
-                                   : nullptr;
+            LuaTab* focused_tab = (tab_index >= 0 && tab_index < tab_count())
+                                      ? lua_tab_ptrs[tab_index].get()
+                                      : nullptr;
 
             // Read the updated tab list from config.toml
             std::vector<std::string> new_specs;
@@ -823,19 +821,20 @@ int Application::run() const {
             // Restore focus to the same tab if it still exists (e.g. stay on
             // Settings after toggling another tab). Falls back to a clamp.
             if (focused_tab) {
-                auto it = std::find(tabs.begin(), tabs.end(), focused_tab);
-                if (it != tabs.end())
-                    tab_index = static_cast<int>(it - tabs.begin());
+                auto it = std::find_if(lua_tab_ptrs.begin(), lua_tab_ptrs.end(),
+                                       [&](const auto& p) { return p.get() == focused_tab; });
+                if (it != lua_tab_ptrs.end())
+                    tab_index = static_cast<int>(it - lua_tab_ptrs.begin());
             }
-            if (tab_index >= static_cast<int>(tabs.size()))
-                tab_index = static_cast<int>(tabs.size()) - 1;
+            if (tab_index >= tab_count())
+                tab_index = tab_count() - 1;
         }
 
         AppState snap = state.get();
 
-        Element tab_content = (tab_index < 0 || tab_index >= tabs.size())
+        Element tab_content = (tab_index < 0 || tab_index >= tab_count())
                                   ? text("Unknown tab")
-                                  : tabs[tab_index]->render(snap);
+                                  : lua_tab_ptrs[tab_index]->render();
 
         // Status bar — left side
         Element status_left;
@@ -1015,8 +1014,8 @@ int Application::run() const {
                 // Let the active tab update pointer-driven state (e.g. a dialog's
                 // hover highlight), then let the move propagate so the footer bar
                 // can update its own hover too.
-                if (tab_index >= 0 && tab_index < static_cast<int>(tabs.size()))
-                    tabs[tab_index]->handle_focused_event(event);
+                if (tab_index >= 0 && tab_index < tab_count())
+                    lua_tab_ptrs[tab_index]->handle_focused_event(event);
                 return false;
             }
             if (me.mouse().button == Mouse::Left && me.mouse().motion == Mouse::Pressed &&
@@ -1072,8 +1071,8 @@ int Application::run() const {
         // Tab-specific event dispatch (priority order — see MEMORY.md CatchEvent
         // note; Lua tab overlays — dialogs, text input, QR — are handled inside
         // LuaTab::handle_focused_event)
-        if (tab_index >= 0 && tab_index < static_cast<int>(tabs.size()) &&
-            tabs[tab_index]->handle_focused_event(event))
+        if (tab_index >= 0 && tab_index < tab_count() &&
+            lua_tab_ptrs[tab_index]->handle_focused_event(event))
             return true;
 
         // Normal mode keys
@@ -1142,8 +1141,8 @@ int Application::run() const {
     screen.Loop(event_handler);
 
     running = false;
-    for (auto tab : tabs)
-        tab->join();
+    for (auto& p : lua_tab_ptrs)
+        p->join();
     for (auto& p : dead_lua_tabs)
         p->join();
     if (launch_thread.joinable())

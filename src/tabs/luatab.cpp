@@ -1756,9 +1756,10 @@ static std::set<std::string> make_allowlist(std::span<const std::string> extra) 
 }
 
 LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen, std::atomic<bool>& running,
-               Guarded<AppState>& state, int refresh_secs, std::string debug_log_path,
-               json tab_options, std::span<const std::string> extra_rpcs, std::ostream* debug_out)
-    : Tab(std::move(cfg), auth, screen, running, state, refresh_secs, debug_out),
+               int refresh_secs, std::string debug_log_path, json tab_options,
+               std::span<const std::string> extra_rpcs, std::ostream* debug_out)
+    : cfg_(std::move(cfg)), auth_(auth), screen_(screen), running_(running),
+      refresh_secs_(refresh_secs), debug_out_(debug_out),
       debug_log_path_(std::move(debug_log_path)), tab_options_(std::move(tab_options)),
       rpc_allowlist_(make_allowlist(extra_rpcs)) {
     const std::string lua_script = tab_options_["script"].get<std::string>();
@@ -2414,7 +2415,7 @@ bool LuaTab::handle_focused_event(const Event& event) {
     return false;
 }
 
-FooterSpec LuaTab::footer_buttons(const AppState& snap) {
+FooterSpec LuaTab::footer_buttons(bool refreshing) {
     if (lua_tab_state_.access([](const auto& s) { return s.input_overlay.active; })) {
         return FooterSpec{
             {{{"[Enter] Confirm",
@@ -2489,7 +2490,9 @@ FooterSpec LuaTab::footer_buttons(const AppState& snap) {
     std::vector<FooterButton> btns;
     if (!st.lua_status.empty())
         btns.push_back({"  " + st.lua_status, nullptr, false});
-    btns.push_back(refresh_btn(snap));
+    btns.push_back(
+        {refreshing ? " ↻ refreshing" : " ↻ every " + std::to_string(refresh_secs_) + "s", nullptr,
+         refreshing});
     for (const auto& info : st.footer_btn_labels) {
         int btn_id = info.id;
         btns.push_back({info.label, [this, btn_id] {
@@ -2524,7 +2527,7 @@ static Element render_cell_element(const std::string& prefix, const CellValue& c
     return apply_style(text(prefix + format_cell(type, cv.data, decimals)), cv);
 }
 
-Element LuaTab::render(const AppState& /*snap*/) {
+Element LuaTab::render() {
     int dx     = screen_.dimx();
     int dy     = screen_.dimy();
     int prev_x = last_dimx_.exchange(dx);
