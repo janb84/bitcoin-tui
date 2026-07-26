@@ -273,8 +273,8 @@ mkdir -p "$OUTDIR_BASE"
 SOURCES_PATH="${SOURCES_PATH:-${VERSION_BASE}/sources}"
 mkdir -p "$SOURCES_PATH"
 
-FTXUI_URL="https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v6.1.9.tar.gz"
-FTXUI_HASH="0w8f6iv7pnrw47hp87wafx343mrma2436mnal7a86iwiahg9r0a5"
+FTXUI_URL="https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v7.0.1.tar.gz"
+FTXUI_HASH="18k1smfcm0v8h3z871if7w5hb312v8j16mmwawz4vcps8yxl9xc0"
 CATCH2_URL="https://github.com/catchorg/Catch2/archive/refs/tags/v3.7.1.tar.gz"
 CATCH2_HASH="1716w0pfd24k22izp3zj2d17c6cyzvqgldda76fbpmx0l53v54f9"
 
@@ -299,7 +299,7 @@ fetch_source() {
     tar -xzf "${store_path}" -C "${dest}" --strip-components=1
 }
 
-fetch_source "${FTXUI_URL}"  "${FTXUI_HASH}"  "FTXUI v6.1.9"  "${SOURCES_PATH}/ftxui"
+fetch_source "${FTXUI_URL}"  "${FTXUI_HASH}"  "FTXUI v7.0.1"  "${SOURCES_PATH}/ftxui"
 fetch_source "${CATCH2_URL}" "${CATCH2_HASH}" "Catch2 v3.7.1" "${SOURCES_PATH}/catch2"
 
 # Usage: outdir_for_host HOST SUFFIX

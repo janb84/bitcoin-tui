@@ -46,7 +46,7 @@ All notable changes to bitcoin-tui are documented here.
 - `getaddednodeinfo` and `listbanned` (read-only) were added to the default Lua RPC allowlist
 - The Dashboard tab is no longer a built-in C++ tab; it has been removed from the executable and replaced by `lua/tabs/dashboard.lua` (load on demand with `--tab`, or enable it from the Settings tab); `src/tabs/dashboard.cpp` and `src/tabs/dashboard.hpp` are no longer compiled.
 - The Network tab is no longer a built-in C++ tab; it has been removed from the executable and replaced by `lua/tabs/network.lua` (load on demand with `--tab`); `src/tabs/network.cpp` and `src/tabs/network.hpp` are no longer compiled
-- FTXUI updated from v5.0.0 to v7.0.0;
+- FTXUI updated from v5.0.0 to v7.0.1;
 - Footer hints are unified across tabs: context-sensitive actions now appear in one shared footer bar instead of each tab rendering its own status text
 - FetchContent dependencies are now pinned by SHA256 hash for reproducibility
 - When run via `sudo` as root, config and cache paths now resolve to the invoking user's home (`SUDO_USER`) instead of root's, and files created as root are chowned back to that user
