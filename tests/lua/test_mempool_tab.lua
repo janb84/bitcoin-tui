@@ -264,4 +264,14 @@ check(dialog_has_text("rpc failed: getblock"), "non-hex query keeps the block er
 last_dialog.on_event({ type = "key", key = "q" })
 check(quit_called, "q in dialog quits")
 
+-- 12. A block with only a coinbase: getblockstats totals exclude it, so the bar
+-- says "coinbase" rather than pairing "1 tx" with "0 B".
+rpc_results["getblockstats"] = { height = 9, txs = 1, total_size = 0,
+                                 total_weight = 0, time = 999900 }
+rpc_results["getblockchaininfo"] = { blocks = 9 }
+timer_fn()
+check(blocks.bars[1].key == "9" and blocks.bars[1].lines[1] == "1 tx",
+      "coinbase-only block keeps Core's tx count")
+check(blocks.bars[1].lines[2] == "coinbase", "coinbase-only block is labelled")
+
 print("ok - " .. checks .. " checks passed (" .. script .. ")")

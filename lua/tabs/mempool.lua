@@ -519,7 +519,10 @@ local function update_blocks_panel()
             fill  = math.min(1, (st.weight or 0) / MAX_WEIGHT),
             lines = {
                 fmt_int(st.txs) .. " tx",
-                fmt_bytes(st.size),
+                -- getblockstats totals count non-coinbase transactions only, so a
+                -- block carrying nothing but its coinbase reports total_size 0.
+                -- Say that, instead of rendering "1 tx" next to "0 B".
+                st.txs <= 1 and "coinbase" or fmt_bytes(st.size),
                 st.time > 0 and fmt_time_ago(st.time) or "",
             },
         }
