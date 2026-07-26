@@ -16,13 +16,6 @@ Element section_box(const std::string& title, Elements rows) {
     return vbox(std::move(content)) | border;
 }
 
-std::string ellipsize_middle(const std::string& value, size_t max_len, size_t prefix,
-                             size_t suffix) {
-    if (value.size() <= max_len)
-        return value;
-    return value.substr(0, prefix) + "\u2026" + value.substr(value.size() - suffix);
-}
-
 Element build_titled_panel(const std::string& title, const std::string& right_label, Elements rows,
                            int width, Color title_color) {
     Elements header = {
