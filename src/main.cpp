@@ -34,7 +34,6 @@ static void ensure_terminal();
 #include "render.hpp"
 #include "rpc_client.hpp"
 #include "search_query.hpp"
-#include "state.hpp"
 
 // ============================================================================
 // Cookie authentication helpers
@@ -198,8 +197,8 @@ class Application {
     std::string mempool_tab_path;  // resolved mempool.lua path (kept first on reload)
 
     // Shared state
-    mutable Guarded<AppState> state;
-    mutable std::atomic<bool> running{false};
+    mutable Guarded<NodeStatus> state;
+    mutable std::atomic<bool>   running{false};
 
     // Connection overlay state (not a tab — shown when disconnected)
     mutable std::atomic<bool>                 launch_in_flight{false};
@@ -900,7 +899,7 @@ int Application::run() const {
         for (int i = 0; i < tab_count(); ++i)
             lua_tab_ptrs[i]->set_visible(i == tab_index);
 
-        AppState snap = state.get();
+        NodeStatus snap = state.get();
 
         Element tab_content = (tab_index < 0 || tab_index >= tab_count())
                                   ? text("Unknown tab")

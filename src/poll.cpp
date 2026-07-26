@@ -4,7 +4,7 @@
 // ============================================================================
 // RPC polling
 // ============================================================================
-void poll_rpc(RpcClient& rpc, Guarded<AppState>& state,
+void poll_rpc(RpcClient& rpc, Guarded<NodeStatus>& state,
               const std::function<void()>& on_core_ready) {
     try {
         // One call: it doubles as the reachability probe for the connection overlay
