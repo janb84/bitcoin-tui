@@ -35,12 +35,17 @@ end
 local function fmt_height(n) return group_digits(n, "'") end
 local function fmt_int(n)    return group_digits(n, ",") end
 
--- Scale a value down through a list of {threshold, suffix} steps.
+-- Scale a value down through a list of {threshold, suffix} steps. Values too
+-- small for the smallest step fall back to significant digits rather than fixed
+-- decimals, so regtest's 4.7e-10 difficulty reads as itself instead of "0.00".
 local function fmt_scaled(v, decimals, steps, base_suffix)
     for _, step in ipairs(steps) do
         if v >= step[1] then
             return string.format("%." .. decimals .. "f %s", v / step[1], step[2])
         end
+    end
+    if v > 0 and v < 0.01 then
+        return string.format("%.3g%s", v, base_suffix)
     end
     return string.format("%." .. decimals .. "f%s", v, base_suffix)
 end
