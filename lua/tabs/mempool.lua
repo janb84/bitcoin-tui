@@ -61,6 +61,17 @@ local function fmt_btc(v)
     return string.format("%.8f BTC", v or 0)
 end
 
+-- Scaled like the Dashboard's: a fixed "%.2f T" reported regtest's 4.7e-10 and
+-- signet's ~0.003 as "0.00 T", and would read "1000.00 T" past 1e15.
+local function fmt_difficulty(d)
+    d = d or 0
+    for _, step in ipairs({ { 1e18, "E" }, { 1e15, "P" }, { 1e12, "T" }, { 1e9, "G" } }) do
+        if d >= step[1] then return string.format("%.2f %s", d / step[1], step[2]) end
+    end
+    -- Below 1e9 show the plain value, as bitcoin-cli does (regtest/signet).
+    return string.format("%.8g", d)
+end
+
 -- relayfee / mempoolminfee are BTC/kvB; show as sat/vB.
 local function fmt_satsvb(btc_per_kvb)
     return string.format("%.1f sat/vB", (btc_per_kvb or 0) * 1e5)
@@ -312,7 +323,7 @@ show_result = function(r, sub)
             lv("Transactions", fmt_int(r.ntx)),
             lv("Size", fmt_int(r.size) .. " B"),
             lv("Weight", fmt_int(r.weight) .. " WU"),
-            lv("Difficulty", string.format("%.2f T", (r.difficulty or 0) / 1e12)),
+            lv("Difficulty", fmt_difficulty(r.difficulty)),
             lv("Miner", r.miner),
             lv("Confirmations", fmt_int(r.confirmations)),
         }
