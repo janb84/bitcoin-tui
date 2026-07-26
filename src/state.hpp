@@ -2,66 +2,22 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdint>
 #include <string>
 
 // ============================================================================
 // Application state (shared between render thread and RPC polling thread)
+//
+// Host-level state only: the chrome around the tabs (chain badge, connection
+// status, refresh indicator). Every tab is a Lua script that fetches and owns
+// its own data, so node details (heights, peers, mempool, …) do not live here.
 // ============================================================================
 struct AppState {
-    // Blockchain
-    std::string chain      = "—";
-    int64_t     blocks     = 0;
-    int64_t     headers    = 0;
-    double      difficulty = 0.0;
-    double      progress   = 0.0;
-    bool        pruned     = false;
-    bool        ibd        = false;
-    std::string bestblockhash;
+    std::string chain = "—";
 
-    // Network
-    int         connections     = 0;
-    int         connections_in  = 0;
-    int         connections_out = 0;
-    std::string subversion;
-    int         protocol_version = 0;
-    bool        network_active   = true;
-    double      relay_fee        = 0.0;
-
-    // Mempool
-    int64_t mempool_tx      = 0;
-    int64_t mempool_bytes   = 0;
-    int64_t mempool_usage   = 0;
-    int64_t mempool_max     = 300000000;
-    double  mempool_min_fee = 0.0;
-    double  total_fee       = 0.0;
-
-    // Mining
-    double network_hashps = 0.0;
-
-    // Status
     std::string last_update;
     std::string error_message;
     bool        connected  = false;
     bool        refreshing = false;
-};
-
-struct SoftFork {
-    std::string name;
-    std::string type; // "buried" | "bip9"
-    bool        active = false;
-    int64_t     height = -1; // activation height (-1 = unknown)
-    // bip9 extras (empty/0 for buried)
-    std::string bip9_status;             // defined | started | locked_in | active | failed
-    int64_t     bip9_since          = 0; // block height status started
-    int64_t     bip9_start_time     = 0; // unix timestamp
-    int64_t     bip9_timeout        = 0; // unix timestamp
-    int64_t     bip9_min_activation = 0;
-    // signalling stats (only present during "started")
-    int64_t bip9_elapsed   = 0;
-    int64_t bip9_count     = 0;
-    int64_t bip9_period    = 0;
-    int64_t bip9_threshold = 0;
 };
 
 // Query validators — pure predicates.
