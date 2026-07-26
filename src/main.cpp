@@ -31,6 +31,7 @@ static void ensure_terminal();
 #include "poll.hpp"
 #include "render.hpp"
 #include "rpc_client.hpp"
+#include "search_query.hpp"
 #include "state.hpp"
 #include "tabs/luatab.hpp"
 

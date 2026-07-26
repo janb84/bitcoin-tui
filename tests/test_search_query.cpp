@@ -1,6 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "state.hpp"
+#include "search_query.hpp"
 
 // ============================================================================
 // is_txid

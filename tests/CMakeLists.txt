@@ -6,7 +6,7 @@ find_package(Threads REQUIRED)
 add_executable(bitcoin-tui-tests
   test_json.cpp
   test_format.cpp
-  test_state.cpp
+  test_search_query.cpp
   test_guarded.cpp
   test_rpc_config.cpp
   test_bitcoind.cpp
