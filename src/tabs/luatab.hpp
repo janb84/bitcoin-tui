@@ -96,6 +96,12 @@ class LuaTab {
     bool       handle_focused_event(const ftxui::Event& event);
     void       join();
 
+    // Tell the tab whether it is the one on screen. A hidden tab stops firing its
+    // btcui_set_interval timers (and so stops issuing RPCs) until it is shown
+    // again, at which point its timers are due and fire on the next loop pass.
+    // Tabs declared `background=true` in their tab spec keep running while hidden.
+    void set_visible(bool visible);
+
     std::string script_path() const;
     void        set_reload_callback(std::function<void()> fn);
     // Exit the whole TUI (btcui_quit). Wired by main to ExitLoopClosure.
@@ -125,15 +131,19 @@ class LuaTab {
     void clear_callback_error(int id);
     void open_qr_overlay(const std::string& data);
 
-    const RpcConfig                         cfg_;
-    Guarded<RpcAuth>&                       auth_;
-    ftxui::App&                             screen_;
-    std::atomic<bool>&                      running_;
-    const int                               refresh_secs_;
-    std::ostream* const                     debug_out_;
-    const std::string                       debug_log_path_;
-    const json                              tab_options_;
-    const std::set<std::string>             rpc_allowlist_;
+    const RpcConfig             cfg_;
+    Guarded<RpcAuth>&           auth_;
+    ftxui::App&                 screen_;
+    std::atomic<bool>&          running_;
+    const int                   refresh_secs_;
+    std::ostream* const         debug_out_;
+    const std::string           debug_log_path_;
+    const json                  tab_options_;
+    const std::set<std::string> rpc_allowlist_;
+    // Timer gating: hidden tabs idle instead of polling the node. `background_`
+    // opts a tab out (set once from the tab spec, so it is not atomic).
+    std::atomic<bool>                       visible_{true};
+    bool                                    background_{false};
     Guarded<LuaTabState>                    lua_tab_state_;
     std::atomic<int>                        focused_panel_{-1};
     std::atomic<bool>                       panel_scrolling_{false};

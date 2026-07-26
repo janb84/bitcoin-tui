@@ -30,6 +30,14 @@ global function btcui_table(opts) end
 --- Register a periodic timer callback. The callback runs as a
 --- coroutine — btcui_rpc() yields transparently within it.
 --- Returns an opaque TimerHandle that can be passed to btcui_wake().
+---
+--- Timers only fire while the tab is on screen, so a tab the user is
+--- not looking at costs the node nothing. Switching to the tab fires
+--- its timers immediately (within ~1s), so panels never show a stale
+--- snapshot. A tab that must keep working while hidden (one that
+--- accumulates history rather than snapshotting current state) opts
+--- out with `background=true` in its tab spec:
+---   --tab "myscript.lua,background=true"
 ---@param seconds number   Interval in seconds
 ---@param callback function  Called each interval
 ---@return TimerHandle

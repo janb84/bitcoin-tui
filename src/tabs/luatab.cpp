@@ -1687,9 +1687,16 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                 }
             }
 
-            // 3. Fire due timers
-            auto now = Clock::now();
-            while (!timers.empty() && timers.begin()->first <= now) {
+            // 3. Fire due timers. Skipped entirely while the tab is off screen, so
+            // a background tab costs the node nothing. Due times are left in the
+            // past rather than pushed forward: the moment the tab is shown again its
+            // timers are already due and fire on the next pass (≤1s), refreshing the
+            // panels instead of presenting whatever was current when it was last
+            // visible. Nothing accumulates: a timer that is late fires once, then
+            // reschedules off `now`.
+            auto       now    = Clock::now();
+            const bool paused = !background_ && !visible_.load();
+            while (!paused && !timers.empty() && timers.begin()->first <= now) {
                 auto  node  = timers.extract(timers.begin());
                 auto& timer = node.mapped();
 
@@ -1727,9 +1734,12 @@ void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             // 5. Wake UI
             wake_ui();
 
-            // 5. Sleep — wait for RPC response or next timer, cap at 1s for log polling
+            // 5. Sleep: wait for RPC response or next timer, cap at 1s for log polling.
+            // While paused the due times sit in the past, so they must not shorten the
+            // deadline (that would spin the loop); the 1s cap is what notices the tab
+            // becoming visible again.
             auto deadline = Clock::now() + std::chrono::seconds(1);
-            if (!timers.empty())
+            if (!paused && !timers.empty())
                 deadline = std::min(deadline, timers.begin()->first);
             responses.wait_until(deadline, [](auto& q) { return !q.empty(); });
         }
@@ -1762,6 +1772,14 @@ LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, App& screen, std::atomic<b
       refresh_secs_(refresh_secs), debug_out_(debug_out),
       debug_log_path_(std::move(debug_log_path)), tab_options_(std::move(tab_options)),
       rpc_allowlist_(make_allowlist(extra_rpcs)) {
+    // `background=true` keeps this tab's timers running while it is off screen,
+    // for scripts that accumulate state over time rather than snapshotting.
+    if (tab_options_.contains("background")) {
+        const auto& b = tab_options_["background"];
+        background_ =
+            b.is_bool() ? b.get<bool>() : (b.is_string() && b.get<std::string>() == "true");
+    }
+
     const std::string lua_script = tab_options_["script"].get<std::string>();
     auto              script     = std::make_unique<LuaScript>();
     script->debug_out            = debug_out_;
@@ -1794,6 +1812,8 @@ std::string LuaTab::script_path() const {
         return tab_options_["script"].get<std::string>();
     return "";
 }
+
+void LuaTab::set_visible(bool visible) { visible_.store(visible); }
 
 void LuaTab::set_reload_callback(std::function<void()> fn) { reload_request_fn_ = std::move(fn); }
 

@@ -831,6 +831,12 @@ int Application::run() const {
                 tab_index = tab_count() - 1;
         }
 
+        // Only the tab on screen polls the node. Done here, after everything that can
+        // move tab_index this frame (key/mouse switch, search dispatch, live reload),
+        // so it is the single place that decides which tab is running.
+        for (int i = 0; i < tab_count(); ++i)
+            lua_tab_ptrs[i]->set_visible(i == tab_index);
+
         AppState snap = state.get();
 
         Element tab_content = (tab_index < 0 || tab_index >= tab_count())
