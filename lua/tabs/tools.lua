@@ -5,7 +5,7 @@
 --   • Broadcast — paste raw tx hex, sendrawtransaction, show the txid (Enter on it
 --     runs the global tx search) or the node's error message.
 --   • Private Broadcast Queue — txids returned by getprivatebroadcastinfo.
---   • Shutdown — stop bitcoind, then exit the TUI.
+--   • Shutdown: stop bitcoind, then exit the TUI (behind a confirm dialog).
 --
 -- Explanatory rows (help, status, errors, descriptions) are marked
 -- __selectable=false so navigation skips them — only the txid result and the
@@ -18,10 +18,10 @@
 -- flag and btcui_wake() the timer, which performs the RPC.
 
 -- Lua 5.5 strict globals: a typo in any name below is caught at load time.
-global btcui_add_footer_button, btcui_on_select, btcui_option, btcui_quit,
-       btcui_rpc, btcui_search, btcui_set_interval, btcui_set_name, btcui_table,
-       btcui_text_input, btcui_wake, ipairs, pcall, string, table, tonumber,
-       tostring, type
+global btcui_add_footer_button, btcui_dialog, btcui_dialog_close, btcui_on_select,
+       btcui_option, btcui_quit, btcui_rpc, btcui_search, btcui_set_interval,
+       btcui_set_name, btcui_table, btcui_text_input, btcui_wake, ipairs, pcall,
+       string, table, tonumber, tostring, type
 
 btcui_set_name("Tools")
 
@@ -95,7 +95,7 @@ local function update_shutdown_panel()
     shutdown_panel:update("shutdown", {
         id = "shutdown", text = { value = "Shutdown bitcoind & exit", color = "white" },
     })
-    info_row(shutdown_panel, "info", "Sends RPC stop to Bitcoin Core, then exits the TUI.")
+    info_row(shutdown_panel, "info", "Sends RPC stop to Bitcoin Core, then exits the TUI. Asks first.")
     shutdown_panel:finish_refresh()
 end
 
@@ -148,9 +148,31 @@ local function open_broadcast()
     end)
 end
 
+-- Stopping the node is the most destructive thing this tab can do and a single
+-- Enter on a focused row would otherwise trigger it, so confirm first: the same
+-- guard the Peers tab puts in front of disconnect/ban.
 local function do_shutdown()
-    pending_shutdown = true
-    btcui_wake(refresh_timer)
+    btcui_dialog({
+        title   = "Shutdown bitcoind",
+        width   = 64,
+        rows    = {
+            { text = "  Send RPC stop to Bitcoin Core and exit the TUI?", color = "white" },
+            "---",
+            { text = "  The node flushes its chainstate on shutdown; a", color = "yellow" },
+            { text = "  mainnet node can take a while to start up again.", color = "yellow" },
+        },
+        buttons = { "Shutdown", "Cancel" },
+        hint    = "[←/→] select  [⏎] confirm  [Esc] cancel",
+        on_event = function(ev)
+            if ev.type == "button" and ev.index == 1 then
+                btcui_dialog_close()
+                pending_shutdown = true
+                btcui_wake(refresh_timer)
+            elseif ev.type == "button" or ev.type == "close" then
+                btcui_dialog_close()
+            end
+        end,
+    })
 end
 
 -- Enter/click activates a selectable row: the Broadcast / Shutdown action rows, or
