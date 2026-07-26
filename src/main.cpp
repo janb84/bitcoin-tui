@@ -23,6 +23,7 @@ static void ensure_terminal();
 
 #include <ftxui/ftxui.hpp>
 
+#include "bitcoin_conf.hpp"
 #include "bitcoind.hpp"
 #include "components/footer_bar.hpp"
 #include "format.hpp"
@@ -173,6 +174,7 @@ class Application {
     std::string              network      = "main";
     std::string              cookie_file;
     std::string              datadir;
+    std::string              bitcoin_conf_file; // --conf; defaults to <datadir>/bitcoin.conf
     bool                     explicit_creds = false;
     std::string              bitcoind_cmd;
     bool                     explicit_host = false;
@@ -257,6 +259,9 @@ int Application::configure(int argc, char* argv[]) {
         ->group("Authentication");
 
     // Node
+    app.add_option("--conf", bitcoin_conf_file,
+                   "Path to the node's bitcoin.conf (default: <datadir>/bitcoin.conf)")
+        ->group("Node");
     app.add_option("--bitcoind", bitcoind_cmd, "Path to bitcoind binary")->group("Node");
     app.add_option("--debuglog", debug_log_file, "Path to debug.log")->group("Node");
 
@@ -404,6 +409,64 @@ int Application::configure(int argc, char* argv[]) {
 
     if (datadir.empty())
         datadir = default_datadir();
+
+    // Read the node's own bitcoin.conf (the same file bitcoin-cli honors) for
+    // anything the user has not already set on the command line or in config.toml.
+    // A custom rpcport, a relocated cookie or rpcuser/rpcpassword credentials then
+    // work without repeating them here. Precedence: CLI / config.toml, then
+    // bitcoin.conf, then the network default.
+    // (datadir itself is deliberately not read back out of the file that lives in
+    // it; use --datadir.)
+    {
+        const std::string conf_path =
+            bitcoin_conf_file.empty() ? datadir + "/bitcoin.conf" : bitcoin_conf_file;
+        const BitcoinConf conf = BitcoinConf::load(conf_path);
+        if (!bitcoin_conf_file.empty() && conf.empty())
+            std::fprintf(stderr, "bitcoin-tui: --conf file is empty or unreadable: %s\n",
+                         conf_path.c_str());
+
+        if (port_opt->count() == 0) {
+            const std::string v = conf.get("rpcport", network);
+            if (!v.empty()) {
+                char*      end = nullptr;
+                const long p   = std::strtol(v.c_str(), &end, 10);
+                if (end != nullptr && *end == '\0' && p > 0 && p <= 65535)
+                    cfg.port = static_cast<int>(p);
+                else
+                    std::fprintf(stderr, "bitcoin-tui: ignoring invalid rpcport in %s: %s\n",
+                                 conf_path.c_str(), v.c_str());
+            }
+        }
+        if (host_opt->count() == 0) {
+            // rpcconnect is the client-side option; rpcbind is what the server
+            // listens on and is not a usable target address.
+            const std::string v = conf.get("rpcconnect", network);
+            if (!v.empty())
+                cfg.host = v;
+        }
+        if (cookie_file.empty()) {
+            std::string v = conf.get("rpccookiefile", network);
+            if (!v.empty()) {
+                // Core resolves a relative rpccookiefile against the network's
+                // data directory.
+                namespace fs = std::filesystem;
+                if (fs::path(v).is_relative())
+                    v = datadir + "/" + network_subdir(network) + v;
+                cookie_file = v;
+            }
+        }
+        if (!explicit_creds) {
+            const std::string u = conf.get("rpcuser", network);
+            const std::string p = conf.get("rpcpassword", network);
+            if (!u.empty() && !p.empty()) {
+                auth.update([&](auto& a) {
+                    a.user     = u;
+                    a.password = p;
+                });
+                explicit_creds = true; // skip cookie auth, as -u/-P would
+            }
+        }
+    }
 
     if (!explicit_creds) {
         std::string path = cookie_file.empty() ? cookie_path(network, datadir) : cookie_file;

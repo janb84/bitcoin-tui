@@ -7,6 +7,7 @@ add_executable(bitcoin-tui-tests
   test_json.cpp
   test_format.cpp
   test_search_query.cpp
+  test_bitcoin_conf.cpp
   test_guarded.cpp
   test_rpc_config.cpp
   test_bitcoind.cpp
