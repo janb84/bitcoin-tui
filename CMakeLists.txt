@@ -24,8 +24,8 @@ endif()
 # FTXUI
 FetchContent_Declare(
   ftxui
-  URL      https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v7.0.0.tar.gz
-  URL_HASH SHA256=14bef1f8caff548c49af8eeadfca21910d66e93e68237f0c3d20236b60c01e7e
+  URL      https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v7.0.1.tar.gz
+  URL_HASH SHA256=80f544bb47fab24d3e57bc561324da228c050b3f2e8683fe806883ca5cd561a2
 )
 set(FTXUI_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
