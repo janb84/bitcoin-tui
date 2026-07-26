@@ -37,41 +37,30 @@ using Clock     = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
 static const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
-    "decoderawtransaction",
-    "decodescript",
-    "estimatesmartfee",
-    "getaddednodeinfo",
-    "getbestblockhash",
-    "getblock",
-    "getblockchaininfo",
-    "getblockcount",
-    "getblockhash",
-    "getblockheader",
-    "getblockstats",
-    "getchaintips",
-    "getconnectioncount",
-    "getdeploymentinfo",
-    "getindexinfo",
-    "getmempoolancestors",
-    "getmempoolcluster",
-    "getmempooldescendants",
-    "getmempoolentry",
-    "getmempoolfeeratediagram",
-    "getmempoolinfo",
-    "getmininginfo",
-    "getnettotals",
-    "getnetworkhashps",
-    "getnetworkinfo",
-    "getnodeaddresses",
-    "getpeerinfo",
-    "getrawmempool",
-    "getrawtransaction",
-    "gettxout",
-    "gettxoutsetinfo",
-    "listbanned",
-    "logging",
-    "uptime",
+    "decoderawtransaction", "decodescript",
+    "estimatesmartfee",     "getaddednodeinfo",
+    "getbestblockhash",     "getblock",
+    "getblockchaininfo",    "getblockcount",
+    "getblockhash",         "getblockheader",
+    "getblockstats",        "getchaintips",
+    "getconnectioncount",   "getdeploymentinfo",
+    "getindexinfo",         "getmempoolancestors",
+    "getmempoolcluster",    "getmempooldescendants",
+    "getmempoolentry",      "getmempoolfeeratediagram",
+    "getmempoolinfo",       "getmininginfo",
+    "getnettotals",         "getnetworkhashps",
+    "getnetworkinfo",       "getnodeaddresses",
+    "getpeerinfo",          "getrawmempool",
+    "getrawtransaction",    "gettxout",
+    "listbanned",           "uptime",
 };
+// Deliberately NOT in the default set, though both look like reads:
+//   gettxoutsetinfo  holds cs_main while it walks the whole UTXO set: minutes of
+//                    stalled validation on mainnet, and a script could call it on
+//                    a timer.
+//   logging          with arguments it CHANGES the node's log categories, so it is
+//                    not read-only and can flood the operator's debug.log.
+// Grant either explicitly with --allow-rpc if a script needs it.
 
 struct RpcRequest {
     int                        id;

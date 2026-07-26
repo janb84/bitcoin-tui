@@ -520,7 +520,7 @@ global function btcui_text_input(label, default, on_confirm) end
 --- Blockchain:
 ---   getbestblockhash, getblock, getblockchaininfo, getblockcount,
 ---   getblockhash, getblockheader, getblockstats, getchaintips,
----   getdeploymentinfo, getindexinfo, gettxout, gettxoutsetinfo
+---   getdeploymentinfo, getindexinfo, gettxout
 ---
 --- Mempool:
 ---   getmempoolinfo, getrawmempool, getmempoolentry,
@@ -535,7 +535,11 @@ global function btcui_text_input(label, default, on_confirm) end
 ---   getmininginfo, getnetworkhashps
 ---
 --- Util:
----   estimatesmartfee, uptime, logging
+---   estimatesmartfee, uptime
+---
+--- Not granted by default, despite looking read-only: gettxoutsetinfo (walks the
+--- whole UTXO set under cs_main) and logging (with arguments it changes the node's
+--- log categories). Grant either with --allow-rpc if you really need it.
 ---
 --- Raw transactions (read-only):
 ---   getrawtransaction, decoderawtransaction, decodescript
