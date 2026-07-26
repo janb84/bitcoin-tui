@@ -55,7 +55,11 @@ end
 local function fmt_age(secs)
     if secs < 60 then return secs .. "s" end
     if secs < 3600 then return math.floor(secs / 60) .. "m " .. (secs % 60) .. "s" end
-    return math.floor(secs / 3600) .. "h " .. math.floor((secs % 3600) / 60) .. "m"
+    if secs < 86400 then
+        return math.floor(secs / 3600) .. "h " .. math.floor((secs % 3600) / 60) .. "m"
+    end
+    -- Roll over to days, so a long-lived peer's uptime is readable.
+    return math.floor(secs / 86400) .. "d " .. math.floor((secs % 86400) / 3600) .. "h"
 end
 
 -- Display width in codepoints (labels contain multi-byte glyphs like "—").

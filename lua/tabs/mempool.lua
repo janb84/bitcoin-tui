@@ -80,7 +80,11 @@ end
 local function fmt_age(secs)
     if secs < 60 then return secs .. "s" end
     if secs < 3600 then return math.floor(secs / 60) .. "m " .. (secs % 60) .. "s" end
-    return math.floor(secs / 3600) .. "h " .. math.floor((secs % 3600) / 60) .. "m"
+    if secs < 86400 then
+        return math.floor(secs / 3600) .. "h " .. math.floor((secs % 3600) / 60) .. "m"
+    end
+    -- Roll over to days: a block from three months back read "2261h 19m".
+    return math.floor(secs / 86400) .. "d " .. math.floor((secs % 86400) / 3600) .. "h"
 end
 
 local function fmt_time_ago(ts)
