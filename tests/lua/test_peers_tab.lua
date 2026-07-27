@@ -151,6 +151,7 @@ timer_fn()
 local ban = last_call("setban", "add")
 check(ban[1] == "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd.onion",
       "setban host without port")
+check(ban[3] == 86400, "setban passes the 24h the button advertises")
 check(dialog_has_text("Banned"), "ban result overlay")
 last_dialog.on_event({ type = "close" })
 

@@ -3,7 +3,7 @@
 // Shared filesystem-path resolution for bitcoin-tui.
 //
 // All config-directory logic lives here so the startup reader (main.cpp) and the
-// Settings-tab writer (tabs/luatab.cpp) can never disagree about where
+// Settings-tab writer (luatab.cpp) can never disagree about where
 // config.toml lives. It also handles two Linux footguns:
 //   - running under sudo: HOME becomes /root and XDG_CONFIG_HOME is cleared by
 //     env_reset, so config would land in root's home. We resolve paths for the

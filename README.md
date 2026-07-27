@@ -64,6 +64,10 @@ Connection:
   -h, --host <host>      RPC host             (default: 127.0.0.1)
   -p, --port <port>      RPC port             (default: 8332)
 
+Settings not given here are read from the node's bitcoin.conf, honouring its
+network sections: rpcport, rpcconnect, rpccookiefile, rpcuser/rpcpassword.
+
+
 Authentication (cookie auth is used by default):
   -c, --cookie <path>    Path to .cookie file (auto-detected if omitted)
   -d, --datadir <path>   Bitcoin data directory for cookie lookup
@@ -75,6 +79,9 @@ Network:
       --testnet4         Use testnet4 port (48332) and cookie subdir
       --regtest          Use regtest  port (18443) and cookie subdir
       --signet           Use signet   port (38332) and cookie subdir
+
+Node:
+      --conf <path>      Node's bitcoin.conf  (default: <datadir>/bitcoin.conf)
 
 Launch:
       --bitcoind <path>  Path to bitcoind binary (default: found via PATH)

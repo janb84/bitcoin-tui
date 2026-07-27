@@ -133,7 +133,7 @@ local blocks = blocks_panels[1]
 check(stats.values.transactions == "41,234", "tx count grouped")
 check(stats.values.vsize == "17.0 MB", "virtual size")
 check(stats.values.total_fees == "0.53210000 BTC", "total fees")
-check(stats.values.min_relay == "1.0 sat/vB", "min relay fee in sat/vB")
+check(stats.values.min_fee == "1.0 sat/vB", "mempool min fee in sat/vB")
 check(type(stats.values.memory) == "table" and stats.values.memory.gauge > 0.8,
       "memory usage gauge")
 check(count_calls("getblockstats") == 3, "block stats fetched for heights 2..0")
@@ -247,12 +247,31 @@ check(last_dialog.title == "Block Search" and dialog_has_text("⛏ BLOCK"),
 check(rpc_calls[#rpc_calls - 3].method == "getblockhash", "height resolved via getblockhash")
 last_dialog.on_event({ type = "close" })
 
--- 9. Unknown query surfaces the RPC error; 'q' inside a dialog quits
+-- 9. A 64-hex query that is neither tx nor block reports the TX error, not the
+-- block one: on a node without -txindex that message is Core's "Use -txindex…"
+-- hint, which is the actionable one.
 rpc_results["getblock"] = "ERROR"
 on_search_fn(string.rep("ff", 32))
 timer_fn()
-check(dialog_has_text("rpc failed: getblock"), "error overlay")
+check(dialog_has_text("rpc failed: getrawtransaction"), "txid error overlay")
+
+-- 10. A query that cannot be a txid still reports the block-lookup error.
+on_search_fn("notahash")
+timer_fn()
+check(dialog_has_text("rpc failed: getblock"), "non-hex query keeps the block error")
+
+-- 11. 'q' inside a dialog quits
 last_dialog.on_event({ type = "key", key = "q" })
 check(quit_called, "q in dialog quits")
+
+-- 12. A block with only a coinbase: getblockstats totals exclude it, so the bar
+-- says "coinbase" rather than pairing "1 tx" with "0 B".
+rpc_results["getblockstats"] = { height = 9, txs = 1, total_size = 0,
+                                 total_weight = 0, time = 999900 }
+rpc_results["getblockchaininfo"] = { blocks = 9 }
+timer_fn()
+check(blocks.bars[1].key == "9" and blocks.bars[1].lines[1] == "1 tx",
+      "coinbase-only block keeps Core's tx count")
+check(blocks.bars[1].lines[2] == "coinbase", "coinbase-only block is labelled")
 
 print("ok - " .. checks .. " checks passed (" .. script .. ")")

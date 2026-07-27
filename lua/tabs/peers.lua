@@ -55,7 +55,11 @@ end
 local function fmt_age(secs)
     if secs < 60 then return secs .. "s" end
     if secs < 3600 then return math.floor(secs / 60) .. "m " .. (secs % 60) .. "s" end
-    return math.floor(secs / 3600) .. "h " .. math.floor((secs % 3600) / 60) .. "m"
+    if secs < 86400 then
+        return math.floor(secs / 3600) .. "h " .. math.floor((secs % 3600) / 60) .. "m"
+    end
+    -- Roll over to days, so a long-lived peer's uptime is readable.
+    return math.floor(secs / 86400) .. "d " .. math.floor((secs % 86400) / 3600) .. "h"
 end
 
 -- Display width in codepoints (labels contain multi-byte glyphs like "—").
@@ -128,6 +132,11 @@ local banned_list,  banned_loaded = {}, false
 
 local CMDS = { "onetry", "add" }
 local addnode_cmd = 1          -- remembered across Add Node dialogs (like C++)
+
+-- Ban duration passed to setban, and the label that advertises it. Sending it
+-- explicitly keeps the two in step whatever the node's -bantime is.
+local BAN_SECONDS = 24 * 60 * 60
+local BAN_LABEL   = "Ban (" .. (BAN_SECONDS // 3600) .. "h)"
 
 ----------------------------------------------------------------------
 -- Peers list
@@ -296,7 +305,7 @@ local function show_detail(p)
         title    = "Peer " .. p.id,
         width    = 78,
         rows     = rows,
-        buttons  = { "Disconnect", "Ban (24h)" },
+        buttons  = { "Disconnect", BAN_LABEL },
         hint     = "[←/→] select  [⏎] confirm  [Esc] back",
         on_event = function(ev)
             if ev.type == "button" then
@@ -533,7 +542,10 @@ local function refresh()
         local ok, res, msg
         if a.is_ban then
             local ip = strip_port(a.addr)
-            ok, res = pcall(btcui_rpc, "setban", ip, "add")
+            -- Pass the duration the button advertises. Omitting it inherits the
+            -- node's -bantime, which is 24h by default but not on a tuned node,
+            -- so the "Ban (24h)" label would quietly lie.
+            ok, res = pcall(btcui_rpc, "setban", ip, "add", BAN_SECONDS)
             msg = "Banned " .. ip
             banned_loaded = false
         else
@@ -558,7 +570,12 @@ local function refresh()
     if pending_setban then
         local a = pending_setban
         pending_setban = nil
-        local ok, res = pcall(btcui_rpc, "setban", a.addr, a.remove and "remove" or "add")
+        local ok, res
+        if a.remove then
+            ok, res = pcall(btcui_rpc, "setban", a.addr, "remove")
+        else
+            ok, res = pcall(btcui_rpc, "setban", a.addr, "add", BAN_SECONDS)
+        end
         banned_loaded = false
         if view == "baninput" then
             show_ban_progress(a.addr, a.remove, ok,

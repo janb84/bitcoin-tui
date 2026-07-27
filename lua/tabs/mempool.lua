@@ -61,6 +61,17 @@ local function fmt_btc(v)
     return string.format("%.8f BTC", v or 0)
 end
 
+-- Scaled like the Dashboard's: a fixed "%.2f T" reported regtest's 4.7e-10 and
+-- signet's ~0.003 as "0.00 T", and would read "1000.00 T" past 1e15.
+local function fmt_difficulty(d)
+    d = d or 0
+    for _, step in ipairs({ { 1e18, "E" }, { 1e15, "P" }, { 1e12, "T" }, { 1e9, "G" } }) do
+        if d >= step[1] then return string.format("%.2f %s", d / step[1], step[2]) end
+    end
+    -- Below 1e9 show the plain value, as bitcoin-cli does (regtest/signet).
+    return string.format("%.8g", d)
+end
+
 -- relayfee / mempoolminfee are BTC/kvB; show as sat/vB.
 local function fmt_satsvb(btc_per_kvb)
     return string.format("%.1f sat/vB", (btc_per_kvb or 0) * 1e5)
@@ -69,7 +80,11 @@ end
 local function fmt_age(secs)
     if secs < 60 then return secs .. "s" end
     if secs < 3600 then return math.floor(secs / 60) .. "m " .. (secs % 60) .. "s" end
-    return math.floor(secs / 3600) .. "h " .. math.floor((secs % 3600) / 60) .. "m"
+    if secs < 86400 then
+        return math.floor(secs / 3600) .. "h " .. math.floor((secs % 3600) / 60) .. "m"
+    end
+    -- Roll over to days: a block from three months back read "2261h 19m".
+    return math.floor(secs / 86400) .. "d " .. math.floor((secs % 86400) / 3600) .. "h"
 end
 
 local function fmt_time_ago(ts)
@@ -122,6 +137,7 @@ local function extract_miner(hex)
 end
 
 local function is_height(q) return q:match("^%d+$") ~= nil end
+local function is_hash256(q) return #q == 64 and q:match("^%x+$") ~= nil end
 
 local function abbrev(q) return ellipsize_middle(q, 40, 20, 20) end
 
@@ -140,7 +156,10 @@ local mempool_panel = btcui_summary({
         { name = "transactions", label = "Transactions" },
         { name = "vsize",        label = "Virtual size" },
         { name = "total_fees",   label = "Total fees" },
-        { name = "min_relay",    label = "Min relay fee" },
+        -- mempoolminfee, not minrelaytxfee: it tracks minrelaytxfee until the
+        -- mempool fills up and starts evicting, then rises above it. Labelling it
+        -- "Min relay fee" made a rising eviction floor look like a config change.
+        { name = "min_fee",      label = "Mempool min fee" },
         { name = "memory",       label = "Memory usage" },
     },
 })
@@ -308,7 +327,7 @@ show_result = function(r, sub)
             lv("Transactions", fmt_int(r.ntx)),
             lv("Size", fmt_int(r.size) .. " B"),
             lv("Weight", fmt_int(r.weight) .. " WU"),
-            lv("Difficulty", string.format("%.2f T", (r.difficulty or 0) / 1e12)),
+            lv("Difficulty", fmt_difficulty(r.difficulty)),
             lv("Miner", r.miner),
             lv("Confirmations", fmt_int(r.confirmations)),
         }
@@ -424,6 +443,7 @@ end
 
 -- Height → block; else mempool entry → confirmed tx (txindex) → block hash.
 local function run_search(query)
+    local tx_error
     if is_height(query) then
         local ok, hash = pcall(btcui_rpc, "getblockhash", tonumber(query))
         if not ok then return { kind = "error", error = tostring(hash) } end
@@ -447,6 +467,12 @@ local function run_search(query)
     end
 
     local ok2, tx = pcall(btcui_rpc, "getrawtransaction", query, true)
+    if not ok2 then
+        -- Remember why the tx lookup failed. Falling through to the block-hash
+        -- probe below would otherwise replace Core's message (which names -txindex
+        -- when the node has no index) with a bare "Block not found".
+        tx_error = tostring(tx)
+    end
     if ok2 and type(tx) == "table" then
         local r = {
             kind          = "confirmed",
@@ -482,7 +508,14 @@ local function run_search(query)
         return r
     end
 
-    return fetch_block(query)
+    -- Not in the mempool and not a retrievable tx: it may still be a block hash.
+    local r = fetch_block(query)
+    if r.kind == "error" and tx_error and is_hash256(query) then
+        -- 64 hex chars that is neither a block nor a fetchable tx: the tx lookup
+        -- error is the useful one (it tells the operator to enable -txindex).
+        r.error = tx_error
+    end
+    return r
 end
 
 ----------------------------------------------------------------------
@@ -501,7 +534,10 @@ local function update_blocks_panel()
             fill  = math.min(1, (st.weight or 0) / MAX_WEIGHT),
             lines = {
                 fmt_int(st.txs) .. " tx",
-                fmt_bytes(st.size),
+                -- getblockstats totals count non-coinbase transactions only, so a
+                -- block carrying nothing but its coinbase reports total_size 0.
+                -- Say that, instead of rendering "1 tx" next to "0 B".
+                st.txs <= 1 and "coinbase" or fmt_bytes(st.size),
                 st.time > 0 and fmt_time_ago(st.time) or "",
             },
         }
@@ -531,7 +567,7 @@ local function refresh()
             transactions = fmt_int(mp.size or 0),
             vsize        = fmt_bytes(mp.bytes or 0),
             total_fees   = fmt_btc(mp.total_fee),
-            min_relay    = fmt_satsvb(mp.mempoolminfee),
+            min_fee      = fmt_satsvb(mp.mempoolminfee),
             memory       = btcui_gauge(frac, {
                 color  = mcolor,
                 prefix = fmt_bytes(usage) .. " / " .. fmt_bytes(maxmem),

@@ -30,6 +30,14 @@ global function btcui_table(opts) end
 --- Register a periodic timer callback. The callback runs as a
 --- coroutine — btcui_rpc() yields transparently within it.
 --- Returns an opaque TimerHandle that can be passed to btcui_wake().
+---
+--- Timers only fire while the tab is on screen, so a tab the user is
+--- not looking at costs the node nothing. Switching to the tab fires
+--- its timers immediately (within ~1s), so panels never show a stale
+--- snapshot. A tab that must keep working while hidden (one that
+--- accumulates history rather than snapshotting current state) opts
+--- out with `background=true` in its tab spec:
+---   --tab "myscript.lua,background=true"
 ---@param seconds number   Interval in seconds
 ---@param callback function  Called each interval
 ---@return TimerHandle
@@ -512,7 +520,7 @@ global function btcui_text_input(label, default, on_confirm) end
 --- Blockchain:
 ---   getbestblockhash, getblock, getblockchaininfo, getblockcount,
 ---   getblockhash, getblockheader, getblockstats, getchaintips,
----   getdeploymentinfo, getindexinfo, gettxout, gettxoutsetinfo
+---   getdeploymentinfo, getindexinfo, gettxout
 ---
 --- Mempool:
 ---   getmempoolinfo, getrawmempool, getmempoolentry,
@@ -527,7 +535,11 @@ global function btcui_text_input(label, default, on_confirm) end
 ---   getmininginfo, getnetworkhashps
 ---
 --- Util:
----   estimatesmartfee, uptime, logging
+---   estimatesmartfee, uptime
+---
+--- Not granted by default, despite looking read-only: gettxoutsetinfo (walks the
+--- whole UTXO set under cs_main) and logging (with arguments it changes the node's
+--- log categories). Grant either with --allow-rpc if you really need it.
 ---
 --- Raw transactions (read-only):
 ---   getrawtransaction, decoderawtransaction, decodescript

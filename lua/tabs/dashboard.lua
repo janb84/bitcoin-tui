@@ -1,15 +1,15 @@
 -- Dashboard — blockchain, network and mempool summary at a glance.
 --
 -- Demonstrates summary panels, the 2+1 layout (new_row), and progress bars
--- via btcui_gauge(). Reads getblockchaininfo / getnetworkinfo / getmempoolinfo;
--- hashrate is derived from difficulty (difficulty * 2^32 / 600), matching core.
+-- via btcui_gauge(). Reads getblockchaininfo / getnetworkinfo / getmempoolinfo,
+-- plus getnetworkhashps for the hashrate Core itself reports.
 --
 -- Load with: --tab lua/tabs/dashboard.lua (or enable it from the Settings tab)
 -- Optional refresh interval (seconds): --tab lua/tabs/dashboard.lua,interval=2
 
 -- Lua 5.5 strict globals: a typo in any name below is caught at load time.
 global btcui_gauge, btcui_option, btcui_rpc, btcui_set_interval, btcui_set_name,
-       btcui_summary, ipairs, math, string, tonumber, tostring
+       btcui_summary, ipairs, math, pcall, string, tonumber, tostring, type
 
 btcui_set_name("Dashboard")
 
@@ -35,12 +35,17 @@ end
 local function fmt_height(n) return group_digits(n, "'") end
 local function fmt_int(n)    return group_digits(n, ",") end
 
--- Scale a value down through a list of {threshold, suffix} steps.
+-- Scale a value down through a list of {threshold, suffix} steps. Values too
+-- small for the smallest step fall back to significant digits rather than fixed
+-- decimals, so regtest's 4.7e-10 difficulty reads as itself instead of "0.00".
 local function fmt_scaled(v, decimals, steps, base_suffix)
     for _, step in ipairs(steps) do
         if v >= step[1] then
             return string.format("%." .. decimals .. "f %s", v / step[1], step[2])
         end
+    end
+    if v > 0 and v < 0.01 then
+        return string.format("%.3g%s", v, base_suffix)
     end
     return string.format("%." .. decimals .. "f%s", v, base_suffix)
 end
@@ -116,7 +121,8 @@ local mempool_panel = btcui_summary({
         { name = "transactions", label = "Transactions" },
         { name = "vsize",        label = "Virtual size" },
         { name = "total_fees",   label = "Total fees" },
-        { name = "min_relay",    label = "Min relay fee" },
+        -- mempoolminfee (dynamic eviction floor), not the minrelaytxfee setting.
+        { name = "min_fee",      label = "Mempool min fee" },
         { name = "memory",       label = "Memory usage" },
     },
 })
@@ -124,6 +130,15 @@ local mempool_panel = btcui_summary({
 ----------------------------------------------------------------------
 -- Refresh
 ----------------------------------------------------------------------
+
+-- getnetworkhashps measures work over the last 120 blocks. It is not in every
+-- node's reach (very old nodes lack it), so fall back to the difficulty estimate
+-- rather than blanking the field.
+local function hashps(difficulty)
+    local ok, hps = pcall(btcui_rpc, "getnetworkhashps")
+    if ok and type(hps) == "number" then return hps end
+    return (difficulty or 0) * 4294967296.0 / 600.0
+end
 
 btcui_set_interval(REFRESH, function()
     local bc = btcui_rpc("getblockchaininfo")
@@ -136,7 +151,11 @@ btcui_set_interval(REFRESH, function()
             height     = fmt_height(bc.blocks or 0),
             headers    = fmt_height(bc.headers or 0),
             difficulty = fmt_difficulty(bc.difficulty or 0),
-            hashrate   = fmt_hashrate((bc.difficulty or 0) * 4294967296.0 / 600.0),
+            -- Core's own estimate, so the figure matches `bitcoin-cli
+            -- getnetworkhashps` / getmininginfo. Deriving it from difficulty
+            -- (difficulty * 2^32 / 600) gives the *expected* rate at the current
+            -- target, which drifts from what the network actually produced.
+            hashrate   = fmt_hashrate(hashps(bc.difficulty)),
             sync       = btcui_gauge(progress, { color = progress >= 1.0 and "green" or "yellow" }),
             ibd        = yesno(bc.initialblockdownload, "yellow", "green"),
             pruned     = { value = bc.pruned and "yes" or "no" },
@@ -166,7 +185,7 @@ btcui_set_interval(REFRESH, function()
             transactions = fmt_int(mp.size or 0),
             vsize        = fmt_bytes(mp.bytes or 0),
             total_fees   = fmt_btc(mp.total_fee),
-            min_relay    = fmt_satsvb(mp.mempoolminfee),
+            min_fee      = fmt_satsvb(mp.mempoolminfee),
             memory       = btcui_gauge(frac, {
                 color  = mcolor,
                 prefix = fmt_bytes(usage) .. " / " .. fmt_bytes(maxmem),

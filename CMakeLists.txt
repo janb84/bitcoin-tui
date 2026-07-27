@@ -120,7 +120,7 @@ add_executable(bitcoin-tui
   src/poll.cpp
   src/components/footer_bar.cpp
   src/luatable.cpp
-  src/tabs/luatab.cpp
+  src/luatab.cpp
   src/vendor/qrcodegen.cpp
 )
 
