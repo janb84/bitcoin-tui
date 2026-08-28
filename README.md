@@ -35,7 +35,7 @@ Connects to a local or remote Bitcoin Core node via JSON-RPC and displays live b
 
 - C++20 compiler (GCC 12+ or Clang 15+)
 - CMake 3.22+
-- Internet access at configure time (CMake fetches FTXUI v7.0.1 and Catch2 v3.7.1 via FetchContent)
+- Internet access at configure time (CMake fetches FTXUI v7.0.3 and Catch2 v3.7.1 via FetchContent)
 - Bitcoin (Core) node with RPC enabled
 
 ## Build
